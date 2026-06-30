@@ -241,17 +241,19 @@ private fun FolderCard(
         0f
     }
 
+    val notBackedUp = folder.totalImages - folder.backedUpImages - folder.trashedImages - folder.purgedImages
+
     val statusIcon = when {
         folder.totalImages == 0 -> Icons.Filled.Folder
-        folder.backedUpImages >= folder.totalImages -> Icons.Filled.CheckCircle
-        folder.backedUpImages > 0 -> Icons.Filled.Sync
+        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> Icons.Filled.CheckCircle
+        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> Icons.Filled.Sync
         else -> Icons.Filled.Warning
     }
 
     val statusColor = when {
         folder.totalImages == 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-        folder.backedUpImages >= folder.totalImages -> Color(0xFF4CAF50)
-        folder.backedUpImages > 0 -> Color(0xFF2196F3)
+        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> Color(0xFF4CAF50)
+        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> Color(0xFF2196F3)
         else -> Color(0xFFFFA000)
     }
 
@@ -306,7 +308,12 @@ private fun FolderCard(
 
                     // Progress text
                     Text(
-                        text = "${folder.backedUpImages}/${folder.totalImages} 已备份",
+                        text = buildString {
+                            if (notBackedUp > 0) append("$notBackedUp 未备份 ")
+                            if (folder.backedUpImages > 0) append("${folder.backedUpImages} 已备份 ")
+                            if (folder.trashedImages > 0) append("${folder.trashedImages} 回收站 ")
+                            if (folder.purgedImages > 0) append("${folder.purgedImages} 已删除")
+                        }.trim(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -318,8 +325,8 @@ private fun FolderCard(
                 Icon(
                     imageVector = statusIcon,
                     contentDescription = when {
-                        folder.backedUpImages >= folder.totalImages -> "全部已备份"
-                        folder.backedUpImages > 0 -> "备份中"
+                        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> "全部已备份"
+                        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> "部分已处理"
                         else -> "有待备份"
                     },
                     tint = statusColor,

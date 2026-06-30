@@ -7,6 +7,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.photovault.service.BackgroundScanWorker
 import com.photovault.service.ConditionBroadcastReceiver
+import com.photovault.service.MediaStoreObserver
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.OkHttpClient
 import javax.inject.Inject
@@ -42,6 +43,9 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
 
         // Register broadcast receiver for battery and network changes
         conditionReceiver = ConditionBroadcastReceiver.register(this)
+
+        // Register observer for MediaStore changes (new photos/videos)
+        MediaStoreObserver.register(this)
     }
 
     override fun onTerminate() {

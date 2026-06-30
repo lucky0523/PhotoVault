@@ -62,6 +62,7 @@ import java.util.concurrent.TimeUnit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photovault.data.local.dao.PhotoStatusDao
+import dagger.hilt.android.lifecycle.HiltViewModel
 import com.photovault.data.local.entity.PhotoStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -82,6 +83,7 @@ data class TrashImage(
     val isPurged: Boolean get() = status?.status == PhotoStatusValue.PURGED
 }
 
+@HiltViewModel
 class TrashViewModel @Inject constructor(
     private val photoStatusDao: PhotoStatusDao
 ) : ViewModel() {

@@ -77,6 +77,13 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE backup_folders ADD COLUMN trashed_images INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE backup_folders ADD COLUMN purged_images INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -85,7 +92,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photovault_db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
     }
 

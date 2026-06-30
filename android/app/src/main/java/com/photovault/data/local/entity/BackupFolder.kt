@@ -34,6 +34,12 @@ data class BackupFolder(
     @ColumnInfo(name = "backed_up_images")
     val backedUpImages: Int = 0,
 
+    @ColumnInfo(name = "trashed_images")
+    val trashedImages: Int = 0,
+
+    @ColumnInfo(name = "purged_images")
+    val purgedImages: Int = 0,
+
     @ColumnInfo(name = "last_scan_time")
     val lastScanTime: Long = 0L
 )

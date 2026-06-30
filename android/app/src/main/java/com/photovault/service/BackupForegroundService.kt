@@ -231,8 +231,10 @@ class BackupForegroundService : Service() {
                             "PhotoVaultBackup",
                             "Skipped ${fileInfo.fileName}: ${result.reason}"
                         )
-                        // Trashed/purged files are skipped without incrementing backed up count
+                        // Trashed/purged files are skipped but still count as backed up
+                        // since they already exist on the server, just in different status
                         saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
+                        incrementBackedUpCount(fileInfo.folderUri)
                     }
                     is UploadResult.Failed -> {
                         android.util.Log.w(
