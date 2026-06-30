@@ -1,0 +1,66 @@
+# Compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+
+# Virtual environment
+server/.venv/
+
+# Development data (database, photos, thumbnails, logs)
+server/dev_data/
+server/sqlite+aiosqlite:/
+
+# Node.js
+web/node_modules/
+web/dist/
+web/.nuxt/
+web/.output/
+web/package-lock.json
+web/yarn.lock
+
+# Android
+android/build/
+android/.gradle/
+android/app/build/
+android/app/outputs/
+
+# iOS
+ios/build/
+ios/*.xcworkspace/
+ios/*.xcuserdata/
+ios/*.xcassets/*.xcasset/Contents.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Configuration
+server/config.yaml
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Security
+*.pem
+*.key
+*.crt

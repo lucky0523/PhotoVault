@@ -1,0 +1,40 @@
+# PhotoVault Caddy 配置 — 自签名证书模式 (局域网 HTTPS)
+#
+# 适用场景：
+#   - 局域网内部署，无公网域名
+#   - 需要 HTTPS 加密传输（如 Android 要求 HTTPS）
+#   - 开发/测试环境
+#
+# 使用方法：
+#   cp Caddyfile.selfsigned Caddyfile
+#   docker compose up -d
+#
+# 方式一：使用 Caddy 内置的 tls internal（推荐，无需手动生成证书）
+# Caddy 会自动生成一个内部 CA 并签发证书，适合局域网使用。
+# 客户端首次连接时需要信任该 CA 或忽略证书警告。
+#
+# 方式二：使用手动生成的证书（取消下方注释，注释掉方式一的配置）
+# 先运行 ./scripts/generate-self-signed-cert.sh <你的IP>
+# 然后在 docker-compose.yml 中为 caddy 服务添加：
+#   volumes:
+#     - ./certs:/etc/caddy/certs:ro
+
+# ============================================================
+# 方式一：Caddy 内置自签名 (tls internal)
+# ============================================================
+# 将下方 :443 替换为你的局域网 IP 或主机名，例如：
+#   https://192.168.1.100 {
+#   https://nas.local {
+
+:443 {
+    tls internal
+    reverse_proxy photovault:8000
+}
+
+# ============================================================
+# 方式二：手动指定证书文件（取消注释以使用）
+# ============================================================
+# :443 {
+#     tls /etc/caddy/certs/photovault.crt /etc/caddy/certs/photovault.key
+#     reverse_proxy photovault:8000
+# }

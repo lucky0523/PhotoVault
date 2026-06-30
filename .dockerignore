@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# Kiro specs
+.kiro
+
+# Node modules (will be installed fresh in builder stage)
+web/node_modules
+web/dist
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+server/.pytest_cache
+server/.mypy_cache
+server/.ruff_cache
+server/.venv
+server/venv
+server/tests
+server/*.egg-info
+
+# Android/iOS (not needed for server build)
+android
+ios
+
+# Runtime data
+data
+caddy_data
+caddy_config
+config
+certs
+
+# Environment files
+.env
+*.env.local

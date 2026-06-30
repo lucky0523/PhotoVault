@@ -1,0 +1,478 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1B2C3D400000001 /* PhotoVaultApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000011 /* PhotoVaultApp.swift */; };
+		A1B2C3D400000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000012 /* ContentView.swift */; };
+		A1B2C3D400000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000013 /* Assets.xcassets */; };
+		A1B2C3D400000004 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000015 /* APIClient.swift */; };
+		A1B2C3D400000005 /* TokenManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000016 /* TokenManager.swift */; };
+		A1B2C3D400000006 /* PersistenceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000017 /* PersistenceController.swift */; };
+		A1B2C3D400000007 /* BackgroundTaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000018 /* BackgroundTaskManager.swift */; };
+		A1B2C3D400000008 /* CoreDataModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000019 /* CoreDataModels.swift */; };
+		A1B2C3D400000009 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001A /* LoginView.swift */; };
+		A1B2C3D40000000A /* LoginViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001B /* LoginViewModel.swift */; };
+		A1B2C3D40000000B /* AppLaunchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001C /* AppLaunchManager.swift */; };
+		A1B2C3D40000000C /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001D /* ConnectionManager.swift */; };
+		A1B2C3D40000000D /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001E /* KeychainManager.swift */; };
+		A1B2C3D40000000E /* LocalTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001F /* LocalTabView.swift */; };
+		A1B2C3D40000000F /* CloudTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000023 /* CloudTabView.swift */; };
+		A1B2C3D400000100 /* BackupTaskTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000021 /* BackupTaskTabView.swift */; };
+		A1B2C3D400000101 /* SettingsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000022 /* SettingsTabView.swift */; };
+		A1B2C3D400000102 /* PhotoLibraryScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000024 /* PhotoLibraryScanner.swift */; };
+		A1B2C3D400000103 /* BackupConditionChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000025 /* BackupConditionChecker.swift */; };
+		A1B2C3D400000104 /* CloudTabViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000026 /* CloudTabViewModel.swift */; };
+		A1B2C3D400000105 /* ImagePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000027 /* ImagePreviewView.swift */; };
+		A1B2C3D400000106 /* LocalTabViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000028 /* LocalTabViewModel.swift */; };
+		A1B2C3D400000107 /* StoragePolicySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000029 /* StoragePolicySheet.swift */; };
+		A1B2C3D400000108 /* ChunkUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000002A /* ChunkUploader.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A1B2C3D400000010 /* PhotoVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PhotoVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D400000011 /* PhotoVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoVaultApp.swift; sourceTree = "<group>"; };
+		A1B2C3D400000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000013 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1B2C3D400000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1B2C3D400000015 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		A1B2C3D400000016 /* TokenManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenManager.swift; sourceTree = "<group>"; };
+		A1B2C3D400000017 /* PersistenceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceController.swift; sourceTree = "<group>"; };
+		A1B2C3D400000018 /* BackgroundTaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTaskManager.swift; sourceTree = "<group>"; };
+		A1B2C3D400000019 /* CoreDataModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreDataModels.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001A /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001B /* LoginViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginViewModel.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001C /* AppLaunchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLaunchManager.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001D /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001E /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		A1B2C3D40000001F /* LocalTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTabView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000023 /* CloudTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudTabView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000021 /* BackupTaskTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupTaskTabView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000022 /* SettingsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTabView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000024 /* PhotoLibraryScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryScanner.swift; sourceTree = "<group>"; };
+		A1B2C3D400000025 /* BackupConditionChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupConditionChecker.swift; sourceTree = "<group>"; };
+		A1B2C3D400000026 /* CloudTabViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudTabViewModel.swift; sourceTree = "<group>"; };
+		A1B2C3D400000027 /* ImagePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePreviewView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000028 /* LocalTabViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTabViewModel.swift; sourceTree = "<group>"; };
+		A1B2C3D400000029 /* StoragePolicySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoragePolicySheet.swift; sourceTree = "<group>"; };
+		A1B2C3D40000002A /* ChunkUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChunkUploader.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1B2C3D400000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1B2C3D400000030 = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000031 /* PhotoVault */,
+				A1B2C3D400000032 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000031 /* PhotoVault */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000011 /* PhotoVaultApp.swift */,
+				A1B2C3D400000012 /* ContentView.swift */,
+				A1B2C3D400000033 /* Services */,
+				A1B2C3D400000034 /* Models */,
+				A1B2C3D400000035 /* Views */,
+				A1B2C3D400000036 /* ViewModels */,
+				A1B2C3D400000013 /* Assets.xcassets */,
+				A1B2C3D400000014 /* Info.plist */,
+			);
+			path = PhotoVault;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000033 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000015 /* APIClient.swift */,
+				A1B2C3D400000016 /* TokenManager.swift */,
+				A1B2C3D400000017 /* PersistenceController.swift */,
+				A1B2C3D400000018 /* BackgroundTaskManager.swift */,
+				A1B2C3D40000001C /* AppLaunchManager.swift */,
+				A1B2C3D40000001D /* ConnectionManager.swift */,
+				A1B2C3D40000001E /* KeychainManager.swift */,
+				A1B2C3D400000024 /* PhotoLibraryScanner.swift */,
+				A1B2C3D400000025 /* BackupConditionChecker.swift */,
+				A1B2C3D40000002A /* ChunkUploader.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000034 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000019 /* CoreDataModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000035 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40000001A /* LoginView.swift */,
+				A1B2C3D400000037 /* Tabs */,
+				A1B2C3D400000038 /* Components */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000038 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000027 /* ImagePreviewView.swift */,
+				A1B2C3D400000029 /* StoragePolicySheet.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000037 /* Tabs */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40000001F /* LocalTabView.swift */,
+				A1B2C3D400000023 /* CloudTabView.swift */,
+				A1B2C3D400000021 /* BackupTaskTabView.swift */,
+				A1B2C3D400000022 /* SettingsTabView.swift */,
+			);
+			path = Tabs;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000036 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40000001B /* LoginViewModel.swift */,
+				A1B2C3D400000026 /* CloudTabViewModel.swift */,
+				A1B2C3D400000028 /* LocalTabViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A1B2C3D400000032 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D400000010 /* PhotoVault.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1B2C3D400000040 /* PhotoVault */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D400000060 /* Build configuration list for PBXNativeTarget "PhotoVault" */;
+			buildPhases = (
+				A1B2C3D400000050 /* Sources */,
+				A1B2C3D400000020 /* Frameworks */,
+				A1B2C3D400000051 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PhotoVault;
+			productName = PhotoVault;
+			productReference = A1B2C3D400000010 /* PhotoVault.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1B2C3D400000070 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					A1B2C3D400000040 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = A1B2C3D400000080 /* Build configuration list for PBXProject "PhotoVault" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = A1B2C3D400000030;
+			productRefGroup = A1B2C3D400000032 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1B2C3D400000040 /* PhotoVault */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1B2C3D400000051 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D400000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1B2C3D400000050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D400000001 /* PhotoVaultApp.swift in Sources */,
+				A1B2C3D400000002 /* ContentView.swift in Sources */,
+				A1B2C3D400000004 /* APIClient.swift in Sources */,
+				A1B2C3D400000005 /* TokenManager.swift in Sources */,
+				A1B2C3D400000006 /* PersistenceController.swift in Sources */,
+				A1B2C3D400000007 /* BackgroundTaskManager.swift in Sources */,
+				A1B2C3D400000008 /* CoreDataModels.swift in Sources */,
+				A1B2C3D400000009 /* LoginView.swift in Sources */,
+				A1B2C3D40000000A /* LoginViewModel.swift in Sources */,
+				A1B2C3D40000000B /* AppLaunchManager.swift in Sources */,
+				A1B2C3D40000000C /* ConnectionManager.swift in Sources */,
+				A1B2C3D40000000D /* KeychainManager.swift in Sources */,
+				A1B2C3D40000000E /* LocalTabView.swift in Sources */,
+				A1B2C3D40000000F /* CloudTabView.swift in Sources */,
+				A1B2C3D400000100 /* BackupTaskTabView.swift in Sources */,
+				A1B2C3D400000101 /* SettingsTabView.swift in Sources */,
+				A1B2C3D400000102 /* PhotoLibraryScanner.swift in Sources */,
+				A1B2C3D400000103 /* BackupConditionChecker.swift in Sources */,
+				A1B2C3D400000104 /* CloudTabViewModel.swift in Sources */,
+				A1B2C3D400000105 /* ImagePreviewView.swift in Sources */,
+				A1B2C3D400000106 /* LocalTabViewModel.swift in Sources */,
+				A1B2C3D400000107 /* StoragePolicySheet.swift in Sources */,
+				A1B2C3D400000108 /* ChunkUploader.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1B2C3D400000081 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A1B2C3D400000082 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A1B2C3D400000083 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PhotoVault/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PhotoVault;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.photovault.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A1B2C3D400000084 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PhotoVault/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PhotoVault;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.photovault.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1B2C3D400000060 /* Build configuration list for PBXNativeTarget "PhotoVault" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D400000083 /* Debug */,
+				A1B2C3D400000084 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3D400000080 /* Build configuration list for PBXProject "PhotoVault" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D400000081 /* Debug */,
+				A1B2C3D400000082 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1B2C3D400000070 /* Project object */;
+}

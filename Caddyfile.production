@@ -1,0 +1,20 @@
+# PhotoVault Caddy 配置 — 公网域名模式 (Let's Encrypt 自动 HTTPS)
+#
+# 使用前提：
+#   1. 你有一个公网可访问的域名，且 DNS 已解析到本机
+#   2. 端口 80 和 443 对外开放（Let's Encrypt 需要 HTTP-01 验证）
+#   3. 将 "your-domain.com" 替换为你的实际域名
+#
+# 使用方法：
+#   cp Caddyfile.production Caddyfile
+#   docker compose up -d
+#
+# Caddy 会自动：
+#   - 从 Let's Encrypt 获取 TLS 证书
+#   - 自动续期证书（到期前 30 天）
+#   - 将 HTTP 请求重定向到 HTTPS
+#
+
+your-domain.com {
+    reverse_proxy photovault:8000
+}

@@ -1,0 +1,35 @@
+services:
+  photovault:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data/photovault
+      - ./config:/app/config
+    environment:
+      - PHOTOVAULT_STORAGE_ROOT=/data/photovault
+      - PHOTOVAULT_DATABASE_URL=sqlite+aiosqlite:///data/photovault/photovault.db
+    restart: unless-stopped
+    networks:
+      - photovault-net
+
+  caddy:
+    image: caddy:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    depends_on:
+      - photovault
+    restart: unless-stopped
+    networks:
+      - photovault-net
+
+networks:
+  photovault-net:
+    driver: bridge
