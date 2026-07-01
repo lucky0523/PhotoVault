@@ -83,6 +83,7 @@ class ChunkManager:
         target_path: str,
         device_name: str,
         original_path: str,
+        exif_time: Optional[datetime] = None,
     ) -> str:
         """Create an upload session.
 
@@ -96,6 +97,8 @@ class ChunkManager:
             target_path: Resolved storage path on the NAS.
             device_name: Name of the source device.
             original_path: Original file path on the device.
+            exif_time: Optional EXIF capture time, persisted so it can be
+                carried over to the file_records table on completion.
 
         Returns:
             The generated session ID (UUID string).
@@ -110,8 +113,8 @@ class ChunkManager:
             INSERT INTO upload_sessions
                 (id, user_id, file_hash, file_name, file_size, total_chunks,
                  received_chunks, target_path, device_name, original_path,
-                 status, created_at, updated_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 exif_time, status, created_at, updated_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -124,6 +127,7 @@ class ChunkManager:
                 target_path,
                 device_name,
                 original_path,
+                exif_time.isoformat() if exif_time else None,
                 "active",
                 now.isoformat(),
                 now.isoformat(),

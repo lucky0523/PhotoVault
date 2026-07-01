@@ -200,6 +200,7 @@ class UploadService:
             target_path=target_path,
             device_name=file_info.device_name,
             original_path=file_info.file_path,
+            exif_time=file_info.file_metadata.exif_time,
         )
 
         total_chunks = math.ceil(file_info.file_size / ChunkManager.CHUNK_SIZE)
@@ -312,6 +313,7 @@ class UploadService:
                     device_name=session["device_name"],
                     file_size=session["file_size"],
                     file_name=session["file_name"],
+                    exif_time=session["exif_time"],
                 )
 
                 # Update session status
@@ -346,6 +348,7 @@ class UploadService:
             device_name=session["device_name"],
             file_size=session["file_size"],
             file_name=session["file_name"],
+            exif_time=session["exif_time"],
         )
 
         # Update session status

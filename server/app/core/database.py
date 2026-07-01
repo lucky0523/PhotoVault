@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
     target_path TEXT NOT NULL,
     device_name TEXT NOT NULL,
     original_path TEXT NOT NULL,
+    exif_time TIMESTAMP,
     status TEXT DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -114,6 +115,11 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE file_records ADD COLUMN deleted_batch_id TEXT;")
         if "purged_at" not in existing_cols:
             await db.execute("ALTER TABLE file_records ADD COLUMN purged_at TIMESTAMP;")
+
+        cursor = await db.execute("PRAGMA table_info(upload_sessions)")
+        session_cols = {row[1] for row in await cursor.fetchall()}
+        if "exif_time" not in session_cols:
+            await db.execute("ALTER TABLE upload_sessions ADD COLUMN exif_time TIMESTAMP;")
 
         # Create indexes
         for index_sql in _CREATE_INDEXES:

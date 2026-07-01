@@ -4,12 +4,15 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.photovault.data.local.CredentialManager
 import com.photovault.data.local.entity.BackupFolder
+import com.photovault.data.repository.AuthRepository
 import com.photovault.data.repository.BackupFolderRepository
 import com.photovault.service.BackupConditionChecker
 import com.photovault.service.BackgroundScanWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +29,8 @@ import javax.inject.Inject
 class LocalTabViewModel @Inject constructor(
     private val backupFolderRepository: BackupFolderRepository,
     private val backupConditionChecker: BackupConditionChecker,
+    private val authRepository: AuthRepository,
+    private val credentialManager: CredentialManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -124,10 +129,17 @@ class LocalTabViewModel @Inject constructor(
 
     /**
      * Manually triggers an immediate full backup scan ("立即备份").
-     * Checks conditions before starting: battery level (unless charging) and network.
-     * @return null if conditions are met, or an error message if not.
+     * Checks conditions before starting: battery level (unless charging), network, and server connectivity.
+     * @param onResult Callback with error message or null if backup started successfully.
      */
-    fun backupNow(): String? {
+    fun backupNow(onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val error = doBackupNow()
+            onResult(error)
+        }
+    }
+
+    private suspend fun doBackupNow(): String? {
         val networkOk = backupConditionChecker.isNetworkAvailableForBackup()
         if (!networkOk) {
             return "网络不可用，请检查网络连接"
@@ -139,6 +151,15 @@ class LocalTabViewModel @Inject constructor(
 
         if (!isCharging && batteryLevel <= minBattery) {
             return "电量不足 ${minBattery}%，请充电后再试"
+        }
+
+        // Check server connectivity
+        val serverAddress = credentialManager.getServerAddress()
+        if (!serverAddress.isNullOrEmpty()) {
+            val connectionResult = authRepository.testConnection(serverAddress)
+            if (connectionResult.isFailure) {
+                return "服务器未连接: ${connectionResult.exceptionOrNull()?.localizedMessage ?: "连接失败"}"
+            }
         }
 
         BackgroundScanWorker.runNow(context)

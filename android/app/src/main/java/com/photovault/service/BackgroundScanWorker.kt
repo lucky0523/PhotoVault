@@ -241,67 +241,71 @@ class BackgroundScanWorker @AssistedInject constructor(
         android.util.Log.i("PhotoVaultScan", "Scanning ${folders.size} folder(s) (forceFullScan=$forceFullScan)")
         val currentTime = System.currentTimeMillis()
         val newFiles = mutableListOf<FileInfo>()
-        var totalSkippedTrashed = 0
-        var totalSkippedPurged = 0
+
+        // Get ALL photo statuses once (for efficient lookup)
+        val allStatuses = photoStatusDao.getAll()
+        val statusMap = allStatuses.associateBy { it.fileUri }
 
         for (folder in folders) {
-            val effectiveScanTime = if (forceFullScan) 0L else folder.lastScanTime
-            val folderNewFiles = scanFolder(folder.folderUri, effectiveScanTime)
-            android.util.Log.i(
-                "PhotoVaultScan",
-                "Folder '${folder.folderName}' (lastScan=$effectiveScanTime): found ${folderNewFiles.size} new file(s)"
-            )
+            // Count ALL images in folder (for accurate total)
+            val totalImages = countImagesInFolder(folder.folderUri)
 
+            // Get all files in folder (no time filter for counting)
+            val allPhotosInFolder = scanFolder(folder.folderUri, 0L)
+
+            // Classify each file by its status from photoStatus table
+            var folderBackedUp = 0
             var folderTrashed = 0
             var folderPurged = 0
-            var folderActive = 0
 
-            for (fileInfo in folderNewFiles) {
-                val status = photoStatusDao.getByFileUri(fileInfo.uri)
-                if (status == null) {
-                    newFiles.add(fileInfo)
-                } else when (status.status) {
-                    PhotoStatusValue.TRASHED -> {
-                        folderTrashed++
-                        totalSkippedTrashed++
-                        android.util.Log.d(
-                            "PhotoVaultScan",
-                            "  skipping trashed file: ${fileInfo.fileName}"
-                        )
+            for (fileInfo in allPhotosInFolder) {
+                val status = statusMap[fileInfo.uri]
+                when {
+                    status == null -> {
+                        // No record = not yet processed (new file)
                     }
-                    PhotoStatusValue.PURGED -> {
+                    status.status == PhotoStatusValue.TRASHED -> {
+                        folderTrashed++
+                    }
+                    status.status == PhotoStatusValue.PURGED -> {
                         folderPurged++
-                        totalSkippedPurged++
-                        android.util.Log.d(
-                            "PhotoVaultScan",
-                            "  skipping purged file: ${fileInfo.fileName}"
-                        )
                     }
                     else -> {
-                        folderActive++
-                        newFiles.add(fileInfo)
+                        // ACTIVE or other status = backed up
+                        folderBackedUp++
                     }
                 }
             }
 
-            val totalImages = countImagesInFolder(folder.folderUri)
+            android.util.Log.i(
+                "PhotoVaultScan",
+                "Folder '${folder.folderName}': total=$totalImages, backedUp=$folderBackedUp, trashed=$folderTrashed, purged=$folderPurged"
+            )
+
+            // Scan for newly modified files (for incremental backup)
+            val effectiveScanTime = if (forceFullScan) 0L else folder.lastScanTime
+            val folderNewFiles = scanFolder(folder.folderUri, effectiveScanTime)
+            for (fileInfo in folderNewFiles) {
+                val status = statusMap[fileInfo.uri]
+                if (status == null) {
+                    // No record = truly new file, add to backup queue
+                    newFiles.add(fileInfo)
+                }
+                // Files with existing status (active/trashed/purged) are NOT re-uploaded
+            }
+
             backupFolderDao.update(
                 folder.copy(
                     lastScanTime = currentTime,
                     totalImages = totalImages,
-                    backedUpImages = folderActive,
+                    backedUpImages = folderBackedUp,
                     trashedImages = folderTrashed,
                     purgedImages = folderPurged
                 )
             )
         }
 
-        if (totalSkippedTrashed > 0 || totalSkippedPurged > 0) {
-            android.util.Log.i(
-                "PhotoVaultScan",
-                "Skipped $totalSkippedTrashed trashed + $totalSkippedPurged purged file(s)"
-            )
-        }
+        android.util.Log.i("PhotoVaultScan", "Total new files to backup: ${newFiles.size}")
 
         // Enqueue new files for backup if conditions are met
         if (newFiles.isNotEmpty()) {

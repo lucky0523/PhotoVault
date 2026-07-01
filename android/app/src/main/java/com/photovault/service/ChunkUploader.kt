@@ -291,7 +291,7 @@ class ChunkUploader @Inject constructor(
             if (elapsed > SESSION_EXPIRE_MS) {
                 // Session expired — delete record and start fresh
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                return initNewSession(fileInfo, fileHash, totalChunks, storagePolicy)
+                return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
 
             // Verify source file not modified (size and modification time)
@@ -301,7 +301,7 @@ class ChunkUploader @Inject constructor(
             ) {
                 // File modified — delete record and start fresh
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                return initNewSession(fileInfo, fileHash, totalChunks, storagePolicy)
+                return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
 
             // Query server for received chunks
@@ -320,29 +320,55 @@ class ChunkUploader @Inject constructor(
                 } else {
                     // Server doesn't recognize session — start fresh
                     uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                    initNewSession(fileInfo, fileHash, totalChunks, storagePolicy)
+                    initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
                 }
             } catch (e: Exception) {
                 // Network error querying resume — start fresh
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                initNewSession(fileInfo, fileHash, totalChunks, storagePolicy)
+                initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
         }
 
         // No existing record — initialize new session
-        return initNewSession(fileInfo, fileHash, totalChunks, storagePolicy)
+        return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+    }
+
+    /**
+     * Extracts the EXIF capture time (DateTimeOriginal) from an image, if present.
+     * Returns an ISO-8601 formatted string, or null if unavailable/unreadable.
+     */
+    private fun extractExifTime(context: Context, fileUri: Uri): String? {
+        return try {
+            context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+                val exif = androidx.exifinterface.media.ExifInterface(inputStream)
+                val dateStr = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL)
+                    ?: exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME)
+                    ?: return null
+
+                // EXIF datetime format: "yyyy:MM:dd HH:mm:ss"
+                val exifFormat = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+                val date = exifFormat.parse(dateStr) ?: return null
+
+                val isoFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                isoFormat.format(date)
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**
      * Initializes a new upload session on the server and persists the record locally.
      */
     private suspend fun initNewSession(
+        context: Context,
         fileInfo: FileInfo,
         fileHash: String,
         totalChunks: Int,
         storagePolicy: StoragePolicyConfig
     ): SessionInfo? {
         return try {
+            val exifTime = extractExifTime(context, Uri.parse(fileInfo.uri))
             val response = backupApi.initUpload(
                 InitUploadRequest(
                     fileHash = fileHash,
@@ -352,7 +378,7 @@ class ChunkUploader @Inject constructor(
                     deviceName = android.os.Build.MODEL,
                     sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
                     storagePolicy = storagePolicy,
-                    exifTime = null, // TODO: Extract EXIF time if available
+                    exifTime = exifTime,
                     fileModifiedTime = fileInfo.createdTime.toString()
                 )
             )

@@ -50,6 +50,21 @@
           </div>
 
           <div class="toolbar-right">
+            <!-- Batch actions: shown whenever there's a selection -->
+            <template v-if="selectedIds.size > 0">
+              <span class="selection-count">已选择 {{ selectedIds.size }} 项</span>
+              <el-button size="small" @click="selectAllFiles">全选</el-button>
+              <el-button size="small" @click="clearSelection">取消选择</el-button>
+              <el-button type="primary" size="small" @click="handleBatchDownload">
+                <el-icon><Download /></el-icon>
+                下载
+              </el-button>
+              <el-button type="danger" size="small" @click="handleBatchDelete">
+                <el-icon><Delete /></el-icon>
+                移入回收站
+              </el-button>
+            </template>
+
             <!-- Sort dropdown -->
             <el-select v-model="sortBy" size="small" style="width: 120px" @change="loadContent">
               <el-option label="名称" value="name" />
@@ -159,9 +174,17 @@
                 v-for="(file, index) in files"
                 :key="file.id"
                 class="file-card"
-                @click="openPreview(index)"
+                :class="{ 'is-selected': selectedIds.has(file.id) }"
+                @click="handleCardClick(file, index)"
                 @contextmenu="showContextMenu($event, 'file', file)"
               >
+                <div
+                  class="file-checkbox"
+                  :class="{ 'is-checked': selectedIds.has(file.id) }"
+                  @click.stop="toggleSelect(file.id)"
+                >
+                  <el-icon v-if="selectedIds.has(file.id)"><Check /></el-icon>
+                </div>
                 <div class="file-thumbnail">
                   <img
                     :src="getThumbnailUrl(file.id, 'small')"
@@ -180,12 +203,16 @@
             <!-- List view -->
             <div v-show="viewMode === 'list'" class="list-view-container">
               <el-table
+                ref="fileTableRef"
                 :data="files"
                 height="500"
                 style="width: 100%"
-                @row-click="handleRowClick"
+                row-key="id"
+                @row-click="(row: FileInfo, column: any) => handleRowClick(row, column)"
                 @row-contextmenu="(row: FileInfo, event: MouseEvent) => showContextMenu(event, 'file', row)"
+                @selection-change="handleTableSelectionChange"
               >
+              <el-table-column type="selection" width="50" :selectable="() => true" />
               <el-table-column width="60">
                 <template #default="{ row }">
                   <img
@@ -202,9 +229,14 @@
                   {{ formatFileSize(row.file_size) }}
                 </template>
               </el-table-column>
-              <el-table-column label="时间" width="160">
+              <el-table-column label="拍摄时间" width="160">
                 <template #default="{ row }">
-                  {{ formatDate(row.exif_time || row.created_at) }}
+                  {{ row.exif_time ? formatDate(row.exif_time) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="上传时间" width="160">
+                <template #default="{ row }">
+                  {{ formatDate(row.created_at) }}
                 </template>
               </el-table-column>
               <el-table-column label="类型" width="80">
@@ -212,24 +244,26 @@
                   {{ getFileType(row.file_name) }}
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="120" fixed="right">
+              <el-table-column label="操作" width="150" fixed="right">
                 <template #default="{ row }">
-                  <el-button
-                    type="primary"
-                    link
-                    size="small"
-                    @click.stop="handleDownloadClick(row)"
-                  >
-                    下载
-                  </el-button>
-                  <el-button
-                    type="danger"
-                    link
-                    size="small"
-                    @click.stop="handleDeleteFile(row)"
-                  >
-                    移入回收站
-                  </el-button>
+                  <div class="row-actions">
+                    <el-button
+                      type="primary"
+                      link
+                      size="small"
+                      @click.stop="handleDownloadClick(row)"
+                    >
+                      下载
+                    </el-button>
+                    <el-button
+                      type="danger"
+                      link
+                      size="small"
+                      @click.stop="handleDeleteFile(row)"
+                    >
+                      移入回收站
+                    </el-button>
+                  </div>
                 </template>
               </el-table-column>
             </el-table>
@@ -288,7 +322,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import {
   FolderOpened,
   Folder,
@@ -299,8 +333,9 @@ import {
   Loading,
   Delete,
   Download,
+  Check,
 } from '@element-plus/icons-vue'
-import type { ElTree } from 'element-plus'
+import type { ElTree, ElTable } from 'element-plus'
 import {
   browseFiles,
   listFiles,
@@ -351,6 +386,84 @@ const contentLoading = ref(false)
 // Preview state
 const previewVisible = ref(false)
 const previewIndex = ref(0)
+
+// Multi-select state — checkboxes are always visible; selectedIds drives the batch toolbar
+const fileTableRef = ref<InstanceType<typeof ElTable>>()
+const selectedIds = ref<Set<number>>(new Set())
+
+function clearSelection() {
+  selectedIds.value = new Set()
+  fileTableRef.value?.clearSelection()
+}
+
+function selectAllFiles() {
+  selectedIds.value = new Set(files.value.map((f) => f.id))
+  if (viewMode.value === 'list') {
+    nextTick(() => {
+      files.value.forEach((f) => fileTableRef.value?.toggleRowSelection(f, true))
+    })
+  }
+}
+
+function toggleSelect(fileId: number) {
+  if (selectedIds.value.has(fileId)) {
+    selectedIds.value.delete(fileId)
+  } else {
+    selectedIds.value.add(fileId)
+  }
+  // Keep the value reassigned so Vue's reactivity picks up Set mutations
+  selectedIds.value = new Set(selectedIds.value)
+}
+
+// Grid card click: open preview (checkbox has its own click handler and stops propagation)
+function handleCardClick(_file: FileInfo, index: number) {
+  openPreview(index)
+}
+
+// Table row selection changed via checkbox column (list view)
+function handleTableSelectionChange(rows: FileInfo[]) {
+  selectedIds.value = new Set(rows.map((r) => r.id))
+}
+
+async function handleBatchDownload() {
+  const targets = files.value.filter((f) => selectedIds.value.has(f.id))
+  if (targets.length === 0) return
+  for (const file of targets) {
+    downloadFile(file.id, file.file_name)
+    // Small delay so the browser doesn't block multiple simultaneous downloads
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  }
+  ElMessage.success(`已开始下载 ${targets.length} 个文件`)
+}
+
+async function handleBatchDelete() {
+  const targets = files.value.filter((f) => selectedIds.value.has(f.id))
+  if (targets.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要将选中的 ${targets.length} 个文件移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+      '移入回收站',
+      {
+        confirmButtonText: '移入回收站',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+    const results = await Promise.allSettled(targets.map((f) => deleteFile(f.id)))
+    const failed = results.filter((r) => r.status === 'rejected').length
+    if (failed > 0) {
+      ElMessage.warning(`已移入回收站 ${targets.length - failed} 个，${failed} 个失败`)
+    } else {
+      ElMessage.success(`已将 ${targets.length} 个文件移入回收站`)
+    }
+    clearSelection()
+    loadContent()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error('操作失败')
+    }
+  }
+}
 
 // Context menu state
 interface ContextMenuState {
@@ -427,6 +540,7 @@ function handleNodeClick(data: TreeNode) {
 function navigateTo(path: string) {
   currentPath.value = path
   currentPage.value = 1
+  clearSelection()
   loadContent()
 }
 
@@ -455,6 +569,7 @@ async function loadContent() {
 
 function handlePageChange(page: number) {
   currentPage.value = page
+  clearSelection()
   loadContent()
 }
 
@@ -464,7 +579,9 @@ function openPreview(index: number) {
   previewVisible.value = true
 }
 
-function handleRowClick(row: FileInfo) {
+function handleRowClick(row: FileInfo, column: { type?: string }) {
+  // Skip opening preview when the click originated from the checkbox column
+  if (column?.type === 'selection') return
   const index = files.value.findIndex((f) => f.id === row.id)
   if (index >= 0) {
     openPreview(index)
@@ -663,12 +780,16 @@ onMounted(() => {
   padding: 8px 0;
 }
 
+.directory-tree :deep(.el-tree-node__content) {
+  padding-right: 12px;
+}
+
 .tree-node-label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  flex: 1;
+  max-width: 100%;
   overflow: hidden;
 }
 
@@ -678,10 +799,27 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.row-actions .el-button {
+  margin: 0;
+}
+
 .tree-node-count {
   color: #909399;
   font-size: 12px;
-  margin-left: auto;
+  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  background: #f2f3f5;
+  border-radius: 9px;
   flex-shrink: 0;
 }
 
@@ -822,6 +960,52 @@ onMounted(() => {
 
 .file-card:hover .file-overlay {
   opacity: 1;
+}
+
+.file-card.is-selected {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px var(--el-color-primary);
+}
+
+.file-checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+
+.file-card:hover .file-checkbox,
+.file-checkbox.is-checked {
+  opacity: 1;
+}
+
+.file-checkbox:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.file-checkbox.is-checked {
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+}
+
+.selection-count {
+  font-size: 13px;
+  color: #606266;
+  margin-right: 4px;
+  white-space: nowrap;
 }
 
 .file-thumbnail {

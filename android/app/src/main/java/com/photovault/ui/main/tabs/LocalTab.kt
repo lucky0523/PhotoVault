@@ -22,30 +22,34 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,16 +57,20 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.ui.main.components.StoragePolicySheet
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 本地 Tab - 显示手机本地的图片文件夹列表及其备份状态。
  *
  * Features:
  * - LazyColumn of folder cards with progress info
- * - FAB to add new backup folder via system folder picker
+ * - FABs: refresh backup status + add new backup folder
+ * - Pull-to-refresh to refresh backup status
  * - Long-press context menu (configure policy / remove)
  * - Storage policy BottomSheet for configuration
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalTab(
     onNavigateToFolderDetail: (folderId: Long, folderName: String, folderUri: String, backedUpImages: Int) -> Unit = { _, _, _, _ -> },
@@ -73,43 +81,71 @@ fun LocalTab(
     val selectedFolder by viewModel.selectedFolder.collectAsState()
     val pendingFolderUri by viewModel.pendingFolderUri.collectAsState()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Pull-to-refresh state
+    val pullToRefreshState = rememberPullToRefreshState()
+    var isRefreshing by remember { mutableStateOf(false) }
 
     // System folder picker launcher
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         uri?.let {
-            // Take persistable permission for the URI
-            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
-
-            // Get folder name from URI
             val documentFile = DocumentFile.fromTreeUri(context, it)
             val folderName = documentFile?.name ?: "未知文件夹"
-
             viewModel.onFolderPicked(it, folderName)
+        }
+    }
+
+    fun onRefresh() {
+        if (isRefreshing) return
+        isRefreshing = true
+        viewModel.backupNow { errorMsg ->
+            if (errorMsg != null) {
+                android.widget.Toast.makeText(context, errorMsg, android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                android.widget.Toast.makeText(context, "已开始刷新备份状态", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            // Keep indicator visible for a moment to show the refresh happened
+            scope.launch {
+                delay(800)
+                isRefreshing = false
+            }
         }
     }
 
     Scaffold(
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { folderPickerLauncher.launch(null) }
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = "添加备份文件夹"
-                )
+            Column {
+                // Refresh FAB
+                FloatingActionButton(
+                    onClick = { onRefresh() },
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "刷新备份状态"
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                // Add folder FAB
+                FloatingActionButton(
+                    onClick = { folderPickerLauncher.launch(null) }
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "添加备份文件夹"
+                    )
+                }
             }
         }
     ) { paddingValues ->
         if (folders.isEmpty()) {
-            // Empty state
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
+                modifier = Modifier.fillMaxSize().padding(paddingValues),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -133,45 +169,14 @@ fun LocalTab(
                 }
             }
         } else {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
+                    .nestedScroll(pullToRefreshState.nestedScrollConnection)
             ) {
-                // Prominent "立即备份" button — only shown when at least one folder exists
-                Button(
-                    onClick = {
-                        viewModel.backupNow()?.let { errorMsg ->
-                            android.widget.Toast.makeText(
-                                context,
-                                errorMsg,
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        } ?: run {
-                            android.widget.Toast.makeText(
-                                context,
-                                "已开始备份",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, top = 16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.CloudUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("立即备份")
-                }
-
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .weight(1f),
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -191,6 +196,13 @@ fun LocalTab(
                         )
                     }
                 }
+
+                PullToRefreshContainer(
+                    state = pullToRefreshState,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }
@@ -203,10 +215,8 @@ fun LocalTab(
             onDismiss = { viewModel.dismissPolicySheet() },
             onSave = { useCustomPath, customPath, useYearMonthLayer ->
                 if (pendingFolderUri != null) {
-                    // New folder
                     viewModel.saveNewFolder(useCustomPath, customPath, useYearMonthLayer)
                 } else {
-                    // Existing folder policy update
                     selectedFolder?.let { folder ->
                         viewModel.updateFolderPolicy(
                             folderId = folder.id,
@@ -221,10 +231,6 @@ fun LocalTab(
     }
 }
 
-/**
- * Card displaying a backup folder with its name, progress, and status.
- * Supports long-press for context menu.
- */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderCard(
@@ -273,7 +279,6 @@ private fun FolderCard(
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Folder icon
                 Icon(
                     imageVector = Icons.Filled.Folder,
                     contentDescription = null,
@@ -283,7 +288,6 @@ private fun FolderCard(
 
                 Spacer(modifier = Modifier.width(16.dp))
 
-                // Folder info
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = folder.folderName,
@@ -294,7 +298,6 @@ private fun FolderCard(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Progress bar
                     LinearProgressIndicator(
                         progress = progress,
                         modifier = Modifier
@@ -306,7 +309,6 @@ private fun FolderCard(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Progress text
                     Text(
                         text = buildString {
                             if (notBackedUp > 0) append("$notBackedUp 未备份 ")
@@ -321,7 +323,6 @@ private fun FolderCard(
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                // Status icon
                 Icon(
                     imageVector = statusIcon,
                     contentDescription = when {
@@ -334,7 +335,6 @@ private fun FolderCard(
                 )
             }
 
-            // Long-press dropdown menu
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false }

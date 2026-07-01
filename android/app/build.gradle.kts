@@ -120,6 +120,9 @@ dependencies {
     // Core KTX
     implementation("androidx.core:core-ktx:1.12.0")
 
+    // EXIF metadata reading (capture time extraction)
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // Startup - for disabling default WorkManager initializer
     implementation("androidx.startup:startup-runtime:1.1.1")
 
