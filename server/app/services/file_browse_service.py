@@ -110,6 +110,18 @@ class StatusChangeInfo:
     expires_at: Optional[str] = None
 
 
+@dataclass
+class DeviceStats:
+    """Per-device file counts broken down by status."""
+
+    name: str
+    path: str
+    backed_up_count: int = 0
+    trashed_count: int = 0
+    purged_count: int = 0
+    latest_file_time: Optional[str] = None
+
+
 class FileBrowseService:
     """Service for browsing user files, generating thumbnails, and streaming downloads.
 
@@ -456,6 +468,64 @@ class FileBrowseService:
             page=page,
             page_size=page_size,
         )
+
+    async def get_device_stats(self, user_id: int) -> list[DeviceStats]:
+        """List devices (top-level directories) with file counts broken down by status.
+
+        Status buckets, derived from file_records columns:
+        - backed_up: deleted_at IS NULL AND purged_at IS NULL
+        - trashed:   deleted_at IS NOT NULL AND purged_at IS NULL (in recycle bin)
+        - purged:    purged_at IS NOT NULL (permanently deleted, row retained for history)
+
+        Args:
+            user_id: The authenticated user's ID.
+
+        Returns:
+            List of DeviceStats, one per top-level device directory, sorted by name.
+        """
+        username = await self._get_username(user_id)
+        if username is None:
+            return []
+
+        # Group by the device_name column (stable, unaffected by trash relocation)
+        # rather than parsing file_path, which changes to a ".trash/..." path once
+        # a file is moved to the recycle bin.
+        cursor = await self._db.execute(
+            """SELECT device_name, exif_time, created_at, deleted_at, purged_at
+               FROM file_records
+               WHERE user_id = ?""",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+
+        devices: dict[str, DeviceStats] = {}
+
+        for row in rows:
+            device_name: str = row["device_name"]
+            if not device_name:
+                continue
+
+            device = devices.get(device_name)
+            if device is None:
+                device = DeviceStats(name=device_name, path=device_name)
+                devices[device_name] = device
+
+            deleted_at = row["deleted_at"]
+            purged_at = row["purged_at"]
+
+            if purged_at is not None:
+                device.purged_count += 1
+            elif deleted_at is not None:
+                device.trashed_count += 1
+            else:
+                device.backed_up_count += 1
+                file_time = row["exif_time"] or row["created_at"]
+                if file_time and (
+                    device.latest_file_time is None or file_time > device.latest_file_time
+                ):
+                    device.latest_file_time = file_time
+
+        return sorted(devices.values(), key=lambda d: d.name)
 
     async def get_file_info(self, user_id: int, file_id: int) -> Optional[FileDetail]:
         """Get detailed info about a specific file. Ensures user isolation.

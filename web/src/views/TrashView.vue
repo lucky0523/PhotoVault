@@ -105,6 +105,9 @@ import {
   formatRemainingTime,
 } from '@/api/files'
 import type { TrashItem } from '@/api/files'
+import { useTrashStore } from '@/stores/trash'
+
+const trashStore = useTrashStore()
 
 const items = ref<TrashItem[]>([])
 const total = ref(0)
@@ -122,6 +125,8 @@ async function loadTrash() {
     const res = await listTrash(currentPage.value, pageSize.value)
     items.value = res.items
     total.value = res.total
+    // keep the sidebar badge in sync
+    trashStore.count = res.total
   } catch (e) {
     ElMessage.error('加载回收站失败')
   } finally {

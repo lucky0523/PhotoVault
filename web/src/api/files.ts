@@ -8,6 +8,16 @@ export interface DirectoryInfo {
   latest_file_time?: string
 }
 
+export interface DeviceStats {
+  name: string
+  path: string
+  backed_up_count: number
+  trashed_count: number
+  purged_count: number
+  file_count: number
+  latest_file_time?: string
+}
+
 export interface FileInfo {
   id: number
   file_name: string
@@ -103,6 +113,14 @@ export async function browseFiles(
   const response = await http.get('/files/browse', {
     params: { path, page, page_size: pageSize },
   })
+  return response.data
+}
+
+/**
+ * Get per-device file counts broken down by status (backed up / trashed / purged)
+ */
+export async function getDeviceStats(): Promise<DeviceStats[]> {
+  const response = await http.get('/files/devices')
   return response.data
 }
 

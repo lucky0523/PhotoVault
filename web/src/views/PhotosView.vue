@@ -349,6 +349,9 @@ import {
 import type { DirectoryInfo, FileInfo } from '@/api/files'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImagePreview from '@/components/ImagePreview.vue'
+import { useTrashStore } from '@/stores/trash'
+
+const trashStore = useTrashStore()
 
 // Tree
 interface TreeNode {
@@ -458,6 +461,7 @@ async function handleBatchDelete() {
     }
     clearSelection()
     loadContent()
+    trashStore.refresh()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('操作失败')
@@ -609,6 +613,7 @@ async function handleDeleteFile(file: FileInfo) {
     ElMessage.success(result.message)
     // Refresh content
     loadContent()
+    trashStore.refresh()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('删除失败')
@@ -631,6 +636,7 @@ async function handleDeleteDirectory(dir: DirectoryInfo) {
     const result = await deleteDirectory(dir.path)
     ElMessage.success(result.message)
     loadContent()
+    trashStore.refresh()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('删除失败')
@@ -680,6 +686,7 @@ async function handleContextDelete() {
       const result = await deleteFile(file.id)
       ElMessage.success(result.message)
       loadContent()
+      trashStore.refresh()
     } catch (error: any) {
       if (error !== 'cancel') {
         ElMessage.error('操作失败')
@@ -701,6 +708,7 @@ async function handleContextDelete() {
       const result = await deleteDirectory(dir.path)
       ElMessage.success(result.message)
       loadContent()
+      trashStore.refresh()
     } catch (error: any) {
       if (error !== 'cancel') {
         ElMessage.error('操作失败')

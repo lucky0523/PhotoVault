@@ -58,6 +58,18 @@ class FileInfoResponse(BaseModel):
     thumbnail_url: str = ""
 
 
+class DeviceStatsResponse(BaseModel):
+    """Per-device file counts broken down by status."""
+
+    name: str
+    path: str
+    backed_up_count: int = 0
+    trashed_count: int = 0
+    purged_count: int = 0
+    file_count: int = 0  # backed_up_count, kept for backward compatibility
+    latest_file_time: Optional[str] = None
+
+
 class BrowseResponse(BaseModel):
     """Response for directory browsing."""
 
@@ -216,6 +228,37 @@ async def browse_directory(
         page=listing.page,
         page_size=listing.page_size,
     )
+
+
+@router.get("/files/devices", response_model=List[DeviceStatsResponse])
+async def get_device_stats(
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> List[DeviceStatsResponse]:
+    """List devices with file counts broken down by status.
+
+    Status buckets:
+    - backed_up_count: files currently backed up (not deleted)
+    - trashed_count: files in the recycle bin (soft-deleted, not yet purged)
+    - purged_count: files permanently deleted (history retained)
+    """
+    settings = get_settings()
+    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+
+    stats = await service.get_device_stats(user_id=current_user.id)
+
+    return [
+        DeviceStatsResponse(
+            name=d.name,
+            path=d.path,
+            backed_up_count=d.backed_up_count,
+            trashed_count=d.trashed_count,
+            purged_count=d.purged_count,
+            file_count=d.backed_up_count,
+            latest_file_time=d.latest_file_time,
+        )
+        for d in stats
+    ]
 
 
 @router.get("/files/list", response_model=BrowseResponse)

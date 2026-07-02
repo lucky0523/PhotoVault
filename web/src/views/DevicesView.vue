@@ -28,9 +28,22 @@
               <span class="device-name">{{ device.name }}</span>
             </div>
             <div class="device-info">
-              <div class="info-item">
-                <span class="info-label">备份文件数</span>
-                <span class="info-value">{{ device.file_count }}</span>
+              <div class="status-row">
+                <div class="status-item">
+                  <span class="status-dot status-backed-up"></span>
+                  <span class="status-label">已备份</span>
+                  <span class="status-value">{{ device.backed_up_count }}</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-dot status-trashed"></span>
+                  <span class="status-label">回收站</span>
+                  <span class="status-value">{{ device.trashed_count }}</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-dot status-purged"></span>
+                  <span class="status-label">已删除</span>
+                  <span class="status-value">{{ device.purged_count }}</span>
+                </div>
               </div>
               <div class="info-item">
                 <span class="info-label">最后备份</span>
@@ -48,18 +61,17 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Monitor } from '@element-plus/icons-vue'
-import { browseFiles, formatDate } from '@/api/files'
-import type { DirectoryInfo } from '@/api/files'
+import { getDeviceStats, formatDate } from '@/api/files'
+import type { DeviceStats } from '@/api/files'
 
 const router = useRouter()
 const loading = ref(false)
-const devices = ref<DirectoryInfo[]>([])
+const devices = ref<DeviceStats[]>([])
 
 async function loadDevices() {
   loading.value = true
   try {
-    const result = await browseFiles('')
-    devices.value = result.directories
+    devices.value = await getDeviceStats()
   } catch (error) {
     console.error('Failed to load devices:', error)
   } finally {
@@ -67,7 +79,7 @@ async function loadDevices() {
   }
 }
 
-function navigateToDevice(device: DirectoryInfo) {
+function navigateToDevice(device: DeviceStats) {
   router.push({ name: 'Photos', query: { path: device.path } })
 }
 
@@ -120,6 +132,53 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  justify-content: center;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-backed-up {
+  background: #67c23a;
+}
+
+.status-trashed {
+  background: #e6a23c;
+}
+
+.status-purged {
+  background: #909399;
+}
+
+.status-label {
+  font-size: 12px;
+  color: #909399;
+}
+
+.status-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
 }
 
 .info-item {

@@ -22,7 +22,12 @@
         </el-menu-item>
         <el-menu-item index="/trash">
           <el-icon><DeleteFilled /></el-icon>
-          <span>回收站</span>
+          <span class="trash-menu-label">
+            <span>回收站</span>
+            <span v-if="trashStore.count > 0" class="trash-count">
+              {{ trashStore.count > 999 ? '999+' : trashStore.count }}
+            </span>
+          </span>
         </el-menu-item>
         <el-menu-item v-if="authStore.isAdmin" index="/admin/users">
           <el-icon><UserFilled /></el-icon>
@@ -47,14 +52,29 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useTrashStore } from '@/stores/trash'
 
 const route = useRoute()
 const authStore = useAuthStore()
+const trashStore = useTrashStore()
 
 const activeMenu = computed(() => route.path)
+
+// Refresh the recycle-bin count on mount and whenever the route changes,
+// so the badge stays in sync after move-to-trash / restore / purge actions.
+onMounted(() => {
+  trashStore.refresh()
+})
+
+watch(
+  () => route.path,
+  () => {
+    trashStore.refresh()
+  }
+)
 
 function handleLogout() {
   authStore.logout()
@@ -104,5 +124,23 @@ function handleLogout() {
 
 .el-main {
   background: #f5f7fa;
+}
+
+.trash-menu-label {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+}
+
+.trash-count {
+  margin-left: auto;
+  padding: 1px 8px;
+  background: #f0f2f5;
+  border-radius: 10px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 18px;
+  text-align: center;
 }
 </style>
