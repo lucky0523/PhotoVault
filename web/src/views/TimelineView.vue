@@ -50,9 +50,67 @@
           <div class="toolbar-left">
             <el-icon><Calendar /></el-icon>
             <span class="toolbar-title">时间线</span>
-            <span v-if="totalPhotos > 0" class="photo-total">共 {{ totalPhotos }} 张照片</span>
+            <span v-if="hasActiveFilters" class="filter-badge">
+              <el-icon><Filter /></el-icon>
+              已筛选 {{ activeFilterCount }} 项 · {{ totalPhotos }}/{{ allFiles.length }} 张
+            </span>
+            <span v-else-if="totalPhotos > 0" class="photo-total">共 {{ totalPhotos }} 张照片</span>
           </div>
           <div class="toolbar-right">
+            <el-select
+              v-model="selectedDevices"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="设备"
+              :class="['filter-select', { 'filter-active': selectedDevices.length > 0 }]"
+              size="default"
+              @change="handleFilterChange"
+            >
+              <el-option
+                v-for="d in deviceOptions"
+                :key="d"
+                :label="d"
+                :value="d"
+              />
+            </el-select>
+            <el-select
+              v-model="selectedFormats"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="文件格式"
+              :class="['filter-select', { 'filter-active': selectedFormats.length > 0 }]"
+              size="default"
+              @change="handleFilterChange"
+            >
+              <el-option
+                v-for="fmt in formatOptions"
+                :key="fmt"
+                :label="fmt"
+                :value="fmt"
+              />
+            </el-select>
+            <el-select
+              v-model="selectedFocals"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="焦段"
+              :class="['filter-select', { 'filter-active': selectedFocals.length > 0 }]"
+              size="default"
+              @change="handleFilterChange"
+            >
+              <el-option
+                v-for="b in focalOptions"
+                :key="b.key"
+                :label="b.label"
+                :value="b.key"
+              />
+            </el-select>
             <el-date-picker
               v-model="dateRange"
               type="daterange"
@@ -63,8 +121,19 @@
               value-format="YYYY-MM-DD"
               :clearable="true"
               size="default"
-              @change="handleDateRangeChange"
+              :class="{ 'filter-active': !!(dateRange && dateRange[0]) }"
+              @change="handleFilterChange"
             />
+            <el-button
+              v-if="hasActiveFilters"
+              type="primary"
+              :icon="RefreshLeft"
+              text
+              class="clear-filter-btn"
+              @click="resetFilters"
+            >
+              清除筛选
+            </el-button>
           </div>
         </div>
 
@@ -98,6 +167,7 @@
                 :key="file.id"
                 class="photo-card"
                 @click="openPreview(group, fileIndex)"
+                @contextmenu="showContextMenu($event, file)"
               >
                 <div class="photo-thumbnail">
                   <img
@@ -118,6 +188,26 @@
       </el-main>
     </el-container>
 
+    <!-- Right-click context menu -->
+    <teleport to="body">
+      <div
+        v-if="contextMenu.visible"
+        class="context-menu"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click.stop
+      >
+        <div class="context-menu-item" @click="handleContextDownload">
+          <el-icon><Download /></el-icon>
+          下载
+        </div>
+        <div class="context-menu-item danger" @click="handleContextDelete">
+          <el-icon><Delete /></el-icon>
+          移入回收站
+        </div>
+      </div>
+      <div v-if="contextMenu.visible" class="context-menu-overlay" @click="closeContextMenu" />
+    </teleport>
+
     <!-- Image Preview Lightbox -->
     <ImagePreview
       v-model:visible="previewVisible"
@@ -129,10 +219,16 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { Timer, ArrowRight, Calendar, Loading } from '@element-plus/icons-vue'
-import { listFiles, getThumbnailUrl } from '@/api/files'
+import { Timer, ArrowRight, Calendar, Loading, Download, Delete, Filter, RefreshLeft } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { listAllFiles, getThumbnailUrl, downloadFile, deleteFile } from '@/api/files'
 import type { FileInfo } from '@/api/files'
 import ImagePreview from '@/components/ImagePreview.vue'
+import { useTrashStore } from '@/stores/trash'
+import { useConfigStore } from '@/stores/config'
+
+const trashStore = useTrashStore()
+const configStore = useConfigStore()
 
 // --- Types ---
 interface MonthGroup {
@@ -151,33 +247,120 @@ interface YearNavItem {
 const loading = ref(false)
 const allFiles = ref<FileInfo[]>([])
 const dateRange = ref<[string, string] | null>(null)
+const selectedDevices = ref<string[]>([])
+const selectedFormats = ref<string[]>([])
+const selectedFocals = ref<string[]>([])
 const expandedYears = ref<Set<number>>(new Set())
 const activeYear = ref<number | null>(null)
 const activeMonth = ref<number | null>(null)
+
+// Focal-length buckets (焦段). Ordered from wide to tele; "unknown" last.
+const FOCAL_BUCKETS = [
+  { key: 'ultrawide', label: '超广角 (≤20mm)' },
+  { key: 'wide', label: '广角 (21-35mm)' },
+  { key: 'standard', label: '标准 (36-70mm)' },
+  { key: 'tele', label: '中长焦 (71-135mm)' },
+  { key: 'supertele', label: '长焦 (>135mm)' },
+  { key: 'unknown', label: '未知焦段' },
+]
+
+function focalBucketKey(focal?: number | null): string {
+  if (focal == null || focal <= 0) return 'unknown'
+  if (focal <= 20) return 'ultrawide'
+  if (focal <= 35) return 'wide'
+  if (focal <= 70) return 'standard'
+  if (focal <= 135) return 'tele'
+  return 'supertele'
+}
+
+function fileExt(name: string): string {
+  const i = name.lastIndexOf('.')
+  if (i < 0 || i === name.length - 1) return ''
+  return name.slice(i + 1).toUpperCase()
+}
 
 // Preview state
 const previewVisible = ref(false)
 const previewFiles = ref<FileInfo[]>([])
 const previewIndex = ref(0)
 
+// Context menu state
+interface ContextMenuState {
+  visible: boolean
+  x: number
+  y: number
+  file: FileInfo | null
+}
+const contextMenu = ref<ContextMenuState>({
+  visible: false,
+  x: 0,
+  y: 0,
+  file: null,
+})
+
 // Section refs for scrolling
 const sectionRefs = ref<Map<string, HTMLElement>>(new Map())
 const photosContentRef = ref<HTMLElement | null>(null)
 
 // --- Computed ---
-const filteredFiles = computed(() => {
-  if (!dateRange.value || !dateRange.value[0] || !dateRange.value[1]) {
-    return allFiles.value
+const deviceOptions = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const f of allFiles.value) {
+    if (f.device_name) set.add(f.device_name)
   }
-  const startDate = new Date(dateRange.value[0])
-  startDate.setHours(0, 0, 0, 0)
-  const endDate = new Date(dateRange.value[1])
-  endDate.setHours(23, 59, 59, 999)
+  return Array.from(set).sort()
+})
 
-  return allFiles.value.filter((file) => {
-    const fileDate = new Date(file.exif_time || file.created_at)
-    return fileDate >= startDate && fileDate <= endDate
-  })
+const formatOptions = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const f of allFiles.value) {
+    const ext = fileExt(f.file_name)
+    if (ext) set.add(ext)
+  }
+  return Array.from(set).sort()
+})
+
+const focalOptions = computed(() => {
+  const present = new Set<string>()
+  for (const f of allFiles.value) {
+    present.add(focalBucketKey(f.focal_length))
+  }
+  return FOCAL_BUCKETS.filter((b) => present.has(b.key))
+})
+
+const filteredFiles = computed(() => {
+  let result = allFiles.value
+
+  // Date range
+  if (dateRange.value && dateRange.value[0] && dateRange.value[1]) {
+    const startDate = new Date(dateRange.value[0])
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(dateRange.value[1])
+    endDate.setHours(23, 59, 59, 999)
+    result = result.filter((file) => {
+      const fileDate = new Date(file.exif_time || file.created_at)
+      return fileDate >= startDate && fileDate <= endDate
+    })
+  }
+
+  // Device
+  if (selectedDevices.value.length > 0) {
+    result = result.filter(
+      (f) => f.device_name != null && selectedDevices.value.includes(f.device_name)
+    )
+  }
+
+  // File format
+  if (selectedFormats.value.length > 0) {
+    result = result.filter((f) => selectedFormats.value.includes(fileExt(f.file_name)))
+  }
+
+  // Focal length bucket
+  if (selectedFocals.value.length > 0) {
+    result = result.filter((f) => selectedFocals.value.includes(focalBucketKey(f.focal_length)))
+  }
+
+  return result
 })
 
 const groupedPhotos = computed<MonthGroup[]>(() => {
@@ -229,6 +412,23 @@ const timeNavData = computed<YearNavItem[]>(() => {
 
 const totalPhotos = computed(() => filteredFiles.value.length)
 
+const hasActiveFilters = computed(
+  () =>
+    selectedDevices.value.length > 0 ||
+    selectedFormats.value.length > 0 ||
+    selectedFocals.value.length > 0 ||
+    !!(dateRange.value && dateRange.value[0])
+)
+
+const activeFilterCount = computed(() => {
+  let n = 0
+  if (selectedDevices.value.length > 0) n++
+  if (selectedFormats.value.length > 0) n++
+  if (selectedFocals.value.length > 0) n++
+  if (dateRange.value && dateRange.value[0]) n++
+  return n
+})
+
 // --- Methods ---
 function setSectionRef(year: number, month: number, el: HTMLElement | null) {
   const key = `${year}-${month}`
@@ -259,8 +459,8 @@ function scrollToSection(year: number, month: number) {
   }
 }
 
-function handleDateRangeChange() {
-  // Reset navigation state when filter changes
+function handleFilterChange() {
+  // Reset navigation state when any filter changes
   activeYear.value = null
   activeMonth.value = null
   // Auto-expand first year if data exists
@@ -269,6 +469,14 @@ function handleDateRangeChange() {
       expandedYears.value = new Set([timeNavData.value[0].year])
     }
   })
+}
+
+function resetFilters() {
+  selectedDevices.value = []
+  selectedFormats.value = []
+  selectedFocals.value = []
+  dateRange.value = null
+  handleFilterChange()
 }
 
 function openPreview(group: MonthGroup, fileIndex: number) {
@@ -293,6 +501,55 @@ function handleThumbnailError(e: Event) {
     )
 }
 
+function showContextMenu(event: MouseEvent, file: FileInfo) {
+  event.preventDefault()
+  event.stopPropagation()
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    file,
+  }
+}
+
+function closeContextMenu() {
+  contextMenu.value.visible = false
+  contextMenu.value.file = null
+}
+
+function handleContextDownload() {
+  if (contextMenu.value.file) {
+    downloadFile(contextMenu.value.file.id, contextMenu.value.file.file_name)
+  }
+  closeContextMenu()
+}
+
+async function handleContextDelete() {
+  const file = contextMenu.value.file
+  closeContextMenu()
+  if (!file) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要将文件 "${file.file_name}" 移入回收站吗？\n可在回收站中恢复，${configStore.trashRetentionDays} 天后自动彻底删除。`,
+      '移入回收站',
+      {
+        confirmButtonText: '移入回收站',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+    const result = await deleteFile(file.id)
+    ElMessage.success(result.message)
+    // Remove from local state so the timeline updates without a full reload
+    allFiles.value = allFiles.value.filter((f) => f.id !== file.id)
+    trashStore.refresh()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error('移入回收站失败')
+    }
+  }
+}
+
 async function loadAllFiles() {
   loading.value = true
   try {
@@ -303,7 +560,7 @@ async function loadAllFiles() {
     let hasMore = true
 
     while (hasMore) {
-      const response = await listFiles('', page, pageSize, 'time')
+      const response = await listAllFiles(page, pageSize, 'time')
       allLoaded.push(...response.files)
       if (allLoaded.length >= response.total_files || response.files.length < pageSize) {
         hasMore = false
@@ -328,6 +585,7 @@ async function loadAllFiles() {
 
 // --- Lifecycle ---
 onMounted(() => {
+  configStore.ensureLoaded()
   loadAllFiles()
 })
 </script>
@@ -478,6 +736,8 @@ onMounted(() => {
   background: #fff;
   border-radius: 6px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .toolbar-left {
@@ -502,6 +762,61 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.filter-select {
+  width: 160px;
+}
+
+/* Bright-blue selected tags inside the filter dropdowns */
+.filter-select :deep(.el-tag) {
+  background-color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  color: #fff;
+}
+
+.filter-select :deep(.el-tag .el-tag__close) {
+  color: #fff;
+}
+
+.filter-select :deep(.el-tag .el-tag__close:hover) {
+  background-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+}
+
+/* Highlight a filter box when it has an active selection */
+.filter-select.filter-active :deep(.el-select__wrapper),
+.filter-select.filter-active :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
+  background-color: #fff;
+}
+
+/* Highlight the date range picker when a range is set */
+.el-date-editor.filter-active {
+  box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
+  background-color: var(--el-color-primary-light-9);
+  border-radius: var(--el-border-radius-base);
+}
+
+.clear-filter-btn {
+  font-weight: 500;
+}
+
+/* Active-filter badge in the toolbar header */
+.filter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-5);
+  border-radius: 12px;
 }
 
 /* Loading */
@@ -614,5 +929,48 @@ onMounted(() => {
 .photo-date {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.8);
+}
+
+/* Context menu */
+.context-menu-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 999;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 6px 0;
+  min-width: 140px;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: #303133;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.context-menu-item:hover {
+  background: #f5f7fa;
+}
+
+.context-menu-item.danger {
+  color: #f56c6c;
+}
+
+.context-menu-item.danger:hover {
+  background: #fef0f0;
 }
 </style>

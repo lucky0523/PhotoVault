@@ -3,7 +3,7 @@
     <div class="toolbar">
       <div class="toolbar-left">
         <h3>回收站</h3>
-        <span class="hint">文件将在 30 天后自动彻底删除</span>
+        <span class="hint">文件将在 {{ configStore.trashRetentionDays }} 天后自动彻底删除</span>
       </div>
       <div class="toolbar-right">
         <el-button
@@ -106,8 +106,10 @@ import {
 } from '@/api/files'
 import type { TrashItem } from '@/api/files'
 import { useTrashStore } from '@/stores/trash'
+import { useConfigStore } from '@/stores/config'
 
 const trashStore = useTrashStore()
+const configStore = useConfigStore()
 
 const items = ref<TrashItem[]>([])
 const total = ref(0)
@@ -261,6 +263,7 @@ function handlePageChange(page: number) {
 }
 
 onMounted(() => {
+  configStore.ensureLoaded()
   loadTrash()
 })
 </script>

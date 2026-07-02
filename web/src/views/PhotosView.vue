@@ -350,8 +350,10 @@ import type { DirectoryInfo, FileInfo } from '@/api/files'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImagePreview from '@/components/ImagePreview.vue'
 import { useTrashStore } from '@/stores/trash'
+import { useConfigStore } from '@/stores/config'
 
 const trashStore = useTrashStore()
+const configStore = useConfigStore()
 
 // Tree
 interface TreeNode {
@@ -444,7 +446,7 @@ async function handleBatchDelete() {
   if (targets.length === 0) return
   try {
     await ElMessageBox.confirm(
-      `确定要将选中的 ${targets.length} 个文件移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+      `确定要将选中的 ${targets.length} 个文件移入回收站吗？\n${configStore.trashRetentionDays} 天后自动彻底删除，可在回收站中恢复。`,
       '移入回收站',
       {
         confirmButtonText: '移入回收站',
@@ -601,7 +603,7 @@ function handleDownloadClick(file: FileInfo) {
 async function handleDeleteFile(file: FileInfo) {
   try {
     await ElMessageBox.confirm(
-      `确定要将文件 "${file.file_name}" 移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+      `确定要将文件 "${file.file_name}" 移入回收站吗？\n可在回收站中恢复，${configStore.trashRetentionDays} 天后自动彻底删除。`,
       '移入回收站',
       {
         confirmButtonText: '移入回收站',
@@ -625,7 +627,7 @@ async function handleDeleteFile(file: FileInfo) {
 async function handleDeleteDirectory(dir: DirectoryInfo) {
   try {
     await ElMessageBox.confirm(
-      `确定要将目录 "${dir.name}" 及其所有内容移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+      `确定要将目录 "${dir.name}" 及其所有内容移入回收站吗？\n${configStore.trashRetentionDays} 天后自动彻底删除，可在回收站中恢复。`,
       '移入回收站',
       {
         confirmButtonText: '移入回收站',
@@ -675,7 +677,7 @@ async function handleContextDelete() {
     closeContextMenu()
     try {
       await ElMessageBox.confirm(
-        `确定要将文件 "${file.file_name}" 移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+        `确定要将文件 "${file.file_name}" 移入回收站吗？\n${configStore.trashRetentionDays} 天后自动彻底删除，可在回收站中恢复。`,
         '移入回收站',
         {
           confirmButtonText: '移入回收站',
@@ -697,7 +699,7 @@ async function handleContextDelete() {
     closeContextMenu()
     try {
       await ElMessageBox.confirm(
-        `确定要将目录 "${dir.name}" 及其所有内容移入回收站吗？\n30 天后自动彻底删除，可在回收站中恢复。`,
+        `确定要将目录 "${dir.name}" 及其所有内容移入回收站吗？\n${configStore.trashRetentionDays} 天后自动彻底删除，可在回收站中恢复。`,
         '移入回收站',
         {
           confirmButtonText: '移入回收站',
@@ -753,6 +755,7 @@ function handleThumbnailError(e: Event) {
 
 // Initialize
 onMounted(() => {
+  configStore.ensureLoaded()
   loadContent()
 })
 </script>

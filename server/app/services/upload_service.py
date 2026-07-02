@@ -314,6 +314,7 @@ class UploadService:
                     file_size=session["file_size"],
                     file_name=session["file_name"],
                     exif_time=session["exif_time"],
+                    focal_length=self._extract_focal_length(str(final_path)),
                 )
 
                 # Update session status
@@ -349,6 +350,7 @@ class UploadService:
             file_size=session["file_size"],
             file_name=session["file_name"],
             exif_time=session["exif_time"],
+            focal_length=self._extract_focal_length(str(final_path)),
         )
 
         # Update session status
@@ -452,6 +454,59 @@ class UploadService:
                     break
                 sha256.update(chunk)
         return sha256.hexdigest()
+
+    @staticmethod
+    def _extract_focal_length(file_path: str) -> Optional[float]:
+        """Extract the focal length (mm) from an image's EXIF metadata.
+
+        Prefers the 35mm-equivalent focal length (tag 41989) for consistency
+        across sensors, falling back to the raw FocalLength (tag 37386).
+
+        Args:
+            file_path: Path to the image file.
+
+        Returns:
+            Focal length in mm, or None if unavailable / not an image.
+        """
+        try:
+            from PIL import Image
+
+            with Image.open(file_path) as img:
+                exif = img.getexif()
+                if not exif:
+                    return None
+
+                # 41989 = FocalLengthIn35mmFilm, 37386 = FocalLength
+                # The 35mm-equivalent lives in the ExifIFD sub-directory.
+                focal_35mm = None
+                focal_raw = None
+                try:
+                    from PIL.ExifTags import IFD
+
+                    exif_ifd = exif.get_ifd(IFD.Exif)
+                    focal_35mm = exif_ifd.get(41989)
+                    focal_raw = exif_ifd.get(37386)
+                except Exception:
+                    pass
+
+                # Fallback: some files expose the tags on the root IFD
+                if focal_35mm is None:
+                    focal_35mm = exif.get(41989)
+                if focal_raw is None:
+                    focal_raw = exif.get(37386)
+
+                value = focal_35mm if focal_35mm else focal_raw
+                if value is None:
+                    return None
+
+                # EXIF rationals may come back as a Fraction/IFDRational
+                focal = float(value)
+                if focal <= 0:
+                    return None
+                return round(focal, 1)
+        except Exception as e:
+            logger.debug("Could not extract focal length from %s: %s", file_path, e)
+            return None
 
     def _cleanup_chunk_dir(self, session_id: str) -> None:
         """Remove the chunk directory for a session.

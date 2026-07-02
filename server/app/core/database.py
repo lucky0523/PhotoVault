@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS file_records (
     file_name TEXT NOT NULL,
     mime_type TEXT,
     exif_time TIMESTAMP,
+    focal_length REAL,
     is_reference BOOLEAN DEFAULT FALSE,
     reference_to INTEGER,
     live_photo_group_id TEXT,
@@ -115,6 +116,8 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE file_records ADD COLUMN deleted_batch_id TEXT;")
         if "purged_at" not in existing_cols:
             await db.execute("ALTER TABLE file_records ADD COLUMN purged_at TIMESTAMP;")
+        if "focal_length" not in existing_cols:
+            await db.execute("ALTER TABLE file_records ADD COLUMN focal_length REAL;")
 
         cursor = await db.execute("PRAGMA table_info(upload_sessions)")
         session_cols = {row[1] for row in await cursor.fetchall()}

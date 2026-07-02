@@ -43,6 +43,8 @@ class FileBrowseInfo:
     exif_time: Optional[str] = None
     media_type: str = "image"
     created_at: Optional[str] = None
+    device_name: Optional[str] = None
+    focal_length: Optional[float] = None
 
 
 @dataclass
@@ -526,6 +528,76 @@ class FileBrowseService:
                     device.latest_file_time = file_time
 
         return sorted(devices.values(), key=lambda d: d.name)
+
+    async def list_all_files(
+        self,
+        user_id: int,
+        page: int = 1,
+        page_size: int = 200,
+        sort_by: str = "time",
+    ) -> DirectoryListing:
+        """List ALL of a user's files across every directory (flat, recursive).
+
+        Unlike list_directory (which only returns files directly under a given
+        path), this returns every non-deleted file regardless of how deeply it is
+        nested under device/source-folder directories. Used by the timeline view,
+        which groups photos by capture/upload time rather than by folder.
+
+        Args:
+            user_id: The authenticated user's ID.
+            page: Page number (1-based).
+            page_size: Number of files per page.
+            sort_by: Sort order (name, size, time). Defaults to time.
+
+        Returns:
+            DirectoryListing with a flat file list (no directories).
+        """
+        order_clause = self._get_sort_clause(sort_by)
+        offset = (page - 1) * page_size
+
+        cursor = await self._db.execute(
+            """SELECT COUNT(*) as cnt FROM file_records
+               WHERE user_id = ? AND deleted_at IS NULL AND purged_at IS NULL""",
+            (user_id,),
+        )
+        count_row = await cursor.fetchone()
+        total_files = count_row["cnt"] if count_row else 0
+
+        cursor = await self._db.execute(
+            f"""SELECT id, file_name, file_size, mime_type, exif_time, media_type, created_at,
+                       device_name, focal_length
+                FROM file_records
+                WHERE user_id = ? AND deleted_at IS NULL AND purged_at IS NULL
+                ORDER BY {order_clause}
+                LIMIT ? OFFSET ?""",
+            (user_id, page_size, offset),
+        )
+        file_rows = await cursor.fetchall()
+
+        files = [
+            FileBrowseInfo(
+                id=r["id"],
+                file_name=r["file_name"],
+                file_size=r["file_size"],
+                mime_type=r["mime_type"],
+                exif_time=r["exif_time"],
+                media_type=r["media_type"] or "image",
+                created_at=r["created_at"],
+                device_name=r["device_name"],
+                focal_length=r["focal_length"],
+            )
+            for r in file_rows
+        ]
+
+        return DirectoryListing(
+            current_path="",
+            parent_path=None,
+            directories=[],
+            files=files,
+            total_files=total_files,
+            page=page,
+            page_size=page_size,
+        )
 
     async def get_file_info(self, user_id: int, file_id: int) -> Optional[FileDetail]:
         """Get detailed info about a specific file. Ensures user isolation.

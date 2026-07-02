@@ -56,6 +56,8 @@ class FileInfoResponse(BaseModel):
     media_type: str = "image"
     created_at: Optional[str] = None
     thumbnail_url: str = ""
+    device_name: Optional[str] = None
+    focal_length: Optional[float] = None
 
 
 class DeviceStatsResponse(BaseModel):
@@ -147,6 +149,12 @@ class TrashActionResponse(BaseModel):
     success: bool
     message: str
     count: Optional[int] = None
+
+
+class FilesConfigResponse(BaseModel):
+    """Client-facing file/trash configuration."""
+
+    trash_retention_days: int
 
 
 class StatusSyncItem(BaseModel):
@@ -319,6 +327,72 @@ async def list_files(
         current_path=listing.current_path,
         parent_path=listing.parent_path,
         directories=directories,
+        files=files,
+        total_files=listing.total_files,
+        page=listing.page,
+        page_size=listing.page_size,
+    )
+
+
+@router.get("/files/config", response_model=FilesConfigResponse)
+async def get_files_config(
+    current_user: UserInfo = Depends(get_current_user),
+) -> FilesConfigResponse:
+    """Return client-facing file/trash configuration.
+
+    Currently exposes the trash retention period so the web UI can show the
+    correct auto-purge window instead of a hardcoded value.
+    """
+    settings = get_settings()
+    return FilesConfigResponse(trash_retention_days=settings.trash_retention_days)
+
+
+@router.get("/files/all", response_model=BrowseResponse)
+async def list_all_files(
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=200, ge=1, le=500, description="Items per page"),
+    sort_by: str = Query(default="time", description="Sort by: name, size, time"),
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> BrowseResponse:
+    """List ALL of the user's files across every directory (flat, recursive).
+
+    Returns every non-deleted file regardless of directory nesting. Used by the
+    timeline view, which groups photos by time rather than by folder.
+    """
+    settings = get_settings()
+    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+
+    if sort_by not in ("name", "size", "time"):
+        sort_by = "time"
+
+    listing = await service.list_all_files(
+        user_id=current_user.id,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+    )
+
+    files = [
+        FileInfoResponse(
+            id=f.id,
+            file_name=f.file_name,
+            file_size=f.file_size,
+            mime_type=f.mime_type,
+            exif_time=f.exif_time,
+            media_type=f.media_type,
+            created_at=f.created_at,
+            thumbnail_url=f"/api/v1/files/thumbnail/{f.id}",
+            device_name=f.device_name,
+            focal_length=f.focal_length,
+        )
+        for f in listing.files
+    ]
+
+    return BrowseResponse(
+        current_path="",
+        parent_path=None,
+        directories=[],
         files=files,
         total_files=listing.total_files,
         page=listing.page,

@@ -26,6 +26,8 @@ export interface FileInfo {
   exif_time?: string
   thumbnail_url: string
   created_at: string
+  device_name?: string
+  focal_length?: number
 }
 
 export interface BrowseResponse {
@@ -102,6 +104,18 @@ export interface StatusSyncResponse {
   items: StatusSyncItem[]
 }
 
+export interface FilesConfig {
+  trash_retention_days: number
+}
+
+/**
+ * Get client-facing file/trash configuration (e.g. trash retention days)
+ */
+export async function getFilesConfig(): Promise<FilesConfig> {
+  const response = await http.get('/files/config')
+  return response.data
+}
+
 /**
  * Browse directory structure (directories + files)
  */
@@ -135,6 +149,20 @@ export async function listFiles(
 ): Promise<ListResponse> {
   const response = await http.get('/files/list', {
     params: { path, page, page_size: pageSize, sort_by: sortBy },
+  })
+  return response.data
+}
+
+/**
+ * List ALL files across every directory (flat, recursive). Used by the timeline.
+ */
+export async function listAllFiles(
+  page: number = 1,
+  pageSize: number = 200,
+  sortBy: string = 'time'
+): Promise<ListResponse> {
+  const response = await http.get('/files/all', {
+    params: { page, page_size: pageSize, sort_by: sortBy },
   })
   return response.data
 }

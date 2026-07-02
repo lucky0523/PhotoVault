@@ -34,6 +34,7 @@ class FileRecord:
     file_name: str
     mime_type: Optional[str] = None
     exif_time: Optional[str] = None
+    focal_length: Optional[float] = None
     is_reference: bool = False
     reference_to: Optional[int] = None
     live_photo_group_id: Optional[str] = None
@@ -90,6 +91,7 @@ class DeduplicationService:
         file_name: str,
         mime_type: Optional[str] = None,
         exif_time: Optional[str] = None,
+        focal_length: Optional[float] = None,
     ) -> FileRecord:
         """Register a new file record in the database.
 
@@ -103,6 +105,7 @@ class DeduplicationService:
             file_name: The file name.
             mime_type: Optional MIME type.
             exif_time: Optional EXIF capture time.
+            focal_length: Optional focal length in mm (35mm-equivalent preferred).
 
         Returns:
             The newly created FileRecord.
@@ -110,8 +113,9 @@ class DeduplicationService:
         cursor = await self._db.execute(
             """INSERT INTO file_records
                (user_id, file_hash, file_path, original_path, device_name,
-                file_size, file_name, mime_type, exif_time, is_reference, reference_to)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
+                file_size, file_name, mime_type, exif_time, focal_length,
+                is_reference, reference_to)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
             (
                 user_id,
                 file_hash,
@@ -122,6 +126,7 @@ class DeduplicationService:
                 file_name,
                 mime_type,
                 exif_time,
+                focal_length,
             ),
         )
         await self._db.commit()
@@ -204,6 +209,7 @@ class DeduplicationService:
             file_name=row["file_name"],
             mime_type=row["mime_type"],
             exif_time=row["exif_time"],
+            focal_length=row["focal_length"],
             is_reference=bool(row["is_reference"]),
             reference_to=row["reference_to"],
             live_photo_group_id=row["live_photo_group_id"],
