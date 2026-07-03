@@ -19,15 +19,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,10 +38,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.draw.alpha
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,7 +90,22 @@ fun LocalTab(
 
     // Pull-to-refresh state
     val pullToRefreshState = rememberPullToRefreshState()
-    var isRefreshing by remember { mutableStateOf(false) }
+
+    // Drive the refresh from the container's own state: this fires for both the
+    // pull gesture and the FAB (which calls startRefresh()). Running the backup
+    // and then calling endRefresh() is what retracts the indicator.
+    if (pullToRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.backupNow { errorMsg ->
+                val msg = errorMsg ?: "已开始刷新备份状态"
+                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            }
+            // Keep the indicator visible briefly so the pull feels responsive,
+            // then retract it.
+            delay(800)
+            pullToRefreshState.endRefresh()
+        }
+    }
 
     // System folder picker launcher
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -100,34 +120,17 @@ fun LocalTab(
         }
     }
 
-    fun onRefresh() {
-        if (isRefreshing) return
-        isRefreshing = true
-        viewModel.backupNow { errorMsg ->
-            if (errorMsg != null) {
-                android.widget.Toast.makeText(context, errorMsg, android.widget.Toast.LENGTH_SHORT).show()
-            } else {
-                android.widget.Toast.makeText(context, "已开始刷新备份状态", android.widget.Toast.LENGTH_SHORT).show()
-            }
-            // Keep indicator visible for a moment to show the refresh happened
-            scope.launch {
-                delay(800)
-                isRefreshing = false
-            }
-        }
-    }
-
     Scaffold(
         floatingActionButton = {
             Column {
-                // Refresh FAB
+                // Backup FAB — reuse the pull-to-refresh flow so the indicator shows
                 FloatingActionButton(
-                    onClick = { onRefresh() },
+                    onClick = { scope.launch { pullToRefreshState.startRefresh() } },
                     containerColor = MaterialTheme.colorScheme.secondaryContainer
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Refresh,
-                        contentDescription = "刷新备份状态"
+                        imageVector = Icons.Filled.Backup,
+                        contentDescription = "立即备份"
                     )
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -200,8 +203,35 @@ fun LocalTab(
                 PullToRefreshContainer(
                     state = pullToRefreshState,
                     modifier = Modifier.align(Alignment.TopCenter),
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    contentColor = MaterialTheme.colorScheme.primary
+                    indicator = { st ->
+                        // Custom indicator: this action backs up (not just refresh),
+                        // so show a backup/cloud glyph instead of the default arrow.
+                        Surface(
+                            modifier = Modifier.size(40.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                if (st.isRefreshing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.Backup,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .alpha(st.progress.coerceIn(0f, 1f))
+                                    )
+                                }
+                            }
+                        }
+                    }
                 )
             }
         }
@@ -241,25 +271,30 @@ private fun FolderCard(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
+    val notBackedUp = folder.totalImages - folder.backedUpImages - folder.trashedImages - folder.purgedImages
+
+    // A file counts as "handled" once it has reached the server in any form:
+    // backed up, moved to the server trash, or purged from the server. Only
+    // files still pending upload (notBackedUp) keep the folder incomplete.
+    val handled = folder.totalImages - notBackedUp
+
     val progress = if (folder.totalImages > 0) {
-        folder.backedUpImages.toFloat() / folder.totalImages.toFloat()
+        handled.toFloat() / folder.totalImages.toFloat()
     } else {
         0f
     }
 
-    val notBackedUp = folder.totalImages - folder.backedUpImages - folder.trashedImages - folder.purgedImages
-
     val statusIcon = when {
         folder.totalImages == 0 -> Icons.Filled.Folder
-        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> Icons.Filled.CheckCircle
-        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> Icons.Filled.Sync
+        notBackedUp == 0 -> Icons.Filled.CheckCircle
+        handled > 0 -> Icons.Filled.Sync
         else -> Icons.Filled.Warning
     }
 
     val statusColor = when {
         folder.totalImages == 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> Color(0xFF4CAF50)
-        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> Color(0xFF2196F3)
+        notBackedUp == 0 -> Color(0xFF4CAF50)
+        handled > 0 -> Color(0xFF2196F3)
         else -> Color(0xFFFFA000)
     }
 
@@ -326,8 +361,8 @@ private fun FolderCard(
                 Icon(
                     imageVector = statusIcon,
                     contentDescription = when {
-                        notBackedUp == 0 && folder.backedUpImages >= folder.totalImages -> "全部已备份"
-                        folder.backedUpImages > 0 || folder.trashedImages > 0 || folder.purgedImages > 0 -> "部分已处理"
+                        notBackedUp == 0 -> "全部已备份"
+                        handled > 0 -> "部分已处理"
                         else -> "有待备份"
                     },
                     tint = statusColor,
