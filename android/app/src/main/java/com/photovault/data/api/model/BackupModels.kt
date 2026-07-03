@@ -38,7 +38,8 @@ data class InitUploadRequest(
     @SerializedName("source_folder") val sourceFolder: String,
     @SerializedName("storage_policy") val storagePolicy: StoragePolicyConfig,
     @SerializedName("exif_time") val exifTime: String?,
-    @SerializedName("file_modified_time") val fileModifiedTime: String
+    @SerializedName("file_modified_time") val fileModifiedTime: String,
+    @SerializedName("mime_type") val mimeType: String? = null
 )
 
 data class InitUploadResponse(
@@ -65,7 +66,7 @@ data class CompleteUploadRequest(
 data class CompleteUploadResponse(
     @SerializedName("success") val success: Boolean,
     @SerializedName("file_id") val fileId: String,
-    @SerializedName("integrity_valid") val integrityValid: Boolean,
+    @SerializedName("integrity_valid") val integrityValid: Boolean = true,
     @SerializedName("stored_path") val storedPath: String
 )
 

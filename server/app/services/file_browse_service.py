@@ -42,6 +42,8 @@ class FileBrowseInfo:
     mime_type: Optional[str] = None
     exif_time: Optional[str] = None
     media_type: str = "image"
+    is_motion_photo: bool = False
+    is_ultra_hdr: bool = False
     created_at: Optional[str] = None
     device_name: Optional[str] = None
     focal_length: Optional[float] = None
@@ -74,6 +76,9 @@ class FileDetail:
     mime_type: Optional[str] = None
     exif_time: Optional[str] = None
     media_type: str = "image"
+    is_motion_photo: bool = False
+    motion_video_offset: Optional[int] = None
+    is_ultra_hdr: bool = False
     created_at: Optional[str] = None
     is_reference: bool = False
     reference_to: Optional[int] = None
@@ -412,7 +417,8 @@ class FileBrowseService:
 
         # Fetch paginated files
         cursor = await self._db.execute(
-            f"""SELECT id, file_name, file_size, mime_type, exif_time, media_type, created_at
+            f"""SELECT id, file_name, file_size, mime_type, exif_time, media_type,
+                       is_motion_photo, is_ultra_hdr, created_at
                 FROM file_records
                 WHERE user_id = ? AND file_path LIKE ? AND file_path NOT LIKE ?
                 AND deleted_at IS NULL AND purged_at IS NULL
@@ -430,6 +436,8 @@ class FileBrowseService:
                 mime_type=r["mime_type"],
                 exif_time=r["exif_time"],
                 media_type=r["media_type"] or "image",
+                is_motion_photo=bool(r["is_motion_photo"]),
+                is_ultra_hdr=bool(r["is_ultra_hdr"]),
                 created_at=r["created_at"],
             )
             for r in file_rows
@@ -564,8 +572,8 @@ class FileBrowseService:
         total_files = count_row["cnt"] if count_row else 0
 
         cursor = await self._db.execute(
-            f"""SELECT id, file_name, file_size, mime_type, exif_time, media_type, created_at,
-                       device_name, focal_length
+            f"""SELECT id, file_name, file_size, mime_type, exif_time, media_type,
+                       is_motion_photo, is_ultra_hdr, created_at, device_name, focal_length
                 FROM file_records
                 WHERE user_id = ? AND deleted_at IS NULL AND purged_at IS NULL
                 ORDER BY {order_clause}
@@ -582,6 +590,8 @@ class FileBrowseService:
                 mime_type=r["mime_type"],
                 exif_time=r["exif_time"],
                 media_type=r["media_type"] or "image",
+                is_motion_photo=bool(r["is_motion_photo"]),
+                is_ultra_hdr=bool(r["is_ultra_hdr"]),
                 created_at=r["created_at"],
                 device_name=r["device_name"],
                 focal_length=r["focal_length"],
@@ -612,6 +622,7 @@ class FileBrowseService:
         cursor = await self._db.execute(
             """SELECT id, file_name, file_path, original_path, device_name,
                       file_size, file_hash, mime_type, exif_time, media_type,
+                      is_motion_photo, motion_video_offset, is_ultra_hdr,
                       created_at, is_reference, reference_to
                FROM file_records
                WHERE id = ? AND user_id = ?""",
@@ -632,6 +643,9 @@ class FileBrowseService:
             mime_type=row["mime_type"],
             exif_time=row["exif_time"],
             media_type=row["media_type"] or "image",
+            is_motion_photo=bool(row["is_motion_photo"]),
+            motion_video_offset=row["motion_video_offset"],
+            is_ultra_hdr=bool(row["is_ultra_hdr"]),
             created_at=row["created_at"],
             is_reference=bool(row["is_reference"]),
             reference_to=row["reference_to"],
@@ -679,8 +693,11 @@ class FileBrowseService:
         if actual_path is None or not Path(actual_path).exists():
             return None
 
-        # Generate thumbnail
-        thumbnail_data = self._generate_thumbnail(actual_path, size)
+        # Generate thumbnail — use a video frame grab for videos, Pillow for images
+        if self._is_video(file_info):
+            thumbnail_data = self._generate_video_thumbnail(actual_path, size)
+        else:
+            thumbnail_data = self._generate_thumbnail(actual_path, size)
         if thumbnail_data is None:
             return None
 
@@ -726,6 +743,72 @@ class FileBrowseService:
 
         return file_stream, file_name, file_size, mime_type
 
+    async def resolve_download_target(
+        self, user_id: int, file_id: int
+    ) -> Optional[tuple[str, str, int, str]]:
+        """Resolve the on-disk path and metadata for a file, for direct serving.
+
+        Unlike ``get_original_stream`` this returns the resolved filesystem path
+        so the caller can serve it with HTTP Range support (needed for video
+        seeking / streaming in the browser).
+
+        Returns:
+            Tuple of (actual_path, file_name, file_size, mime_type) or None.
+        """
+        file_info = await self.get_file_info(user_id, file_id)
+        if file_info is None:
+            return None
+
+        actual_path = await self._resolve_file_path(file_info)
+        if actual_path is None or not Path(actual_path).exists():
+            return None
+
+        file_size = os.path.getsize(actual_path)
+        mime_type = file_info.mime_type
+        if not mime_type:
+            import mimetypes
+
+            guessed, _ = mimetypes.guess_type(file_info.file_name)
+            mime_type = guessed or "application/octet-stream"
+
+        return actual_path, file_info.file_name, file_size, mime_type
+
+    async def resolve_motion_video(
+        self, user_id: int, file_id: int
+    ) -> Optional[tuple[str, int, int]]:
+        """Resolve the embedded motion-photo video for [file_id].
+
+        Returns:
+            Tuple of (actual_path, video_offset, video_size) where video_offset
+            is the byte position within the file where the MP4 begins and
+            video_size is the number of trailing video bytes. Returns None if
+            the file isn't a motion photo or can't be resolved.
+        """
+        file_info = await self.get_file_info(user_id, file_id)
+        if file_info is None or not file_info.is_motion_photo:
+            return None
+
+        actual_path = await self._resolve_file_path(file_info)
+        if actual_path is None or not Path(actual_path).exists():
+            return None
+
+        file_size = os.path.getsize(actual_path)
+
+        offset = file_info.motion_video_offset
+        # Fall back to on-the-fly detection if the offset wasn't stored
+        # (e.g. records created before motion-photo support / not yet backfilled).
+        if offset is None:
+            from app.services.motion_photo import detect_motion_photo
+
+            _is_motion, offset = detect_motion_photo(actual_path)
+            if offset is None:
+                return None
+
+        if offset <= 0 or offset >= file_size:
+            return None
+
+        return actual_path, offset, file_size - offset
+
     # -----------------------------------------------------------------------
     # Private helpers
     # -----------------------------------------------------------------------
@@ -751,6 +834,96 @@ class FileBrowseService:
                 return row["file_path"]
             return None
         return file_info.file_path
+
+    _VIDEO_EXTENSIONS = {
+        ".mp4", ".mov", ".mkv", ".webm", ".3gp", ".avi", ".mpeg", ".mpg",
+        ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mts",
+    }
+
+    @classmethod
+    def _is_video(cls, file_info: "FileDetail") -> bool:
+        """Return True if the file is a video (by media_type or extension)."""
+        if (file_info.media_type or "").lower() == "video":
+            return True
+        if file_info.mime_type and file_info.mime_type.lower().startswith("video/"):
+            return True
+        return Path(file_info.file_name).suffix.lower() in cls._VIDEO_EXTENSIONS
+
+    def _generate_video_thumbnail(self, file_path: str, size: str) -> Optional[bytes]:
+        """Generate a poster-frame thumbnail for a video using ffmpeg.
+
+        Extracts a single frame near the start of the video, then downscales it
+        with Pillow to the requested thumbnail size. Requires ffmpeg to be
+        available on the PATH; if it is not, returns None so the client can fall
+        back to a generic video placeholder.
+
+        Args:
+            file_path: Path to the source video file.
+            size: Thumbnail size key ('small' or 'medium').
+
+        Returns:
+            JPEG bytes of the thumbnail, or None if generation fails.
+        """
+        import io
+        import shutil as _shutil
+        import subprocess
+        import tempfile
+
+        ffmpeg = _shutil.which("ffmpeg")
+        if ffmpeg is None:
+            logger.warning("ffmpeg not found; cannot generate video thumbnail for %s", file_path)
+            return None
+
+        target_size = self.THUMBNAIL_SIZES[size]
+        tmp_frame = None
+        try:
+            from PIL import Image
+
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                tmp_frame = tf.name
+
+            # Seek 1s in and grab a single frame. -y overwrites the temp file.
+            cmd = [
+                ffmpeg, "-y", "-loglevel", "error",
+                "-ss", "00:00:01",
+                "-i", file_path,
+                "-frames:v", "1",
+                tmp_frame,
+            ]
+            result = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30
+            )
+            # If seeking past the end failed (very short clip), retry from the start.
+            if result.returncode != 0 or not os.path.getsize(tmp_frame):
+                cmd_retry = [
+                    ffmpeg, "-y", "-loglevel", "error",
+                    "-i", file_path,
+                    "-frames:v", "1",
+                    tmp_frame,
+                ]
+                subprocess.run(
+                    cmd_retry, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30
+                )
+
+            if not os.path.exists(tmp_frame) or os.path.getsize(tmp_frame) == 0:
+                return None
+
+            with Image.open(tmp_frame) as img:
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                img.thumbnail(target_size, Image.LANCZOS)
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                return buffer.getvalue()
+        except Exception as e:
+            logger.warning("Failed to generate video thumbnail for %s: %s", file_path, e)
+            return None
+        finally:
+            if tmp_frame and os.path.exists(tmp_frame):
+                try:
+                    os.unlink(tmp_frame)
+                except OSError:
+                    pass
 
     def _generate_thumbnail(self, file_path: str, size: str) -> Optional[bytes]:
         """Generate a thumbnail for the given file.

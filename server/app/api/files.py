@@ -15,7 +15,7 @@ import logging
 from typing import List, Optional
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -54,6 +54,8 @@ class FileInfoResponse(BaseModel):
     mime_type: Optional[str] = None
     exif_time: Optional[str] = None
     media_type: str = "image"
+    is_motion_photo: bool = False
+    is_ultra_hdr: bool = False
     created_at: Optional[str] = None
     thumbnail_url: str = ""
     device_name: Optional[str] = None
@@ -96,6 +98,8 @@ class FileDetailResponse(BaseModel):
     mime_type: Optional[str] = None
     exif_time: Optional[str] = None
     media_type: str = "image"
+    is_motion_photo: bool = False
+    is_ultra_hdr: bool = False
     created_at: Optional[str] = None
 
 
@@ -221,6 +225,8 @@ async def browse_directory(
             mime_type=f.mime_type,
             exif_time=f.exif_time,
             media_type=f.media_type,
+            is_motion_photo=f.is_motion_photo,
+            is_ultra_hdr=f.is_ultra_hdr,
             created_at=f.created_at,
             thumbnail_url=f"/api/v1/files/thumbnail/{f.id}",
         )
@@ -317,6 +323,8 @@ async def list_files(
             mime_type=f.mime_type,
             exif_time=f.exif_time,
             media_type=f.media_type,
+            is_motion_photo=f.is_motion_photo,
+            is_ultra_hdr=f.is_ultra_hdr,
             created_at=f.created_at,
             thumbnail_url=f"/api/v1/files/thumbnail/{f.id}",
         )
@@ -381,6 +389,8 @@ async def list_all_files(
             mime_type=f.mime_type,
             exif_time=f.exif_time,
             media_type=f.media_type,
+            is_motion_photo=f.is_motion_photo,
+            is_ultra_hdr=f.is_ultra_hdr,
             created_at=f.created_at,
             thumbnail_url=f"/api/v1/files/thumbnail/{f.id}",
             device_name=f.device_name,
@@ -438,39 +448,216 @@ async def get_thumbnail(
 @router.get("/files/download/{file_id}")
 async def download_file(
     file_id: int,
+    request: Request,
     current_user: UserInfo = Depends(get_current_user_or_query_token),
     db: aiosqlite.Connection = Depends(get_db),
 ) -> StreamingResponse:
-    """Download original file.
+    """Download or stream the original file.
 
-    Returns the file as a streaming response with proper Content-Type
-    and Content-Disposition headers for large file downloads.
+    Supports HTTP Range requests so videos can be streamed/seeked in the
+    browser. Images and other files are returned in full. Media files
+    (image/*, video/*) are served inline; everything else as an attachment.
     """
     settings = get_settings()
     service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
 
-    result = await service.get_original_stream(
+    target = await service.resolve_download_target(
         user_id=current_user.id,
         file_id=file_id,
     )
 
-    if result is None:
+    if target is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    stream_fn, file_name, file_size, mime_type = result
+    actual_path, file_name, file_size, mime_type = target
 
-    # Use RFC 5987 encoding for filename with non-ASCII characters
+    chunk_size = 64 * 1024
+
+    # RFC 5987 encoding for filenames with non-ASCII characters
     safe_filename = file_name.encode("ascii", errors="ignore").decode("ascii") or "download"
-    headers = {
-        "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{file_name}',
-        "Content-Length": str(file_size),
-    }
+    is_media = mime_type.startswith(("image/", "video/", "audio/"))
+    disposition_type = "inline" if is_media else "attachment"
+    content_disposition = (
+        f"{disposition_type}; filename=\"{safe_filename}\"; "
+        f"filename*=UTF-8''{file_name}"
+    )
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+
+    # Full-content response (no Range)
+    if not range_header:
+        def full_stream():
+            with open(actual_path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(
+            content=full_stream(),
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": content_disposition,
+                "Content-Length": str(file_size),
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    # Parse a single "bytes=start-end" range
+    start, end = _parse_range(range_header, file_size)
+    if start is None:
+        # Unsatisfiable range
+        return StreamingResponse(
+            content=iter(()),
+            status_code=416,
+            media_type=mime_type,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    length = end - start + 1
+
+    def ranged_stream():
+        with open(actual_path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
 
     return StreamingResponse(
-        content=stream_fn(),
+        content=ranged_stream(),
+        status_code=206,
         media_type=mime_type,
-        headers=headers,
+        headers={
+            "Content-Disposition": content_disposition,
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(length),
+            "Accept-Ranges": "bytes",
+        },
     )
+
+
+@router.get("/files/motion/{file_id}")
+async def motion_video(
+    file_id: int,
+    request: Request,
+    current_user: UserInfo = Depends(get_current_user_or_query_token),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> StreamingResponse:
+    """Stream the embedded video of a motion photo (动态照片).
+
+    A motion photo is a JPEG with an MP4 appended; this returns only the trailing
+    video bytes as ``video/mp4`` with HTTP Range support so the browser can play
+    and seek the motion clip.
+    """
+    settings = get_settings()
+    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+
+    resolved = await service.resolve_motion_video(user_id=current_user.id, file_id=file_id)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Motion photo video not found")
+
+    actual_path, base_offset, video_size = resolved
+    chunk_size = 64 * 1024
+    mime_type = "video/mp4"
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+
+    if not range_header:
+        def full_stream():
+            with open(actual_path, "rb") as f:
+                f.seek(base_offset)
+                remaining = video_size
+                while remaining > 0:
+                    chunk = f.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            content=full_stream(),
+            media_type=mime_type,
+            headers={
+                "Content-Length": str(video_size),
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": "inline",
+                "Cache-Control": "public, max-age=86400",
+            },
+        )
+
+    # Range is expressed relative to the video (0 .. video_size-1)
+    start, end = _parse_range(range_header, video_size)
+    if start is None:
+        return StreamingResponse(
+            content=iter(()),
+            status_code=416,
+            media_type=mime_type,
+            headers={"Content-Range": f"bytes */{video_size}"},
+        )
+
+    length = end - start + 1
+
+    def ranged_stream():
+        with open(actual_path, "rb") as f:
+            f.seek(base_offset + start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        content=ranged_stream(),
+        status_code=206,
+        media_type=mime_type,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{video_size}",
+            "Content-Length": str(length),
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": "inline",
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
+def _parse_range(range_header: str, file_size: int) -> tuple[Optional[int], Optional[int]]:
+    """Parse a single-range 'bytes=start-end' header.
+
+    Returns (start, end) inclusive byte offsets, or (None, None) if the range
+    is invalid/unsatisfiable.
+    """
+    try:
+        units, _, range_spec = range_header.partition("=")
+        if units.strip().lower() != "bytes":
+            return None, None
+        # Only the first range is honored
+        first = range_spec.split(",")[0].strip()
+        start_str, _, end_str = first.partition("-")
+
+        if start_str == "":
+            # Suffix range: last N bytes
+            suffix = int(end_str)
+            if suffix <= 0:
+                return None, None
+            start = max(file_size - suffix, 0)
+            end = file_size - 1
+        else:
+            start = int(start_str)
+            end = int(end_str) if end_str else file_size - 1
+
+        if start > end or start >= file_size:
+            return None, None
+        end = min(end, file_size - 1)
+        return start, end
+    except (ValueError, AttributeError):
+        return None, None
 
 
 # ---------------------------------------------------------------------------

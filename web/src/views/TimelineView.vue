@@ -57,6 +57,16 @@
             <span v-else-if="totalPhotos > 0" class="photo-total">共 {{ totalPhotos }} 张照片</span>
           </div>
           <div class="toolbar-right">
+            <el-button
+              v-if="hasActiveFilters"
+              type="primary"
+              :icon="RefreshLeft"
+              text
+              class="clear-filter-btn"
+              @click="resetFilters"
+            >
+              清除筛选
+            </el-button>
             <el-select
               v-model="selectedDevices"
               multiple
@@ -121,19 +131,11 @@
               value-format="YYYY-MM-DD"
               :clearable="true"
               size="default"
+              popper-class="tl-date-popper"
+              :cell-class-name="dateCellClass"
               :class="{ 'filter-active': !!(dateRange && dateRange[0]) }"
               @change="handleFilterChange"
             />
-            <el-button
-              v-if="hasActiveFilters"
-              type="primary"
-              :icon="RefreshLeft"
-              text
-              class="clear-filter-btn"
-              @click="resetFilters"
-            >
-              清除筛选
-            </el-button>
           </div>
         </div>
 
@@ -176,6 +178,14 @@
                     loading="lazy"
                     @error="handleThumbnailError"
                   />
+                  <div v-if="isVideo(file)" class="video-badge">
+                    <el-icon :size="28"><VideoPlay /></el-icon>
+                  </div>
+                  <div v-else-if="isMotionPhoto(file)" class="live-badge">
+                    <LivePhotoIcon class="live-icon" />
+                    <span>LIVE</span>
+                  </div>
+                  <div v-if="file.is_ultra_hdr" class="hdr-badge" title="Ultra HDR">HDR</div>
                 </div>
                 <div class="photo-overlay">
                   <span class="photo-name">{{ file.file_name }}</span>
@@ -219,11 +229,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { Timer, ArrowRight, Calendar, Loading, Download, Delete, Filter, RefreshLeft } from '@element-plus/icons-vue'
+import { Timer, ArrowRight, Calendar, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listAllFiles, getThumbnailUrl, downloadFile, deleteFile } from '@/api/files'
 import type { FileInfo } from '@/api/files'
 import ImagePreview from '@/components/ImagePreview.vue'
+import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
 import { useTrashStore } from '@/stores/trash'
 import { useConfigStore } from '@/stores/config'
 
@@ -412,6 +423,43 @@ const timeNavData = computed<YearNavItem[]>(() => {
 
 const totalPhotos = computed(() => filteredFiles.value.length)
 
+// Set of local dates (YYYY-MM-DD) that actually have at least one photo/video.
+// Used to dim (but not disable) empty days in the date picker.
+const photoDates = computed<Set<string>>(() => {
+  const set = new Set<string>()
+  for (const f of allFiles.value) {
+    const d = new Date(f.exif_time || f.created_at)
+    if (!isNaN(d.getTime())) set.add(toLocalYmd(d))
+  }
+  return set
+})
+
+function toLocalYmd(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * Dims future days and days without any photos in the date picker, while
+ * keeping every cell clickable (we intentionally avoid `disabled-date`).
+ */
+function dateCellClass(date: Date): string {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+
+  if (d.getTime() > today.getTime()) {
+    return 'tl-dim tl-future'
+  }
+  if (!photoDates.value.has(toLocalYmd(date))) {
+    return 'tl-dim tl-empty'
+  }
+  return ''
+}
+
 const hasActiveFilters = computed(
   () =>
     selectedDevices.value.length > 0 ||
@@ -490,6 +538,22 @@ function formatShortDate(dateStr: string | undefined | null): string {
   if (!dateStr) return '-'
   const date = new Date(dateStr)
   return `${date.getMonth() + 1}月${date.getDate()}日`
+}
+
+const VIDEO_EXTENSIONS = [
+  'mp4', 'mov', 'mkv', 'webm', '3gp', 'avi', 'mpeg', 'mpg',
+  'wmv', 'flv', 'm4v', 'ts', 'm2ts', 'mts',
+]
+
+function isVideo(file: FileInfo): boolean {
+  if ((file.media_type || '').toLowerCase() === 'video') return true
+  if (file.mime_type && file.mime_type.toLowerCase().startsWith('video/')) return true
+  const ext = file.file_name.split('.').pop()?.toLowerCase() || ''
+  return VIDEO_EXTENSIONS.includes(ext)
+}
+
+function isMotionPhoto(file: FileInfo): boolean {
+  return !isVideo(file) && !!file.is_motion_photo
 }
 
 function handleThumbnailError(e: Event) {
@@ -896,12 +960,66 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   background: #f5f7fa;
+  position: relative;
 }
 
 .photo-thumbnail img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.video-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.live-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.live-badge .live-icon {
+  font-size: 13px;
+}
+
+.hdr-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  line-height: 1.5;
+  pointer-events: none;
 }
 
 .photo-overlay {
@@ -972,5 +1090,24 @@ onMounted(() => {
 
 .context-menu-item.danger:hover {
   background: #fef0f0;
+}
+</style>
+
+<!-- Non-scoped: the date-picker popup is teleported to <body>, so scoped
+     styles can't reach it. Targeted via the custom popper-class instead. -->
+<style>
+/* Dim future days and days without photos, but keep them clickable.
+   Don't override the selected/range cells' own text styling. */
+.tl-date-popper .el-date-table td.tl-dim:not(.current):not(.start-date):not(.end-date):not(.in-range) .el-date-table-cell__text {
+  color: #c8ccd4;
+}
+
+.tl-date-popper .el-date-table td.tl-dim.in-range:not(.current):not(.start-date):not(.end-date) .el-date-table-cell__text {
+  color: #a9b0bd;
+}
+
+/* Ensure the cursor still indicates the cell is clickable. */
+.tl-date-popper .el-date-table td.tl-dim .el-date-table-cell {
+  cursor: pointer;
 }
 </style>

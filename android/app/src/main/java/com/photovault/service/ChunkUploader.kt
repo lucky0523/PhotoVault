@@ -79,7 +79,9 @@ class ChunkUploader @Inject constructor(
     ): UploadResult {
         val fileUri = Uri.parse(fileInfo.uri)
 
-        // Step 1: Compute SHA-256 hash
+        // Step 1: Duplicate pre-check using a hash of the current bytes.
+        // Cheap (no temp copy) so already-backed-up files are skipped without
+        // staging; the server dedups by hash.
         onProgress(
             UploadProgress(
                 fileName = fileInfo.fileName,
@@ -91,9 +93,9 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val fileHash: String
+        val precheckHash: String
         try {
-            fileHash = fileHasher.computeSha256(context, fileUri)
+            precheckHash = fileHasher.computeSha256(context, fileUri)
         } catch (e: Exception) {
             return UploadResult.Failed("Failed to compute file hash: ${e.message}", shouldRetry = false)
         }
@@ -110,7 +112,7 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val duplicateResult = checkDuplicate(fileHash, fileInfo)
+        val duplicateResult = checkDuplicate(precheckHash, fileInfo)
         if (duplicateResult != null) {
             val skipState = when (duplicateResult) {
                 is UploadResult.Duplicate -> UploadState.SKIPPED_DUPLICATE
@@ -133,14 +135,45 @@ class ChunkUploader @Inject constructor(
             return duplicateResult
         }
 
+        // Not a known duplicate: stage a stable on-disk snapshot and compute the
+        // hash + chunks from it. This guarantees the uploaded bytes match the
+        // hash even if the camera is still finalizing a freshly recorded video
+        // (reading the live URI twice can otherwise race and trip the server's
+        // "File integrity verification failed" check).
+        val snapshot: java.io.File = try {
+            createSnapshot(context, fileUri, fileInfo.fileName)
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultBackup", "snapshot failed for ${fileInfo.fileName}: ${e.message}", e)
+            return UploadResult.Failed("Failed to stage file for upload: ${e.message}", shouldRetry = true)
+        }
+
+        try {
+
+        val fileHash: String
+        val actualSize: Long
+        try {
+            val result = fileHasher.computeSha256AndSize(snapshot)
+            fileHash = result.hash
+            actualSize = result.size
+        } catch (e: Exception) {
+            return UploadResult.Failed("Failed to compute file hash: ${e.message}", shouldRetry = false)
+        }
+        android.util.Log.i(
+            "PhotoVaultBackup",
+            "Prepared ${fileInfo.fileName}: mediaStoreSize=${fileInfo.fileSize}, snapshotSize=$actualSize, precheckHash=$precheckHash, snapshotHash=$fileHash"
+        )
+
+        // Authoritative size = snapshot length, which matches the hashed bytes.
+        val upload = fileInfo.copy(fileSize = actualSize)
+
         // Step 3: Determine total chunks
-        val totalChunks = calculateTotalChunks(fileInfo.fileSize)
+        val totalChunks = calculateTotalChunks(upload.fileSize)
 
         // Step 4: Check for resume or initialize new session
         onProgress(
             UploadProgress(
-                fileName = fileInfo.fileName,
-                totalBytes = fileInfo.fileSize,
+                fileName = upload.fileName,
+                totalBytes = upload.fileSize,
                 uploadedBytes = 0,
                 currentChunk = 0,
                 totalChunks = totalChunks,
@@ -148,7 +181,7 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val sessionInfo = resolveSession(context, fileUri, fileInfo, fileHash, totalChunks, storagePolicy)
+        val sessionInfo = resolveSession(context, fileUri, upload, fileHash, totalChunks, storagePolicy)
             ?: return UploadResult.Failed("Failed to initialize upload session", shouldRetry = true)
 
         val sessionId = sessionInfo.sessionId
@@ -160,8 +193,8 @@ class ChunkUploader @Inject constructor(
             val uploadedBytes = chunkIndex.toLong() * CHUNK_SIZE
             onProgress(
                 UploadProgress(
-                    fileName = fileInfo.fileName,
-                    totalBytes = fileInfo.fileSize,
+                    fileName = upload.fileName,
+                    totalBytes = upload.fileSize,
                     uploadedBytes = uploadedBytes,
                     currentChunk = chunkIndex,
                     totalChunks = totalChunks,
@@ -169,7 +202,7 @@ class ChunkUploader @Inject constructor(
                 )
             )
 
-            val chunkData = readChunk(context, fileUri, chunkIndex, fileInfo.fileSize)
+            val chunkData = readChunkFromFile(snapshot, chunkIndex, upload.fileSize)
                 ?: return UploadResult.Failed("Failed to read chunk $chunkIndex", shouldRetry = true)
 
             val chunkResult = uploadChunkWithRetry(sessionId, chunkIndex, chunkData)
@@ -183,15 +216,15 @@ class ChunkUploader @Inject constructor(
 
             // Update local progress record
             lastUploadedChunk = chunkIndex
-            uploadRecordDao.updateProgress(fileInfo.uri, chunkIndex)
+            uploadRecordDao.updateProgress(upload.uri, chunkIndex)
         }
 
         // Step 6: Complete upload
         onProgress(
             UploadProgress(
-                fileName = fileInfo.fileName,
-                totalBytes = fileInfo.fileSize,
-                uploadedBytes = fileInfo.fileSize,
+                fileName = upload.fileName,
+                totalBytes = upload.fileSize,
+                uploadedBytes = upload.fileSize,
                 currentChunk = totalChunks,
                 totalChunks = totalChunks,
                 state = UploadState.COMPLETING
@@ -201,15 +234,15 @@ class ChunkUploader @Inject constructor(
         val completeResult = completeUpload(sessionId, fileHash)
         if (completeResult != null) {
             // Clean up local record on success
-            uploadRecordDao.deleteByFileUri(fileInfo.uri)
+            uploadRecordDao.deleteByFileUri(upload.uri)
             // Mark file as active in local photo_status (also handles reactivation
             // after manual re-upload of a previously trashed/purged file)
-            statusSyncManager.markActive(fileInfo.uri, fileHash)
+            statusSyncManager.markActive(upload.uri, fileHash)
             onProgress(
                 UploadProgress(
-                    fileName = fileInfo.fileName,
-                    totalBytes = fileInfo.fileSize,
-                    uploadedBytes = fileInfo.fileSize,
+                    fileName = upload.fileName,
+                    totalBytes = upload.fileSize,
+                    uploadedBytes = upload.fileSize,
                     currentChunk = totalChunks,
                     totalChunks = totalChunks,
                     state = UploadState.COMPLETED
@@ -219,6 +252,12 @@ class ChunkUploader @Inject constructor(
         }
 
         return UploadResult.Failed("Failed to complete upload", shouldRetry = true)
+
+        } finally {
+            if (snapshot.exists() && !snapshot.delete()) {
+                android.util.Log.w("PhotoVaultBackup", "could not delete snapshot ${snapshot.absolutePath}")
+            }
+        }
     }
 
     /**
@@ -379,7 +418,8 @@ class ChunkUploader @Inject constructor(
                     sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
                     storagePolicy = storagePolicy,
                     exifTime = exifTime,
-                    fileModifiedTime = fileInfo.createdTime.toString()
+                    fileModifiedTime = fileInfo.createdTime.toString(),
+                    mimeType = fileInfo.mimeType
                 )
             )
 
@@ -503,7 +543,11 @@ class ChunkUploader @Inject constructor(
 
             if (response.isSuccessful) {
                 val body = response.body()!!
-                if (body.success && body.integrityValid) {
+                // The server only returns success=true AFTER it has verified the
+                // merged file's SHA-256 against the expected hash, so success
+                // implies integrity is valid. (Older/again-parsed responses may
+                // omit integrity_valid; don't fail a genuine success on that.)
+                if (body.success) {
                     UploadResult.Success(
                         fileId = body.fileId,
                         storedPath = body.storedPath
@@ -516,6 +560,49 @@ class ChunkUploader @Inject constructor(
                 null
             }
         } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Copies the content behind [fileUri] into a private cache file and returns it.
+     *
+     * This gives a stable, seekable on-disk copy so the SHA-256 hash and the
+     * uploaded chunks are guaranteed to be computed from identical bytes, even
+     * if the original file is still being finalized by the OS/camera.
+     */
+    private fun createSnapshot(context: Context, fileUri: Uri, displayName: String): java.io.File {
+        val cacheDir = java.io.File(context.cacheDir, "upload_snapshots")
+        cacheDir.mkdirs()
+        val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val dest = java.io.File(cacheDir, "${System.nanoTime()}_$safeName")
+        context.contentResolver.openInputStream(fileUri)?.use { input ->
+            dest.outputStream().use { output ->
+                input.copyTo(output, 64 * 1024)
+            }
+        } ?: throw java.io.IOException("Cannot open source: $fileUri")
+        return dest
+    }
+
+    /**
+     * Reads a specific chunk from a local snapshot file using random access.
+     *
+     * @return the chunk bytes, or null on failure.
+     */
+    private fun readChunkFromFile(file: java.io.File, chunkIndex: Int, fileSize: Long): ByteArray? {
+        return try {
+            val offset = chunkIndex.toLong() * CHUNK_SIZE
+            val remaining = fileSize - offset
+            if (remaining <= 0) return null
+            val chunkLength = minOf(remaining, CHUNK_SIZE.toLong()).toInt()
+            val buffer = ByteArray(chunkLength)
+            java.io.RandomAccessFile(file, "r").use { raf ->
+                raf.seek(offset)
+                raf.readFully(buffer)
+            }
+            buffer
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultBackup", "readChunkFromFile failed at chunk $chunkIndex: ${e.message}", e)
             null
         }
     }

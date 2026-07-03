@@ -36,6 +36,7 @@ data class FolderImage(
     val isBackedUp: Boolean get() = status?.status == PhotoStatusValue.ACTIVE
     val isTrashed: Boolean get() = status?.status == PhotoStatusValue.TRASHED
     val isPurged: Boolean get() = status?.status == PhotoStatusValue.PURGED
+    val isVideo: Boolean get() = mimeType.startsWith("video/")
 }
 
 @HiltViewModel
@@ -121,45 +122,70 @@ class FolderDetailViewModel @Inject constructor(
             return emptyList()
         }
 
+        // Query both images and videos, then sort the combined result by date desc.
+        val combined = queryCollection(
+            context,
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            relativeDir,
+            defaultMime = "image/*"
+        ) + queryCollection(
+            context,
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            relativeDir,
+            defaultMime = "video/*"
+        )
+        return combined.sortedByDescending { it.createdTime }
+    }
+
+    /**
+     * Queries a single MediaStore [collection] (Images or Video) for media under
+     * [relativeDir]. Uses the generic [android.provider.MediaStore.MediaColumns],
+     * which are shared by both collections.
+     */
+    private fun queryCollection(
+        context: Context,
+        collection: Uri,
+        relativeDir: String,
+        defaultMime: String
+    ): List<FolderImage> {
         val result = mutableListOf<FolderImage>()
-        val collection = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
-            android.provider.MediaStore.Images.Media._ID,
-            android.provider.MediaStore.Images.Media.DISPLAY_NAME,
-            android.provider.MediaStore.Images.Media.SIZE,
-            android.provider.MediaStore.Images.Media.DATE_MODIFIED,
-            android.provider.MediaStore.Images.Media.MIME_TYPE,
-            android.provider.MediaStore.Images.Media.RELATIVE_PATH
+            android.provider.MediaStore.MediaColumns._ID,
+            android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+            android.provider.MediaStore.MediaColumns.SIZE,
+            android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
+            android.provider.MediaStore.MediaColumns.MIME_TYPE,
+            android.provider.MediaStore.MediaColumns.RELATIVE_PATH
         )
 
         val selection: String
         val args: Array<String>
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            selection = "${android.provider.MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
+            selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
             args = arrayOf("$relativeDir/%")
         } else {
             @Suppress("DEPRECATION")
-            selection = "${android.provider.MediaStore.Images.Media.DATA} LIKE ?"
+            selection = "${android.provider.MediaStore.MediaColumns.DATA} LIKE ?"
             args = arrayOf("%/$relativeDir/%")
         }
 
-        val sortOrder = "${android.provider.MediaStore.Images.Media.DATE_MODIFIED} DESC"
+        val sortOrder = "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} DESC"
 
         try {
             context.contentResolver.query(collection, projection, selection, args, sortOrder)
                 ?.use { cursor ->
-                    val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media._ID)
-                    val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DISPLAY_NAME)
-                    val sizeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.SIZE)
-                    val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATE_MODIFIED)
-                    val mimeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.MIME_TYPE)
+                    val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
+                    val sizeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.SIZE)
+                    val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
+                    val mimeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
                         val name = cursor.getString(nameCol) ?: "unknown"
                         val size = cursor.getLong(sizeCol)
                         val dateModifiedMs = cursor.getLong(dateCol) * 1000L
-                        val mime = cursor.getString(mimeCol) ?: "image/*"
+                        val mime = cursor.getString(mimeCol) ?: defaultMime
                         val contentUri = android.content.ContentUris.withAppendedId(collection, id)
                         result.add(
                             FolderImage(

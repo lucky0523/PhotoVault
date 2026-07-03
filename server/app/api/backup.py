@@ -226,7 +226,7 @@ class InitUploadRequest(BaseModel):
     source_folder: str
     storage_policy: StoragePolicyDTO
     exif_time: Optional[str] = None
-
+    mime_type: Optional[str] = None
 
 class InitUploadResponse(BaseModel):
     """Response body for upload initialization."""
@@ -258,6 +258,7 @@ class CompleteUploadResponse(BaseModel):
     success: bool
     file_id: Optional[int] = None
     stored_path: str = ""
+    integrity_valid: bool = True
 
 
 class ResumeInfoResponse(BaseModel):
@@ -319,6 +320,7 @@ async def init_upload(
         source_folder=body.source_folder,
         storage_policy=policy,
         file_metadata=file_metadata,
+        mime_type=body.mime_type,
     )
 
     upload_service = UploadService(db, settings.storage_root)
@@ -432,6 +434,7 @@ async def complete_upload(
         success=True,
         file_id=result.file_id,
         stored_path=result.stored_path,
+        integrity_valid=True,
     )
 
 

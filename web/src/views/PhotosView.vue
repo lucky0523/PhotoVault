@@ -192,6 +192,14 @@
                     loading="lazy"
                     @error="handleThumbnailError"
                   />
+                  <div v-if="isVideo(file)" class="video-badge">
+                    <el-icon :size="28"><VideoPlay /></el-icon>
+                  </div>
+                  <div v-else-if="isMotionPhoto(file)" class="live-badge">
+                    <LivePhotoIcon class="live-icon" />
+                    <span>LIVE</span>
+                  </div>
+                  <div v-if="file.is_ultra_hdr" class="hdr-badge" title="Ultra HDR">HDR</div>
                 </div>
                 <div class="file-overlay">
                   <span class="file-name">{{ file.file_name }}</span>
@@ -215,12 +223,15 @@
               <el-table-column type="selection" width="50" :selectable="() => true" />
               <el-table-column width="60">
                 <template #default="{ row }">
-                  <img
-                    :src="getThumbnailUrl(row.id, 'small')"
-                    class="list-thumbnail"
-                    :alt="row.file_name"
-                    @error="handleThumbnailError"
-                  />
+                  <div class="list-thumbnail-wrap">
+                    <img
+                      :src="getThumbnailUrl(row.id, 'small')"
+                      class="list-thumbnail"
+                      :alt="row.file_name"
+                      @error="handleThumbnailError"
+                    />
+                    <el-icon v-if="isVideo(row)" class="list-video-badge" :size="16"><VideoPlay /></el-icon>
+                  </div>
                 </template>
               </el-table-column>
               <el-table-column prop="file_name" label="文件名" min-width="200" />
@@ -334,6 +345,7 @@ import {
   Delete,
   Download,
   Check,
+  VideoPlay,
 } from '@element-plus/icons-vue'
 import type { ElTree, ElTable } from 'element-plus'
 import {
@@ -349,6 +361,7 @@ import {
 import type { DirectoryInfo, FileInfo } from '@/api/files'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImagePreview from '@/components/ImagePreview.vue'
+import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
 import { useTrashStore } from '@/stores/trash'
 import { useConfigStore } from '@/stores/config'
 
@@ -746,6 +759,22 @@ function getFileType(fileName: string): string {
   return typeMap[ext] || ext.toUpperCase()
 }
 
+const VIDEO_EXTENSIONS = [
+  'mp4', 'mov', 'mkv', 'webm', '3gp', 'avi', 'mpeg', 'mpg',
+  'wmv', 'flv', 'm4v', 'ts', 'm2ts', 'mts',
+]
+
+function isVideo(file: FileInfo): boolean {
+  if ((file.media_type || '').toLowerCase() === 'video') return true
+  if (file.mime_type && file.mime_type.toLowerCase().startsWith('video/')) return true
+  const ext = file.file_name.split('.').pop()?.toLowerCase() || ''
+  return VIDEO_EXTENSIONS.includes(ext)
+}
+
+function isMotionPhoto(file: FileInfo): boolean {
+  return !isVideo(file) && !!file.is_motion_photo
+}
+
 function handleThumbnailError(e: Event) {
   const img = e.target as HTMLImageElement
   img.src = 'data:image/svg+xml,' + encodeURIComponent(
@@ -1026,12 +1055,66 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   background: #f5f7fa;
+  position: relative;
 }
 
 .file-thumbnail img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.video-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.live-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.live-badge .live-icon {
+  font-size: 13px;
+}
+
+.hdr-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  line-height: 1.5;
+  pointer-events: none;
 }
 
 .file-overlay {
@@ -1067,6 +1150,22 @@ onMounted(() => {
   height: 40px;
   object-fit: cover;
   border-radius: 4px;
+}
+
+.list-thumbnail-wrap {
+  position: relative;
+  width: 40px;
+  height: 40px;
+}
+
+.list-video-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+  pointer-events: none;
 }
 
 /* Pagination */

@@ -80,6 +80,23 @@ class BackgroundScanWorker @AssistedInject constructor(
             "dng", "cr2", "cr3", "nef", "arw", "orf", "raf", "rw2"
         )
 
+        private val VIDEO_MIME_TYPES = setOf(
+            "video/mp4",
+            "video/quicktime",
+            "video/x-matroska",
+            "video/webm",
+            "video/3gpp",
+            "video/x-msvideo",
+            "video/mpeg",
+            "video/x-ms-wmv",
+            "video/x-flv"
+        )
+
+        private val VIDEO_EXTENSIONS = setOf(
+            "mp4", "mov", "mkv", "webm", "3gp", "avi", "mpeg", "mpg",
+            "wmv", "flv", "m4v", "ts"
+        )
+
         /**
          * Schedules the periodic scan worker with WorkManager.
          */
@@ -96,6 +113,7 @@ class BackgroundScanWorker @AssistedInject constructor(
         }
 
         const val ONE_TIME_WORK_NAME = "background_scan_worker_once"
+        const val FULL_SCAN_WORK_NAME = "background_scan_worker_full"
 
         /**
          * Triggers an immediate one-time scan (e.g. right after a folder is added),
@@ -125,6 +143,10 @@ class BackgroundScanWorker @AssistedInject constructor(
          * "立即备份"). Behaves like [runOnce] but passes [KEY_FORCE_FULL_SCAN] = true
          * so every image in each folder is re-enqueued regardless of lastScanTime.
          * The server dedups by hash, so already-backed-up files are skipped cheaply.
+         *
+         * Uses a dedicated unique work name ([FULL_SCAN_WORK_NAME]) so an
+         * incremental [runOnce] (e.g. triggered by the MediaStore observer) can't
+         * replace/cancel a pending full scan.
          */
         fun runNow(context: Context) {
             val workRequest = androidx.work.OneTimeWorkRequestBuilder<BackgroundScanWorker>()
@@ -139,7 +161,7 @@ class BackgroundScanWorker @AssistedInject constructor(
                 .build()
 
             WorkManager.getInstance(context).enqueueUniqueWork(
-                ONE_TIME_WORK_NAME,
+                FULL_SCAN_WORK_NAME,
                 androidx.work.ExistingWorkPolicy.REPLACE,
                 workRequest
             )
@@ -336,17 +358,28 @@ class BackgroundScanWorker @AssistedInject constructor(
     }
 
     /**
-     * Scans a single folder for new image files since the given timestamp.
+     * Scans a single folder for new image and video files since the given timestamp.
      *
      * Uses MediaStore instead of SAF/DocumentFile traversal: on some OEM ROMs
      * (e.g. ColorOS) the ExternalStorageProvider returns empty results for tree-URI
      * child queries even when the folder is readable and contains files. MediaStore
-     * reliably indexes all images and supports openInputStream on the returned URIs.
+     * reliably indexes all media and supports openInputStream on the returned URIs.
+     *
+     * Both the image (MediaStore.Images) and video (MediaStore.Video) collections
+     * are queried so photos and videos are backed up together.
      */
     private fun scanFolder(folderUri: String, lastScanTime: Long): List<FileInfo> {
         val relativeDir = treeUriToRelativePath(folderUri) ?: return emptyList()
         android.util.Log.i("PhotoVaultScan", "  relativePath='$relativeDir/' querying MediaStore")
-        return queryMediaStoreImages(relativeDir, lastScanTime, folderUri)
+        val images = queryMediaStore(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            relativeDir, lastScanTime, folderUri, defaultMime = "image/*"
+        )
+        val videos = queryMediaStore(
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            relativeDir, lastScanTime, folderUri, defaultMime = "video/*"
+        )
+        return images + videos
     }
 
     /**
@@ -365,22 +398,27 @@ class BackgroundScanWorker @AssistedInject constructor(
     }
 
     /**
-     * Queries MediaStore for images under the given relative directory (recursively),
-     * modified after [lastScanTime] (ms). Returns FileInfo with MediaStore content URIs.
+     * Queries a MediaStore [collection] (Images or Video) for media under the given
+     * relative directory (recursively), modified after [lastScanTime] (ms).
+     * Returns FileInfo with MediaStore content URIs.
+     *
+     * Uses the generic [android.provider.MediaStore.MediaColumns] which are shared by
+     * both the Images and Video collections, so the same query works for either.
      */
-    private fun queryMediaStoreImages(
+    private fun queryMediaStore(
+        collection: android.net.Uri,
         relativeDir: String,
         lastScanTime: Long,
-        folderUri: String
+        folderUri: String,
+        defaultMime: String
     ): List<FileInfo> {
         val results = mutableListOf<FileInfo>()
-        val collection = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
-            android.provider.MediaStore.Images.Media._ID,
-            android.provider.MediaStore.Images.Media.DISPLAY_NAME,
-            android.provider.MediaStore.Images.Media.SIZE,
-            android.provider.MediaStore.Images.Media.DATE_MODIFIED,
-            android.provider.MediaStore.Images.Media.MIME_TYPE
+            android.provider.MediaStore.MediaColumns._ID,
+            android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+            android.provider.MediaStore.MediaColumns.SIZE,
+            android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
+            android.provider.MediaStore.MediaColumns.MIME_TYPE
         )
         val lastScanSeconds = lastScanTime / 1000
 
@@ -388,13 +426,13 @@ class BackgroundScanWorker @AssistedInject constructor(
         val args: Array<String>
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             // RELATIVE_PATH matches "Pictures/bili/" and any nested subfolder
-            selection = "${android.provider.MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND " +
-                "${android.provider.MediaStore.Images.Media.DATE_MODIFIED} > ?"
+            selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND " +
+                "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} > ?"
             args = arrayOf("$relativeDir/%", lastScanSeconds.toString())
         } else {
             @Suppress("DEPRECATION")
-            selection = "${android.provider.MediaStore.Images.Media.DATA} LIKE ? AND " +
-                "${android.provider.MediaStore.Images.Media.DATE_MODIFIED} > ?"
+            selection = "${android.provider.MediaStore.MediaColumns.DATA} LIKE ? AND " +
+                "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} > ?"
             args = arrayOf("%/$relativeDir/%", lastScanSeconds.toString())
         }
 
@@ -402,18 +440,18 @@ class BackgroundScanWorker @AssistedInject constructor(
             applicationContext.contentResolver.query(
                 collection, projection, selection, args, null
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DISPLAY_NAME)
-                val sizeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.SIZE)
-                val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATE_MODIFIED)
-                val mimeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.MIME_TYPE)
+                val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.SIZE)
+                val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
+                val mimeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
 
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     val name = cursor.getString(nameCol) ?: "unknown"
                     val size = cursor.getLong(sizeCol)
                     val dateModifiedMs = cursor.getLong(dateCol) * 1000L
-                    val mime = cursor.getString(mimeCol) ?: "image/*"
+                    val mime = cursor.getString(mimeCol) ?: defaultMime
                     val contentUri = android.content.ContentUris.withAppendedId(collection, id)
 
                     results.add(
@@ -428,7 +466,7 @@ class BackgroundScanWorker @AssistedInject constructor(
                     )
                 }
             }
-            android.util.Log.i("PhotoVaultScan", "  MediaStore returned ${results.size} image(s)")
+            android.util.Log.i("PhotoVaultScan", "  MediaStore($defaultMime) returned ${results.size} item(s)")
         } catch (e: Exception) {
             android.util.Log.e("PhotoVaultScan", "  MediaStore query failed: ${e.message}", e)
         }
@@ -436,21 +474,32 @@ class BackgroundScanWorker @AssistedInject constructor(
     }
 
     /**
-     * Counts total image files in a folder (including subfolders) via MediaStore.
+     * Counts total media files (images + videos) in a folder (including subfolders)
+     * via MediaStore.
      */
     private fun countImagesInFolder(folderUri: String): Int {
         val relativeDir = treeUriToRelativePath(folderUri) ?: return 0
-        val collection = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(android.provider.MediaStore.Images.Media._ID)
+        return countInCollection(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, relativeDir
+        ) + countInCollection(
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, relativeDir
+        )
+    }
+
+    /**
+     * Counts media files under [relativeDir] within the given MediaStore [collection].
+     */
+    private fun countInCollection(collection: android.net.Uri, relativeDir: String): Int {
+        val projection = arrayOf(android.provider.MediaStore.MediaColumns._ID)
 
         val selection: String
         val args: Array<String>
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            selection = "${android.provider.MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
+            selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
             args = arrayOf("$relativeDir/%")
         } else {
             @Suppress("DEPRECATION")
-            selection = "${android.provider.MediaStore.Images.Media.DATA} LIKE ?"
+            selection = "${android.provider.MediaStore.MediaColumns.DATA} LIKE ?"
             args = arrayOf("%/$relativeDir/%")
         }
 

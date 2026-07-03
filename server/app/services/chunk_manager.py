@@ -84,6 +84,7 @@ class ChunkManager:
         device_name: str,
         original_path: str,
         exif_time: Optional[datetime] = None,
+        mime_type: Optional[str] = None,
     ) -> str:
         """Create an upload session.
 
@@ -113,8 +114,8 @@ class ChunkManager:
             INSERT INTO upload_sessions
                 (id, user_id, file_hash, file_name, file_size, total_chunks,
                  received_chunks, target_path, device_name, original_path,
-                 exif_time, status, created_at, updated_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 exif_time, mime_type, status, created_at, updated_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -128,6 +129,7 @@ class ChunkManager:
                 device_name,
                 original_path,
                 exif_time.isoformat() if exif_time else None,
+                mime_type,
                 "active",
                 now.isoformat(),
                 now.isoformat(),

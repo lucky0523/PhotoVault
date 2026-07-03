@@ -21,6 +21,36 @@ class FileHasher @Inject constructor() {
     }
 
     /**
+     * Computes the SHA-256 hash of a file identified by its content URI, along
+     * with the exact number of bytes read.
+     *
+     * The returned size is authoritative for chunked upload: it always matches
+     * the bytes covered by [HashAndSize.hash]. MediaStore's SIZE column can be
+     * stale (e.g. a video indexed before it finished writing), so callers should
+     * prefer this size over MediaStore's for integrity-critical operations.
+     *
+     * @param context Application context for content resolver access
+     * @param fileUri Content URI of the file to hash
+     * @return The hex-encoded SHA-256 hash and the byte count.
+     * @throws java.io.IOException if the file cannot be read
+     */
+    suspend fun computeSha256AndSize(context: Context, fileUri: Uri): HashAndSize {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(BUFFER_SIZE)
+        var total = 0L
+
+        context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+                total += bytesRead
+            }
+        } ?: throw IllegalArgumentException("Cannot open file: $fileUri")
+
+        return HashAndSize(digest.digest().toHexString(), total)
+    }
+
+    /**
      * Computes the SHA-256 hash of a file identified by its content URI.
      *
      * @param context Application context for content resolver access
@@ -72,7 +102,35 @@ class FileHasher @Inject constructor() {
         return digest.digest(data).toHexString()
     }
 
+    /**
+     * Computes the SHA-256 hash and byte count of a local [file].
+     *
+     * Reading from a stable on-disk snapshot (rather than a live MediaStore URI)
+     * guarantees the hash matches the exact bytes that will later be chunked and
+     * uploaded, even if the original file is still being finalized by the camera.
+     */
+    suspend fun computeSha256AndSize(file: java.io.File): HashAndSize {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(BUFFER_SIZE)
+        var total = 0L
+
+        file.inputStream().use { inputStream ->
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+                total += bytesRead
+            }
+        }
+
+        return HashAndSize(digest.digest().toHexString(), total)
+    }
+
     private fun ByteArray.toHexString(): String {
         return joinToString("") { "%02x".format(it) }
     }
 }
+
+/**
+ * Result of hashing a file: its SHA-256 hash and the exact byte count read.
+ */
+data class HashAndSize(val hash: String, val size: Long)

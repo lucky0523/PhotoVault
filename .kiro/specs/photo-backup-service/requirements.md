@@ -16,6 +16,10 @@
 - **Device_Name**: 手机设备的型号名称（如 Pixel9Pro）
 - **Source_Folder**: 手机上被选定进行备份的文件夹路径
 - **Storage_Policy**: 针对每个 Source_Folder 配置的存储策略，包含两个正交选项：是否手动指定目录、是否按年月分层
+- **Media_File**: 待备份的媒体文件，包含图片（Image）和视频（Video）两大类
+- **Motion_Photo**: Android 动态照片，一个 JPEG 图片文件尾部内嵌了一段 MP4 视频，通过图片 XMP 元数据（`GCamera:MotionPhoto` / `MicroVideoOffset` 或 Container 中语义为 `MotionPhoto` 的 Item）描述内嵌视频，遵循 [Android Motion Photo 规范](https://developer.android.com/media/platform/motion-photo-format)
+- **Ultra_HDR**: 遵循 [Android Ultra HDR 规范](https://developer.android.com/media/platform/hdr-image-format) 的 JPEG 照片，内含 SDR 基础图 + 增益图（gain map），通过图片 XMP 中的 `hdr-gain-map`（`hdrgm`）命名空间或语义为 `GainMap` 的 Container Item 标识
+- **Media_Type**: 文件的媒体类型标记，取值为 `image` 或 `video`，由服务端根据 MIME 类型 / 扩展名推断并持久化
 
 ## 需求
 
@@ -252,10 +256,12 @@
 1. THE 系统 SHALL 支持以下常见图片格式的备份和缩略图生成：JPEG、PNG、WebP、GIF、BMP、TIFF
 2. THE 系统 SHALL 支持以下手机特有格式：HEIC/HEIF（iPhone）、AVIF
 3. THE 系统 SHALL 支持以下专业相机 RAW 格式的备份：DNG、CR2、CR3（Canon）、NEF（Nikon）、ARW（Sony）、ORF（Olympus）、RAF（Fujifilm）、RW2（Panasonic）
-4. THE 系统 SHALL 支持 iPhone Live Photo 的备份，将 HEIC/JPEG 图片文件和对应的 MOV 视频文件作为一组关联文件进行备份和展示
-5. THE 系统 SHALL 支持 Android 动态照片（Motion Photo）的备份，识别并保留嵌入在图片文件中的视频数据
-6. WHEN 生成缩略图时，IF 文件格式为 RAW，THEN THE Backup_Server SHALL 提取 RAW 文件中嵌入的预览图作为缩略图；若无嵌入预览则使用 rawpy 库解码生成
-7. WHEN 展示 Live Photo / 动态照片时，THE Web 前端和 Mobile_Client SHALL 支持播放关联的视频片段
+4. THE 系统 SHALL 支持以下视频格式的备份：MP4、MOV、MKV、WebM、3GP、AVI、MPEG、WMV、FLV、M4V、TS
+5. THE 系统 SHALL 支持 iPhone Live Photo 的备份，将 HEIC/JPEG 图片文件和对应的 MOV 视频文件作为一组关联文件进行备份和展示
+6. THE 系统 SHALL 支持 Android 动态照片（Motion_Photo）的备份，识别并保留嵌入在图片文件中的视频数据
+7. WHEN 生成缩略图时，IF 文件格式为 RAW，THEN THE Backup_Server SHALL 提取 RAW 文件中嵌入的预览图作为缩略图；若无嵌入预览则使用 rawpy 库解码生成
+8. WHEN 为视频文件生成缩略图时，THE Backup_Server SHALL 使用 ffmpeg 抽取视频的一帧作为封面缩略图；IF 服务端未安装 ffmpeg，THEN THE Backup_Server SHALL 返回缩略图生成失败，由客户端以占位图 + 播放角标展示
+9. WHEN 展示 Live Photo / 动态照片时，THE Web 前端和 Mobile_Client SHALL 支持播放关联的视频片段
 
 ### 需求 19：首次部署引导
 
@@ -269,3 +275,49 @@
 4. WHILE 系统处于初始化引导模式时，THE Backup_Server SHALL 拒绝所有非引导相关的 API 请求
 5. WHEN 引导完成后，THE 系统 SHALL 不再显示引导页面，后续访问直接进入登录页面
 6. THE 引导页面 SHALL 要求管理员密码长度不少于 8 个字符
+
+### 需求 20：视频文件备份（Android）
+
+**用户故事：** 作为用户，我希望 Android 客户端不仅备份照片，也能自动备份相册中的视频，以便照片和视频统一归档到 NAS。
+
+#### 验收标准
+
+1. WHEN Mobile_Client 扫描 Source_Folder 时，THE Mobile_Client SHALL 同时查询系统媒体库中的图片集合（MediaStore.Images）和视频集合（MediaStore.Video），将两类 Media_File 合并后纳入备份队列
+2. THE Mobile_Client SHALL 在清单中声明并在运行时申请视频读取权限（Android 13+ 的 `READ_MEDIA_VIDEO`；更低版本使用 `READ_EXTERNAL_STORAGE`）
+3. WHEN Mobile_Client 计算 Media_File 的 File_Hash 与用于分块上传的文件大小时，THE Mobile_Client SHALL 先将文件快照到应用私有缓存，并从同一份快照计算哈希和读取分块，确保上传的字节与哈希对应的字节完全一致（避免刚录制的视频在媒体库尺寸未刷新时导致完整性校验失败）
+4. WHEN Mobile_Client 升级到首次支持视频/动态照片扫描的版本后，THE Mobile_Client SHALL 自动执行一次全量回扫（忽略各文件夹的上次扫描时间），以补备此前未被支持的历史视频文件，且该回扫每个能力版本仅执行一次
+5. WHEN Backup_Server 完成一次上传（合并后哈希校验通过并成功注册文件记录）时，THE Backup_Server SHALL 在完成响应中返回 `success=true` 与 `integrity_valid=true`；THE Mobile_Client SHALL 依据 `success` 判定备份成功，不因缺失的 `integrity_valid` 字段而误报"完整性校验失败"
+
+### 需求 21：动态照片（Motion Photo）识别与预览
+
+**用户故事：** 作为用户，我希望系统能识别动态照片并在 Web 端播放其动态片段，以便像在手机上一样查看动态照片。
+
+#### 验收标准
+
+1. WHEN Backup_Server 完成图片文件备份时，THE Backup_Server SHALL 解析该 JPEG 的 XMP 元数据，识别其是否为 Motion_Photo（`GCamera:MotionPhoto` / `MicroVideoOffset`，或 Container 中语义为 `MotionPhoto`、MIME 为 `video/mp4` 的 Item），并在无有效 XMP 时回退扫描文件尾部的 MP4（`ftyp`）标记
+2. WHEN 识别为 Motion_Photo 时，THE Backup_Server SHALL 持久化 `is_motion_photo=true` 及内嵌视频的起始字节偏移 `motion_video_offset`
+3. THE Backup_Server SHALL 提供接口 `GET /api/v1/files/motion/{file_id}`，仅流式返回文件尾部的内嵌 MP4 视频字节，MIME 为 `video/mp4`，并支持 HTTP Range 请求以便浏览器播放与拖动进度
+4. WHEN Web 前端展示 Motion_Photo 时，THE Web 前端 SHALL 在缩略图右上角显示类 iOS Live Photo 图标，并在灯箱中提供"LIVE"播放按钮，点击后在静态图之上叠加播放内嵌视频
+5. THE Backup_Server SHALL 提供对历史图片记录批量补测 Motion_Photo 的能力，使升级前已备份的图片也能被标记
+
+### 需求 22：Ultra HDR 识别与标识
+
+**用户故事：** 作为用户，我希望系统能识别 Ultra HDR 照片并在界面上给出标识，以便区分普通照片与 HDR 照片。
+
+#### 验收标准
+
+1. WHEN Backup_Server 完成图片文件备份时，THE Backup_Server SHALL 解析该 JPEG 的 XMP 元数据，通过 `hdr-gain-map`（`hdrgm`）命名空间或语义为 `GainMap` 的 Container Item 判定其是否为 Ultra_HDR，并持久化 `is_ultra_hdr` 标记
+2. THE Backup_Server SHALL 在文件列表 / 详情接口中返回 `is_ultra_hdr` 字段
+3. WHEN Web 前端展示 Ultra_HDR 照片时，THE Web 前端 SHALL 在照片右下角显示紧凑的"HDR"角标（完整名称"Ultra HDR"以悬浮提示展示）
+4. THE Backup_Server SHALL 提供对历史图片记录批量补测 Ultra_HDR 的能力，使升级前已备份的图片也能被标记
+
+### 需求 23：时间线日期筛选
+
+**用户故事：** 作为用户，我希望时间线页面的日期筛选能直观区分"有照片""无照片""未来"的日期，同时不限制我的选择自由。
+
+#### 验收标准
+
+1. THE Web 前端时间线页面 SHALL 提供按设备、文件格式、焦段、日期范围的多维筛选
+2. WHEN 展示日期范围选择器时，THE Web 前端 SHALL 将未来日期以及没有任何已备份照片/视频的日期置灰显示
+3. WHILE 日期被置灰时，THE Web 前端 SHALL 仍允许用户点击选择这些日期（不禁用），仅作视觉弱化
+4. THE Web 前端 SHALL 在存在任意生效筛选条件时，于筛选组件左侧显示"清除筛选"按钮，点击后清空全部筛选条件

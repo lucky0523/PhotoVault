@@ -23,6 +23,9 @@ export interface FileInfo {
   file_name: string
   file_size: number
   mime_type?: string
+  media_type?: string
+  is_motion_photo?: boolean
+  is_ultra_hdr?: boolean
   exif_time?: string
   thumbnail_url: string
   created_at: string
@@ -181,6 +184,14 @@ export function getThumbnailUrl(fileId: number, size: 'small' | 'medium' = 'smal
 export function getDownloadUrl(fileId: number): string {
   const token = localStorage.getItem('access_token')
   return `/api/v1/files/download/${fileId}?token=${token}`
+}
+
+/**
+ * Get the embedded motion-photo video URL (动态照片) for a file
+ */
+export function getMotionVideoUrl(fileId: number): string {
+  const token = localStorage.getItem('access_token')
+  return `/api/v1/files/motion/${fileId}?token=${token}`
 }
 
 /**

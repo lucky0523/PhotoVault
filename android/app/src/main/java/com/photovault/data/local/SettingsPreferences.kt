@@ -26,10 +26,20 @@ class SettingsPreferences @Inject constructor(
         private const val KEY_WIFI_ONLY = "wifi_only"
         private const val KEY_MIN_BATTERY_LEVEL = "min_battery_level"
         private const val KEY_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
+        private const val KEY_MEDIA_BACKFILL_VERSION = "media_backfill_version"
 
         const val DEFAULT_WIFI_ONLY = true
         const val DEFAULT_MIN_BATTERY_LEVEL = 50
         const val DEFAULT_SCAN_INTERVAL_MINUTES = 15
+
+        /**
+         * Current media-scan capability version. Bump this whenever the set of
+         * media types the scanner discovers changes, so existing installs run a
+         * one-time full re-scan to back-fill newly supported files.
+         *
+         * v1: added video file support (previously images only).
+         */
+        const val CURRENT_MEDIA_BACKFILL_VERSION = 1
 
         const val MIN_BATTERY_LEVEL_LOWER = 20
         const val MIN_BATTERY_LEVEL_UPPER = 80
@@ -99,5 +109,19 @@ class SettingsPreferences @Inject constructor(
         val validMinutes = if (minutes in SCAN_INTERVAL_OPTIONS) minutes else DEFAULT_SCAN_INTERVAL_MINUTES
         _scanIntervalMinutes.value = validMinutes
         prefs.edit().putInt(KEY_SCAN_INTERVAL_MINUTES, validMinutes).apply()
+    }
+
+    /**
+     * The media-scan capability version this install has already back-filled.
+     * Returns 0 for fresh installs / installs that predate video support.
+     */
+    fun getMediaBackfillVersion(): Int =
+        prefs.getInt(KEY_MEDIA_BACKFILL_VERSION, 0)
+
+    /**
+     * Record that a one-time full re-scan has been completed for [version].
+     */
+    fun setMediaBackfillVersion(version: Int) {
+        prefs.edit().putInt(KEY_MEDIA_BACKFILL_VERSION, version).apply()
     }
 }

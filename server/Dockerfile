@@ -26,12 +26,13 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
-# Install system dependencies for Pillow (JPEG, PNG, etc.)
+# Install system dependencies for Pillow (JPEG, PNG, etc.) and ffmpeg (video thumbnails)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo-dev \
     libpng-dev \
     zlib1g-dev \
     libffi-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

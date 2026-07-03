@@ -107,6 +107,8 @@ dependencies {
 
     // Coil - Image Loading
     implementation("io.coil-kt:coil-compose:2.5.0")
+    // Coil video frame decoding (for video thumbnails)
+    implementation("io.coil-kt:coil-video:2.5.0")
 
     // DocumentFile - SAF support
     implementation("androidx.documentfile:documentfile:1.0.1")

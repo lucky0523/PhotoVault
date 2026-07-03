@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -210,6 +211,18 @@ private fun ImageThumbnailItem(
                 .graphicsLayerAlpha(alpha),
             contentScale = ContentScale.Crop
         )
+
+        // Play icon overlay for videos
+        if (image.isVideo) {
+            Icon(
+                imageVector = Icons.Filled.PlayCircle,
+                contentDescription = "视频",
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(32.dp)
+            )
+        }
 
         // Status badge (bottom-right corner)
         StatusBadge(image)

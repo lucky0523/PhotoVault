@@ -19,6 +19,12 @@ class MediaStoreObserver(private val context: Context) : ContentObserver(Handler
                     true,
                     observer!!
                 )
+                // Also watch for new/changed videos so they get backed up too.
+                context.contentResolver.registerContentObserver(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    true,
+                    observer!!
+                )
             }
         }
 

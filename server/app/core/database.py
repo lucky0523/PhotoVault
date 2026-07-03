@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS file_records (
     live_photo_group_id TEXT,
     live_photo_type TEXT,
     media_type TEXT DEFAULT 'image',
+    is_motion_photo BOOLEAN DEFAULT FALSE,
+    motion_video_offset INTEGER,
+    is_ultra_hdr BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP,
     deleted_batch_id TEXT,
@@ -72,6 +75,7 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
     device_name TEXT NOT NULL,
     original_path TEXT NOT NULL,
     exif_time TIMESTAMP,
+    mime_type TEXT,
     status TEXT DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -118,11 +122,29 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE file_records ADD COLUMN purged_at TIMESTAMP;")
         if "focal_length" not in existing_cols:
             await db.execute("ALTER TABLE file_records ADD COLUMN focal_length REAL;")
+        if "media_type" not in existing_cols:
+            await db.execute(
+                "ALTER TABLE file_records ADD COLUMN media_type TEXT DEFAULT 'image';"
+            )
+        if "is_motion_photo" not in existing_cols:
+            await db.execute(
+                "ALTER TABLE file_records ADD COLUMN is_motion_photo BOOLEAN DEFAULT FALSE;"
+            )
+        if "motion_video_offset" not in existing_cols:
+            await db.execute(
+                "ALTER TABLE file_records ADD COLUMN motion_video_offset INTEGER;"
+            )
+        if "is_ultra_hdr" not in existing_cols:
+            await db.execute(
+                "ALTER TABLE file_records ADD COLUMN is_ultra_hdr BOOLEAN DEFAULT FALSE;"
+            )
 
         cursor = await db.execute("PRAGMA table_info(upload_sessions)")
         session_cols = {row[1] for row in await cursor.fetchall()}
         if "exif_time" not in session_cols:
             await db.execute("ALTER TABLE upload_sessions ADD COLUMN exif_time TIMESTAMP;")
+        if "mime_type" not in session_cols:
+            await db.execute("ALTER TABLE upload_sessions ADD COLUMN mime_type TEXT;")
 
         # Create indexes
         for index_sql in _CREATE_INDEXES:

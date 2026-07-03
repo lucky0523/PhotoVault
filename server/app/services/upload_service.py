@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import mimetypes
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ import aiosqlite
 from app.models.storage import FileMetadata, StoragePolicy
 from app.services.chunk_manager import ChunkManager
 from app.services.deduplication_service import DeduplicationService, FileRecord
+from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
 from app.services.storage_path_engine import StoragePathEngine
 
 logger = logging.getLogger("photovault.upload")
@@ -49,6 +51,7 @@ class InitUploadInfo:
     source_folder: str
     storage_policy: StoragePolicy
     file_metadata: FileMetadata
+    mime_type: Optional[str] = None
 
 
 @dataclass
@@ -201,6 +204,7 @@ class UploadService:
             device_name=file_info.device_name,
             original_path=file_info.file_path,
             exif_time=file_info.file_metadata.exif_time,
+            mime_type=file_info.mime_type,
         )
 
         total_chunks = math.ceil(file_info.file_size / ChunkManager.CHUNK_SIZE)
@@ -276,9 +280,22 @@ class UploadService:
             )
 
         # Step 3: Verify integrity
-        if not self._chunk_manager.verify_integrity(
-            merged_path, session["file_hash"]
-        ):
+        computed_hash = self._compute_file_hash(merged_path)
+        merged_size = Path(merged_path).stat().st_size
+        if computed_hash != session["file_hash"]:
+            logger.warning(
+                "Integrity check FAILED for session=%s file=%s: "
+                "expected_hash=%s computed_hash=%s expected_size=%s merged_size=%s "
+                "total_chunks=%s received_chunks=%s",
+                session_id,
+                session["file_name"],
+                session["file_hash"],
+                computed_hash,
+                session["file_size"],
+                merged_size,
+                total_chunks,
+                len(received),
+            )
             # Cleanup on failure
             await self._chunk_manager.cleanup_session(session_id)
             return CompleteUploadResult(
@@ -304,6 +321,12 @@ class UploadService:
                 # Remove merged file since we don't need it
                 Path(merged_path).unlink(missing_ok=True)
 
+                # Resolve MIME type and derive the media type (image vs video)
+                mime_type = self._resolve_mime_type(session)
+                media_type = self._infer_media_type(session["file_name"], mime_type)
+                is_motion, motion_offset = detect_motion_photo(str(final_path))
+                is_ultra_hdr = detect_ultra_hdr(str(final_path))
+
                 # Register file record (pointing to existing file)
                 record = await self._dedup_service.register_file(
                     user_id=user_id,
@@ -313,8 +336,13 @@ class UploadService:
                     device_name=session["device_name"],
                     file_size=session["file_size"],
                     file_name=session["file_name"],
+                    mime_type=mime_type,
                     exif_time=session["exif_time"],
                     focal_length=self._extract_focal_length(str(final_path)),
+                    media_type=media_type,
+                    is_motion_photo=is_motion,
+                    motion_video_offset=motion_offset,
+                    is_ultra_hdr=is_ultra_hdr,
                 )
 
                 # Update session status
@@ -340,6 +368,12 @@ class UploadService:
         # Move merged file to target path
         shutil.move(merged_path, str(final_path))
 
+        # Resolve MIME type and derive the media type (image vs video)
+        mime_type = self._resolve_mime_type(session)
+        media_type = self._infer_media_type(session["file_name"], mime_type)
+        is_motion, motion_offset = detect_motion_photo(str(final_path))
+        is_ultra_hdr = detect_ultra_hdr(str(final_path))
+
         # Step 6: Register file record
         record = await self._dedup_service.register_file(
             user_id=user_id,
@@ -349,8 +383,13 @@ class UploadService:
             device_name=session["device_name"],
             file_size=session["file_size"],
             file_name=session["file_name"],
+            mime_type=mime_type,
             exif_time=session["exif_time"],
             focal_length=self._extract_focal_length(str(final_path)),
+            media_type=media_type,
+            is_motion_photo=is_motion,
+            motion_video_offset=motion_offset,
+            is_ultra_hdr=is_ultra_hdr,
         )
 
         # Update session status
@@ -454,6 +493,50 @@ class UploadService:
                     break
                 sha256.update(chunk)
         return sha256.hexdigest()
+
+    @staticmethod
+    def _resolve_mime_type(session: dict) -> Optional[str]:
+        """Resolve the MIME type for a completed upload.
+
+        Prefers the client-supplied MIME type stored on the session; falls back
+        to guessing from the file name extension.
+
+        Args:
+            session: The upload session dict.
+
+        Returns:
+            A MIME type string, or None if it cannot be determined.
+        """
+        mime = session.get("mime_type")
+        if mime:
+            return mime
+        guessed, _ = mimetypes.guess_type(session.get("file_name", ""))
+        return guessed
+
+    # Extensions that identify video files, in case the MIME type is missing
+    # or generic (e.g. application/octet-stream).
+    _VIDEO_EXTENSIONS = {
+        ".mp4", ".mov", ".mkv", ".webm", ".3gp", ".avi", ".mpeg", ".mpg",
+        ".wmv", ".flv", ".m4v", ".ts", ".m2ts", ".mts",
+    }
+
+    @classmethod
+    def _infer_media_type(cls, file_name: str, mime_type: Optional[str]) -> str:
+        """Infer the media type ('image' or 'video') from MIME type / extension.
+
+        Args:
+            file_name: The file name (used for extension fallback).
+            mime_type: The resolved MIME type, if any.
+
+        Returns:
+            'video' for video files, otherwise 'image'.
+        """
+        if mime_type and mime_type.lower().startswith("video/"):
+            return "video"
+        ext = Path(file_name).suffix.lower()
+        if ext in cls._VIDEO_EXTENSIONS:
+            return "video"
+        return "image"
 
     @staticmethod
     def _extract_focal_length(file_path: str) -> Optional[float]:

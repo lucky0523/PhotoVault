@@ -152,12 +152,19 @@ class TestFileRecordsSchema:
                 "file_name",
                 "mime_type",
                 "exif_time",
+                "focal_length",
                 "is_reference",
                 "reference_to",
                 "live_photo_group_id",
                 "live_photo_type",
                 "media_type",
+                "is_motion_photo",
+                "motion_video_offset",
+                "is_ultra_hdr",
                 "created_at",
+                "deleted_at",
+                "deleted_batch_id",
+                "purged_at",
             ]
             assert col_names == expected
 
@@ -200,6 +207,8 @@ class TestUploadSessionsSchema:
                 "target_path",
                 "device_name",
                 "original_path",
+                "exif_time",
+                "mime_type",
                 "status",
                 "created_at",
                 "updated_at",

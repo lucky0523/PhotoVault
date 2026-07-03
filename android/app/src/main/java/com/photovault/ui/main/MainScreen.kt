@@ -83,15 +83,18 @@ fun MainScreen(
     val connectionState by viewModel.connectionState.collectAsState()
     val tabNavController = rememberNavController()
 
-    // Request media-read runtime permission (required for MediaStore image scanning).
-    // On Android 13+ this is READ_MEDIA_IMAGES; on older versions READ_EXTERNAL_STORAGE.
+    // Request media-read runtime permission (required for MediaStore image/video scanning).
+    // On Android 13+ this is READ_MEDIA_IMAGES + READ_MEDIA_VIDEO; on older versions READ_EXTERNAL_STORAGE.
     val mediaPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { /* result handled implicitly; scanning checks at runtime */ }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val permissions = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES)
+            arrayOf(
+                android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO
+            )
         } else {
             arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
         }

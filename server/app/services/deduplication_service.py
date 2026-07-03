@@ -40,6 +40,9 @@ class FileRecord:
     live_photo_group_id: Optional[str] = None
     live_photo_type: Optional[str] = None
     media_type: str = "image"
+    is_motion_photo: bool = False
+    motion_video_offset: Optional[int] = None
+    is_ultra_hdr: bool = False
     created_at: Optional[str] = None
 
 
@@ -92,6 +95,10 @@ class DeduplicationService:
         mime_type: Optional[str] = None,
         exif_time: Optional[str] = None,
         focal_length: Optional[float] = None,
+        media_type: str = "image",
+        is_motion_photo: bool = False,
+        motion_video_offset: Optional[int] = None,
+        is_ultra_hdr: bool = False,
     ) -> FileRecord:
         """Register a new file record in the database.
 
@@ -106,6 +113,9 @@ class DeduplicationService:
             mime_type: Optional MIME type.
             exif_time: Optional EXIF capture time.
             focal_length: Optional focal length in mm (35mm-equivalent preferred).
+            media_type: 'image' or 'video'. Defaults to 'image'.
+            is_motion_photo: True if the image embeds a motion-photo video.
+            motion_video_offset: Byte offset where the embedded video begins.
 
         Returns:
             The newly created FileRecord.
@@ -114,8 +124,9 @@ class DeduplicationService:
             """INSERT INTO file_records
                (user_id, file_hash, file_path, original_path, device_name,
                 file_size, file_name, mime_type, exif_time, focal_length,
+                media_type, is_motion_photo, motion_video_offset, is_ultra_hdr,
                 is_reference, reference_to)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
             (
                 user_id,
                 file_hash,
@@ -127,6 +138,10 @@ class DeduplicationService:
                 mime_type,
                 exif_time,
                 focal_length,
+                media_type,
+                is_motion_photo,
+                motion_video_offset,
+                is_ultra_hdr,
             ),
         )
         await self._db.commit()
@@ -215,5 +230,10 @@ class DeduplicationService:
             live_photo_group_id=row["live_photo_group_id"],
             live_photo_type=row["live_photo_type"],
             media_type=row["media_type"] or "image",
+            is_motion_photo=bool(row["is_motion_photo"]) if "is_motion_photo" in row.keys() else False,
+            motion_video_offset=(
+                row["motion_video_offset"] if "motion_video_offset" in row.keys() else None
+            ),
+            is_ultra_hdr=bool(row["is_ultra_hdr"]) if "is_ultra_hdr" in row.keys() else False,
             created_at=row["created_at"],
         )
