@@ -23,12 +23,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -88,7 +90,8 @@ fun TasksTab(
             TasksSegment.HISTORY -> HistoryView(
                 uiState = uiState,
                 onFilterChanged = { viewModel.setHistoryFilter(it) },
-                onRetry = { viewModel.retryFailedRecord(it) }
+                onRetry = { viewModel.retryFailedRecord(it) },
+                onClearHistory = { viewModel.clearHistory() }
             )
         }
     }
@@ -385,14 +388,37 @@ private fun EmptyCurrentTasksState() {
 private fun HistoryView(
     uiState: TasksTabUiState,
     onFilterChanged: (HistoryFilter) -> Unit,
-    onRetry: (BackupHistoryRecord) -> Unit
+    onRetry: (BackupHistoryRecord) -> Unit,
+    onClearHistory: () -> Unit
 ) {
+    var showClearDialog by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Filter chips
         HistoryFilterBar(
             selectedFilter = uiState.historyFilter,
             onFilterChanged = onFilterChanged
         )
+
+        // Clear-history action (only when there are records)
+        if (!uiState.isHistoryLoading && uiState.historyGroups.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = { showClearDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.DeleteSweep,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("清空历史记录")
+                }
+            }
+        }
 
         if (uiState.isHistoryLoading) {
             Box(
@@ -429,6 +455,23 @@ private fun HistoryView(
             }
         }
     }
+
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text("清空历史记录") },
+            text = { Text("确定要清空所有备份历史记录吗？此操作不可恢复，但不会影响已备份的文件。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearDialog = false
+                    onClearHistory()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+            }
+        )
+    }
 }
 
 /**
@@ -461,6 +504,11 @@ private fun HistoryFilterBar(
             onClick = { onFilterChanged(HistoryFilter.FAILED) },
             label = { Text("失败") }
         )
+        FilterChip(
+            selected = selectedFilter == HistoryFilter.SKIPPED,
+            onClick = { onFilterChanged(HistoryFilter.SKIPPED) },
+            label = { Text("跳过") }
+        )
     }
 }
 
@@ -491,7 +539,10 @@ private fun HistoryRecordItem(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = record.status == BackupStatus.FAILED) {
+            .clickable(
+                enabled = record.status == BackupStatus.FAILED ||
+                    (record.status == BackupStatus.SKIPPED && record.errorMessage != null)
+            ) {
                 showDetails = !showDetails
             },
         shape = RoundedCornerShape(8.dp),

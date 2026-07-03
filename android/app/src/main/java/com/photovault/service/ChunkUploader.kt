@@ -97,6 +97,12 @@ class ChunkUploader @Inject constructor(
         try {
             precheckHash = fileHasher.computeSha256(context, fileUri)
         } catch (e: Exception) {
+            // If the source file no longer exists on the device (user deleted it
+            // before it was backed up), skip it with a clear reason instead of
+            // reporting a generic failure.
+            if (!sourceExists(context, fileUri)) {
+                return UploadResult.Skipped("源文件已删除", countsAsBackedUp = false)
+            }
             return UploadResult.Failed("Failed to compute file hash: ${e.message}", shouldRetry = false)
         }
 
@@ -654,6 +660,23 @@ class ChunkUploader @Inject constructor(
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Returns true if the source file still exists in the media store.
+     * Used to distinguish "source deleted on device" (skip) from a genuine
+     * read/hash failure (fail + retry).
+     */
+    private fun sourceExists(context: Context, fileUri: Uri): Boolean {
+        return try {
+            context.contentResolver.query(
+                fileUri,
+                arrayOf(android.provider.MediaStore.MediaColumns._ID),
+                null, null, null
+            )?.use { it.moveToFirst() } ?: false
+        } catch (e: Exception) {
+            false
         }
     }
 

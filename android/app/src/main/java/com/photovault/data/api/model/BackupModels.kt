@@ -109,6 +109,14 @@ enum class UploadState {
 sealed class UploadResult {
     data class Success(val fileId: String, val storedPath: String) : UploadResult()
     data class Duplicate(val fileId: String?) : UploadResult()
-    data class Skipped(val reason: String) : UploadResult()
+    /**
+     * The file was skipped (not uploaded this round).
+     *
+     * @param reason human-readable skip reason shown in backup history
+     * @param countsAsBackedUp whether the file already exists on the server and
+     *   should still count toward the folder's backed-up total. False for cases
+     *   like a source file that was deleted from the device before upload.
+     */
+    data class Skipped(val reason: String, val countsAsBackedUp: Boolean = true) : UploadResult()
     data class Failed(val error: String, val shouldRetry: Boolean = true) : UploadResult()
 }

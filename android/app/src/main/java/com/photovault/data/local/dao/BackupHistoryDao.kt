@@ -42,6 +42,18 @@ interface BackupHistoryDao {
     suspend fun updateStatus(id: Long, status: BackupStatus, errorMessage: String? = null, completedAt: Long = System.currentTimeMillis())
 
     /**
+     * Delete a single history record by ID.
+     */
+    @Query("DELETE FROM backup_history WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    /**
+     * Delete all history records.
+     */
+    @Query("DELETE FROM backup_history")
+    suspend fun deleteAll()
+
+    /**
      * Delete old history records (older than the specified timestamp).
      */
     @Query("DELETE FROM backup_history WHERE completed_at < :olderThan")

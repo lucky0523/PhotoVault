@@ -1,7 +1,9 @@
 package com.photovault.ui.main.tabs
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -84,14 +88,11 @@ fun SettingsTab(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        // 备份条件 group
-        BackupConditionsGroup(
-            wifiOnly = wifiOnly,
-            minBatteryLevel = minBatteryLevel,
-            scanIntervalMinutes = scanIntervalMinutes,
-            onWifiOnlyChanged = { viewModel.setWifiOnly(it) },
-            onBatteryLevelChanged = { viewModel.setMinBatteryLevel(it) },
-            onScanIntervalChanged = { viewModel.setScanInterval(it) }
+        // 账户信息 group
+        AccountInfoGroup(
+            username = username,
+            serverAddress = serverAddress,
+            connectionState = connectionState
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -104,11 +105,14 @@ fun SettingsTab(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 账户信息 group
-        AccountInfoGroup(
-            username = username,
-            serverAddress = serverAddress,
-            connectionState = connectionState
+        // 备份条件 group
+        BackupConditionsGroup(
+            wifiOnly = wifiOnly,
+            minBatteryLevel = minBatteryLevel,
+            scanIntervalMinutes = scanIntervalMinutes,
+            onWifiOnlyChanged = { viewModel.setWifiOnly(it) },
+            onBatteryLevelChanged = { viewModel.setMinBatteryLevel(it) },
+            onScanIntervalChanged = { viewModel.setScanInterval(it) }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -339,10 +343,49 @@ private fun AccountInfoGroup(
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
 
-        AccountInfoItem(
-            label = "连接状态",
-            value = connectionState.toDisplayString()
+        ConnectionStatusItem(connectionState = connectionState)
+    }
+}
+
+/**
+ * Connection-status row with a colored status dot:
+ * - 绿色: 已连接（局域网/公网）
+ * - 橙色: 连接中
+ * - 灰色: 未连接
+ */
+@Composable
+private fun ConnectionStatusItem(connectionState: ConnectionState) {
+    val dotColor = when (connectionState) {
+        is ConnectionState.Connected -> Color(0xFF4CAF50)
+        is ConnectionState.Connecting -> Color(0xFFFF9800)
+        is ConnectionState.Disconnected -> Color(0xFF9E9E9E)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "连接状态",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(dotColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = connectionState.toDisplayString(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
 

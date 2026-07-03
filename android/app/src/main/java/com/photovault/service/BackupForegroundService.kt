@@ -222,8 +222,8 @@ class BackupForegroundService : Service() {
                             "PhotoVaultBackup",
                             "Skipped duplicate ${fileInfo.fileName}"
                         )
-                        // Save skipped record with reason "文件已存在" and increment backed up count
-                        saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, "文件已存在")
+                        // Save skipped record with reason "云端已存在" and increment backed up count
+                        saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, "云端已存在")
                         incrementBackedUpCount(fileInfo.folderUri)
                     }
                     is UploadResult.Skipped -> {
@@ -231,10 +231,13 @@ class BackupForegroundService : Service() {
                             "PhotoVaultBackup",
                             "Skipped ${fileInfo.fileName}: ${result.reason}"
                         )
-                        // Trashed/purged files are skipped but still count as backed up
-                        // since they already exist on the server, just in different status
+                        // Record the skip with its reason. Files skipped because they
+                        // already exist on the server (recycle bin / purged) still count
+                        // as backed up; a deleted source file does not.
                         saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
-                        incrementBackedUpCount(fileInfo.folderUri)
+                        if (result.countsAsBackedUp) {
+                            incrementBackedUpCount(fileInfo.folderUri)
+                        }
                     }
                     is UploadResult.Failed -> {
                         android.util.Log.w(

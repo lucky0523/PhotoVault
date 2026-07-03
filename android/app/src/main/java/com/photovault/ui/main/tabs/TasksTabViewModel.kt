@@ -1,5 +1,6 @@
 package com.photovault.ui.main.tabs
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photovault.data.local.dao.BackupHistoryDao
@@ -10,6 +11,7 @@ import com.photovault.service.BackupForegroundService
 import com.photovault.service.BackupQueue
 import com.photovault.service.FileInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,7 +37,8 @@ enum class TasksSegment {
 enum class HistoryFilter {
     ALL,
     SUCCESS,
-    FAILED
+    FAILED,
+    SKIPPED
 }
 
 /**
@@ -92,6 +95,7 @@ data class TasksTabUiState(
  */
 @HiltViewModel
 class TasksTabViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val backupQueue: BackupQueue,
     private val backupConditionChecker: BackupConditionChecker,
     private val backupHistoryDao: BackupHistoryDao
@@ -142,15 +146,27 @@ class TasksTabViewModel @Inject constructor(
             )
             backupQueue.enqueue(listOf(fileInfo))
 
-            // Update the record status to indicate retry is pending
-            backupHistoryDao.updateStatus(
-                id = record.id,
-                status = BackupStatus.SKIPPED,
-                errorMessage = "重试中..."
-            )
+            // Delete the original failed record. The backup service inserts a
+            // fresh record with the actual outcome when the file is processed,
+            // so removing the old one avoids a stale/duplicate entry.
+            backupHistoryDao.deleteById(record.id)
+
+            // Kick off the backup service so the re-enqueued file is actually
+            // processed (otherwise it would just sit in the in-memory queue).
+            BackupForegroundService.start(context)
 
             // Refresh state
             refreshCurrentTasks()
+            loadHistory()
+        }
+    }
+
+    /**
+     * Clear all backup history records.
+     */
+    fun clearHistory() {
+        viewModelScope.launch {
+            backupHistoryDao.deleteAll()
             loadHistory()
         }
     }
@@ -254,6 +270,7 @@ class TasksTabViewModel @Inject constructor(
                 HistoryFilter.ALL -> backupHistoryDao.getAll()
                 HistoryFilter.SUCCESS -> backupHistoryDao.getByStatus(BackupStatus.SUCCESS)
                 HistoryFilter.FAILED -> backupHistoryDao.getByStatus(BackupStatus.FAILED)
+                HistoryFilter.SKIPPED -> backupHistoryDao.getByStatus(BackupStatus.SKIPPED)
             }
 
             flow.collect { records ->

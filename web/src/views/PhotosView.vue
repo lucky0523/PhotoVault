@@ -20,7 +20,8 @@
         >
           <template #default="{ node, data }">
             <span class="tree-node-label">
-              <el-icon v-if="data.isDevice"><Monitor /></el-icon>
+              <el-icon v-if="node.loading" class="is-loading"><Loading /></el-icon>
+              <el-icon v-else-if="data.isDevice"><Monitor /></el-icon>
               <el-icon v-else><Folder /></el-icon>
               <span>{{ node.label }}</span>
               <span v-if="data.file_count" class="tree-node-count">{{ data.file_count }}</span>
@@ -822,6 +823,15 @@ onMounted(() => {
 
 .directory-tree :deep(.el-tree-node__content) {
   padding-right: 12px;
+}
+
+/* Element Plus inserts its own loading icon between the expand arrow and the
+   node content while children lazy-load, which pushes the folder icon/name to
+   the right. We suppress that inserted icon and instead render our own spinner
+   in the folder-icon slot (see the tree #default template), so the row keeps a
+   stable layout while still showing loading feedback. */
+.directory-tree :deep(.el-tree-node__loading-icon) {
+  display: none;
 }
 
 .tree-node-label {
