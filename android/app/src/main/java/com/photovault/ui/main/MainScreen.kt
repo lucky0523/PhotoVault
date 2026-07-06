@@ -32,7 +32,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,7 +48,6 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.photovault.data.network.ConnectionState
 import com.photovault.data.network.ConnectionType
@@ -194,20 +196,23 @@ fun MainScreen(
         // Floating liquid-glass tab bar (draggable thumb + interactive highlight),
         // overlaid at the bottom of the page rather than occupying a layout slot.
         //
-        // IMPORTANT: selectedTabIndex must be a *stable* lambda that reads the nav
-        // back-stack State *inside* it (a real snapshot read). The bar keys internal
-        // state on this lambda's identity and observes it via snapshotFlow; passing
-        // a lambda that merely captures a plain Int would recreate that internal
-        // state on every route change and break the thumb's selection sync.
-        val backStackEntryState = tabNavController.currentBackStackEntryAsState()
-        val selectedTabIndex: () -> Int = remember(tabNavController) {
-            {
-                val route = backStackEntryState.value?.destination?.route
-                tabs.indexOfFirst { it.route == route }.coerceAtLeast(0)
-            }
-        }
+        // Selection is driven by a *synchronous* state (selectedIndex), NOT by the
+        // navigation back-stack. The nav back-stack updates asynchronously, so using
+        // it as the selection source created a feedback loop: a tap would navigate,
+        // the (lagging) route would flow back into the bar, re-trigger animateToValue
+        // and re-navigate, and rapid taps would spam overlapping press()/release()
+        // squish animations until the thumb got stuck enlarged (an oval/egg blob).
+        // Setting selectedIndex up-front (like the reference catalog) keeps the
+        // source of truth immediate and the thumb animation balanced.
+        //
+        // The lambda must be a *stable* identity that reads selectedIndex *inside*
+        // it (a real snapshot read): the bar keys internal state on the lambda's
+        // identity and observes it via snapshotFlow.
+        var selectedIndex by rememberSaveable { mutableIntStateOf(0) }
+        val selectedTabIndex: () -> Int = remember { { selectedIndex } }
 
         val onTabSelected: (Int) -> Unit = { index ->
+            selectedIndex = index
             val tab = tabs[index]
             tabNavController.navigate(tab.route) {
                 popUpTo(tabNavController.graph.findStartDestination().id) {

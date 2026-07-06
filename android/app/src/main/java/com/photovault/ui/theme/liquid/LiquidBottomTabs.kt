@@ -147,18 +147,27 @@ fun LiquidBottomTabs(
                     }
                 },
                 onDrag = { _, dragAmount ->
-                    if (!didDrag) {
-                        didDrag = dragAmount.x != 0f
-                        // First real movement: seed the drag from the pressed tab.
-                        updateValue(dragOrigin[0])
-                    }
-                    dragOrigin[1] += dragAmount.x
-                    val delta = dragOrigin[1] / tabWidth * if (isLtr) 1f else -1f
-                    updateValue(
-                        (dragOrigin[0] + delta).fastCoerceIn(0f, (tabsCount - 1).toFloat())
-                    )
-                    animationScope.launch {
-                        offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
+                    // inspectDragGestures fires one zero-delta onDrag on every press.
+                    // Only react once there's REAL horizontal movement: feeding
+                    // updateValue() here (as the old code did for the zero-delta call)
+                    // spins up the velocity tracker even for a plain tap, and the
+                    // leftover velocity squishes the selected thumb into a horizontal
+                    // oval via the layerBlock's velocity term. Pure taps are resolved
+                    // in onDragStopped via animateToValue(), which carries no velocity.
+                    if (dragAmount.x != 0f || didDrag) {
+                        if (!didDrag) {
+                            didDrag = true
+                            // First real movement: seed the drag from the pressed tab.
+                            updateValue(dragOrigin[0])
+                        }
+                        dragOrigin[1] += dragAmount.x
+                        val delta = dragOrigin[1] / tabWidth * if (isLtr) 1f else -1f
+                        updateValue(
+                            (dragOrigin[0] + delta).fastCoerceIn(0f, (tabsCount - 1).toFloat())
+                        )
+                        animationScope.launch {
+                            offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
+                        }
                     }
                 }
             )

@@ -59,6 +59,15 @@ class DampedDragAnimation(
 
     private val mutatorMutex = MutatorMutex()
 
+    // Guards the press/release "squish" transition. scaleX and scaleY use
+    // different spring specs (for a subtle jelly bounce), so they must be driven
+    // together by a single, cancelable operation. Without this, rapid taps let a
+    // press() and a release() race per-axis and the thumb can get stuck stretched
+    // into a horizontal oval (scaleX chasing pressedScale while scaleY chases
+    // initialScale, or vice-versa). The mutex makes the latest transition the sole
+    // winner for BOTH axes at once, so they always share the same target.
+    private val scaleMutex = MutatorMutex()
+
     private val velocityTracker = VelocityTracker()
 
     val value: Float get() = valueAnimation.value
@@ -91,9 +100,15 @@ class DampedDragAnimation(
     fun press() {
         velocityTracker.resetTracking()
         animationScope.launch {
-            launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
-            launch { scaleXAnimation.animateTo(pressedScale, scaleXAnimationSpec) }
-            launch { scaleYAnimation.animateTo(pressedScale, scaleYAnimationSpec) }
+            // Drive pressProgress + both scale axes as ONE cancelable transition so
+            // a later release() (or press()) replaces them together, never leaving
+            // the axes mismatched.
+            scaleMutex.mutate {
+                val p = launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
+                val x = launch { scaleXAnimation.animateTo(pressedScale, scaleXAnimationSpec) }
+                val y = launch { scaleYAnimation.animateTo(pressedScale, scaleYAnimationSpec) }
+                p.join(); x.join(); y.join()
+            }
         }
     }
 
@@ -106,9 +121,14 @@ class DampedDragAnimation(
                     .filter { abs(it - valueAnimation.targetValue) < threshold }
                     .first()
             }
-            launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
-            launch { scaleXAnimation.animateTo(initialScale, scaleXAnimationSpec) }
-            launch { scaleYAnimation.animateTo(initialScale, scaleYAnimationSpec) }
+            // Acquire the mutex only after the value has settled so the pressed
+            // "squish" holds during the slide, then restore both axes together.
+            scaleMutex.mutate {
+                val p = launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                val x = launch { scaleXAnimation.animateTo(initialScale, scaleXAnimationSpec) }
+                val y = launch { scaleYAnimation.animateTo(initialScale, scaleYAnimationSpec) }
+                p.join(); x.join(); y.join()
+            }
         }
     }
 
@@ -125,7 +145,12 @@ class DampedDragAnimation(
                 press()
                 val targetValue = value.coerceIn(valueRange)
                 launch { valueAnimation.animateTo(targetValue, valueAnimationSpec) }
-                if (velocity != 0f) {
+                // Always settle velocity back to 0. The previous `velocity != 0f`
+                // guard could skip the reset while velocity was mid-oscillation
+                // (momentarily 0 but still animating toward a non-zero target),
+                // leaving the thumb stuck in the horizontal velocity squish.
+                velocityTracker.resetTracking()
+                if (velocity != 0f || velocityAnimation.targetValue != 0f) {
                     launch { velocityAnimation.animateTo(0f, velocityAnimationSpec) }
                 }
                 release()
