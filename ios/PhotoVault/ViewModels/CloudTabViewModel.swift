@@ -129,7 +129,8 @@ class CloudTabViewModel: ObservableObject {
             )
 
             currentPath = listing.currentPath
-            directories = listing.directories
+            // Hide the .trash folder from the cloud browser.
+            directories = listing.directories.filter { $0.name != ".trash" }
             files = listing.files
         } catch let error as APIError {
             errorMessage = error.errorDescription

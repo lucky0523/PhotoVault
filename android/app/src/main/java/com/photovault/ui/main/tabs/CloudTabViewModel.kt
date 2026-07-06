@@ -82,14 +82,16 @@ class CloudTabViewModel @Inject constructor(
                     val listing = response.body()
                     if (listing != null) {
                         val breadcrumbs = buildBreadcrumbs(listing.currentPath)
+                        // Hide the .trash folder from the cloud browser.
+                        val visibleDirectories = listing.directories.filterNot { it.name == ".trash" }
                         _uiState.value = _uiState.value.copy(
                             currentPath = listing.currentPath,
                             breadcrumbs = breadcrumbs,
-                            directories = listing.directories,
+                            directories = visibleDirectories,
                             files = listing.files,
                             isLoading = false,
                             isRefreshing = false,
-                            isEmpty = listing.directories.isEmpty() && listing.files.isEmpty()
+                            isEmpty = visibleDirectories.isEmpty() && listing.files.isEmpty()
                         )
                     } else {
                         _uiState.value = _uiState.value.copy(
