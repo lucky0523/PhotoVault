@@ -518,13 +518,15 @@ async function loadTreeNode(
     // Root level: load devices (top-level directories)
     try {
       const response = await browseFiles('', 1, 100)
-      const nodes: TreeNode[] = response.directories.map((dir) => ({
-        label: dir.name,
-        path: dir.path,
-        isLeaf: false,
-        isDevice: true,
-        file_count: dir.file_count,
-      }))
+      const nodes: TreeNode[] = response.directories
+        .filter((dir) => dir.name !== '.trash')
+        .map((dir) => ({
+          label: dir.name,
+          path: dir.path,
+          isLeaf: false,
+          isDevice: true,
+          file_count: dir.file_count,
+        }))
       treeData.value = nodes
       resolve(nodes)
     } catch {
@@ -534,10 +536,11 @@ async function loadTreeNode(
     // Load children of a node
     try {
       const response = await browseFiles(node.data.path, 1, 100)
-      const nodes: TreeNode[] = response.directories.map((dir) => ({
+      const visibleDirs = response.directories.filter((dir) => dir.name !== '.trash')
+      const nodes: TreeNode[] = visibleDirs.map((dir) => ({
         label: dir.name,
         path: dir.path,
-        isLeaf: dir.file_count === 0 && response.directories.length === 0,
+        isLeaf: dir.file_count === 0 && visibleDirs.length === 0,
         file_count: dir.file_count,
       }))
       // If no subdirectories, mark as leaf
@@ -574,7 +577,8 @@ async function loadContent() {
       pageSize.value,
       sortBy.value
     )
-    directories.value = response.directories
+    // Hide the .trash folder from the photo browser.
+    directories.value = response.directories.filter((dir) => dir.name !== '.trash')
     files.value = response.files
     totalFiles.value = response.total_files
   } catch (error) {
