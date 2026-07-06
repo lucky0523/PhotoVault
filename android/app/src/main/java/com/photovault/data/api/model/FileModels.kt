@@ -23,7 +23,11 @@ data class DirectoryInfo(
     @SerializedName("name") val name: String,
     @SerializedName("path") val path: String,
     @SerializedName("file_count") val fileCount: Int,
-    @SerializedName("latest_file_time") val latestFileTime: String?
+    @SerializedName("latest_file_time") val latestFileTime: String?,
+    // 逐目录分状态计数，默认 0（兼容尚未返回该字段的服务端）
+    @SerializedName("backed_up_count") val backedUpCount: Int = 0,
+    @SerializedName("trashed_count") val trashedCount: Int = 0,
+    @SerializedName("purged_count") val purgedCount: Int = 0
 )
 
 data class FileBrowseInfo(

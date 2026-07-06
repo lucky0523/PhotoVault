@@ -21,6 +21,28 @@ import aiosqlite
 logger = logging.getLogger("photovault.file_browse")
 
 
+def derive_file_status(deleted_at: Optional[str], purged_at: Optional[str]) -> str:
+    """Derive a file's status bucket from its lifecycle columns.
+
+    Mirrors get_device_stats:
+    - purged_at IS NOT NULL                      -> "purged"
+    - deleted_at IS NOT NULL (and not purged)    -> "trashed"
+    - otherwise                                  -> "backed_up"
+
+    Args:
+        deleted_at: The file's deleted_at column value (None if not trashed).
+        purged_at: The file's purged_at column value (None if not purged).
+
+    Returns:
+        One of "purged", "trashed", or "backed_up".
+    """
+    if purged_at is not None:
+        return "purged"
+    if deleted_at is not None:
+        return "trashed"
+    return "backed_up"
+
+
 @dataclass
 class DirectoryInfo:
     """Information about a subdirectory."""
@@ -30,6 +52,11 @@ class DirectoryInfo:
     file_count: int = 0
     size: int = 0
     latest_file_time: Optional[str] = None
+    # Per-directory counts bucketed by status. file_count remains the sum of
+    # these three buckets (total files in the directory across all statuses).
+    backed_up_count: int = 0
+    trashed_count: int = 0
+    purged_count: int = 0
 
 
 @dataclass
@@ -348,22 +375,17 @@ class FileBrowseService:
         else:
             search_prefix = base_prefix
 
-        # Find all file paths for this user that start with the search prefix
-        cursor = await self._db.execute(
-            "SELECT file_path FROM file_records WHERE user_id = ? AND file_path LIKE ? AND deleted_at IS NULL AND purged_at IS NULL",
-            (user_id, f"{search_prefix}%"),
-        )
-        rows = await cursor.fetchall()
-
         # Build directory structure from paths
         directories: dict[str, DirectoryInfo] = {}
-        file_ids_in_dir: list[int] = []
 
-        # Also get file sizes and times for directory aggregation
+        # Get file sizes, times, and lifecycle columns for directory aggregation.
+        # Note: this query is NOT pre-filtered on deleted_at/purged_at so that
+        # trashed and purged files also participate in the per-directory
+        # status-bucket counts.
         cursor = await self._db.execute(
-            """SELECT file_path, file_size, exif_time, created_at
+            """SELECT file_path, file_size, exif_time, created_at, deleted_at, purged_at
                FROM file_records
-               WHERE user_id = ? AND file_path LIKE ? AND deleted_at IS NULL AND purged_at IS NULL""",
+               WHERE user_id = ? AND file_path LIKE ?""",
             (user_id, f"{search_prefix}%"),
         )
         all_files = await cursor.fetchall()
@@ -373,7 +395,9 @@ class FileBrowseService:
             file_size: int = row["file_size"]
             exif_time: Optional[str] = row["exif_time"]
             created_at: str = row["created_at"]
-            
+            deleted_at: Optional[str] = row["deleted_at"]
+            purged_at: Optional[str] = row["purged_at"]
+
             # Get the relative path after the search prefix
             relative = file_path[len(search_prefix):]
             parts = relative.split("/")
@@ -393,6 +417,14 @@ class FileBrowseService:
                     dir_info = directories[subdir_name]
                     dir_info.file_count += 1
                     dir_info.size += file_size
+                    # Bucket the file into backed_up / trashed / purged
+                    status = derive_file_status(deleted_at, purged_at)
+                    if status == "purged":
+                        dir_info.purged_count += 1
+                    elif status == "trashed":
+                        dir_info.trashed_count += 1
+                    else:
+                        dir_info.backed_up_count += 1
                     # Update latest_file_time - prefer exif_time, then created_at
                     file_time = exif_time or created_at
                     if file_time:
@@ -520,12 +552,10 @@ class FileBrowseService:
                 device = DeviceStats(name=device_name, path=device_name)
                 devices[device_name] = device
 
-            deleted_at = row["deleted_at"]
-            purged_at = row["purged_at"]
-
-            if purged_at is not None:
+            status = derive_file_status(row["deleted_at"], row["purged_at"])
+            if status == "purged":
                 device.purged_count += 1
-            elif deleted_at is not None:
+            elif status == "trashed":
                 device.trashed_count += 1
             else:
                 device.backed_up_count += 1

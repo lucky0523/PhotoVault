@@ -1,12 +1,21 @@
 package com.photovault.ui.main
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
@@ -17,23 +26,22 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.compose.ui.unit.sp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -46,6 +54,14 @@ import com.photovault.ui.main.tabs.LocalTab
 import com.photovault.ui.main.tabs.SettingsTab
 import com.photovault.ui.main.tabs.TasksTab
 import com.photovault.ui.main.tabs.TrashTab
+import com.photovault.ui.theme.GlassBar
+import com.photovault.ui.theme.LocalBottomBarPadding
+import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.appBackgroundBrush
+import com.photovault.ui.theme.liquid.LiquidBottomTab
+import com.photovault.ui.theme.liquid.LiquidBottomTabs
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * Bottom navigation tab definitions.
@@ -71,7 +87,8 @@ private val tabs = listOf(
 )
 
 /**
- * Main screen with bottom navigation, connection status top bar, and tab content.
+ * Main screen with a slim glass header (title + connection pill), a frosted
+ * glass bottom navigation bar, and tab content.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,7 +101,6 @@ fun MainScreen(
     val tabNavController = rememberNavController()
 
     // Request media-read runtime permission (required for MediaStore image/video scanning).
-    // On Android 13+ this is READ_MEDIA_IMAGES + READ_MEDIA_VIDEO; on older versions READ_EXTERNAL_STORAGE.
     val mediaPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { /* result handled implicitly; scanning checks at runtime */ }
@@ -101,106 +117,197 @@ fun MainScreen(
         mediaPermissionLauncher.launch(permissions)
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    ConnectionStatusIndicator(connectionState = connectionState)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                val navBackStackEntry by tabNavController.currentBackStackEntryAsState()
-                val currentDestination = navBackStackEntry?.destination
+    val backgroundBrush = appBackgroundBrush()
+    // Gradient-only backdrop: used by the header pill and the in-content
+    // liquid-glass cards. Keeping it free of content avoids feedback artifacts.
+    val bgBackdrop = rememberLayerBackdrop()
+    // Content backdrop: captures the gradient + the scrolling tab content, so the
+    // floating bottom bar genuinely refracts whatever scrolls beneath it. The bar
+    // is a sibling (not part of this layer), so it never samples itself.
+    val contentBackdrop = rememberLayerBackdrop(
+        onDraw = {
+            drawRect(backgroundBrush)
+            drawContent()
+        }
+    )
 
-                tabs.forEach { tab ->
-                    NavigationBarItem(
-                        icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label) },
-                        selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true,
-                        onClick = {
-                            tabNavController.navigate(tab.route) {
-                                // Pop up to the start destination to avoid building up a large stack
-                                popUpTo(tabNavController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                // Avoid multiple copies of the same destination
-                                launchSingleTop = true
-                                // Restore state when re-selecting a previously selected item
-                                restoreState = true
-                            }
+    // Space the floating tab bar occupies at the bottom, so scrollable content can
+    // clear it: navigation bar inset + the bar footprint (height + margins).
+    val navBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomBarPadding = navBottomInset + 88.dp
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Full-screen gradient layer recorded into bgBackdrop; also paints the
+        // gradient on screen behind the (transparent) Scaffold.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(bgBackdrop)
+                .background(backgroundBrush)
+        )
+
+        CompositionLocalProvider(
+            LocalGlassBackdrop provides bgBackdrop,
+            LocalBottomBarPadding provides bottomBarPadding
+        ) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                topBar = {
+                    GlassHeader(connectionState = connectionState)
+                }
+            ) { paddingValues ->
+                // Full-screen content layer captured by contentBackdrop. Content
+                // fills to the very bottom (behind the floating bar); the tab
+                // screens add LocalBottomBarPadding to their bottom contentPadding.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(contentBackdrop)
+                ) {
+                    NavHost(
+                        navController = tabNavController,
+                        startDestination = MainTab.Local.route,
+                        modifier = Modifier.padding(top = paddingValues.calculateTopPadding())
+                    ) {
+                    composable(MainTab.Local.route) {
+                        LocalTab(
+                            onNavigateToFolderDetail = onNavigateToFolderDetail
+                        )
+                    }
+                    composable(MainTab.Cloud.route) {
+                        CloudTab()
+                    }
+                    composable(MainTab.Tasks.route) {
+                        TasksTab()
+                    }
+                    composable(MainTab.Trash.route) {
+                        TrashTab()
+                    }
+                        composable(MainTab.Settings.route) {
+                            SettingsTab(onLogout = onLogout)
                         }
-                    )
+                    }
                 }
             }
         }
-    ) { paddingValues ->
-        NavHost(
-            navController = tabNavController,
-            startDestination = MainTab.Local.route,
-            modifier = Modifier.padding(paddingValues)
+
+        // Floating liquid-glass tab bar (draggable thumb + interactive highlight),
+        // overlaid at the bottom of the page rather than occupying a layout slot.
+        //
+        // IMPORTANT: selectedTabIndex must be a *stable* lambda that reads the nav
+        // back-stack State *inside* it (a real snapshot read). The bar keys internal
+        // state on this lambda's identity and observes it via snapshotFlow; passing
+        // a lambda that merely captures a plain Int would recreate that internal
+        // state on every route change and break the thumb's selection sync.
+        val backStackEntryState = tabNavController.currentBackStackEntryAsState()
+        val selectedTabIndex: () -> Int = remember(tabNavController) {
+            {
+                val route = backStackEntryState.value?.destination?.route
+                tabs.indexOfFirst { it.route == route }.coerceAtLeast(0)
+            }
+        }
+
+        val onTabSelected: (Int) -> Unit = { index ->
+            val tab = tabs[index]
+            tabNavController.navigate(tab.route) {
+                popUpTo(tabNavController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+
+        LiquidBottomTabs(
+            selectedTabIndex = selectedTabIndex,
+            onTabSelected = onTabSelected,
+            backdrop = contentBackdrop,
+            tabsCount = tabs.size,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 12.dp)
         ) {
-            composable(MainTab.Local.route) {
-                LocalTab(
-                    onNavigateToFolderDetail = onNavigateToFolderDetail
-                )
-            }
-            composable(MainTab.Cloud.route) {
-                CloudTab()
-            }
-            composable(MainTab.Tasks.route) {
-                TasksTab()
-            }
-            composable(MainTab.Trash.route) {
-                TrashTab()
-            }
-            composable(MainTab.Settings.route) {
-                SettingsTab(onLogout = onLogout)
+            tabs.forEach { tab ->
+                val tabColor = MaterialTheme.colorScheme.onSurfaceVariant
+                LiquidBottomTab {
+                    Icon(
+                        imageVector = tab.icon,
+                        contentDescription = tab.label,
+                        tint = tabColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = tab.label,
+                        fontSize = 10.sp,
+                        color = tabColor,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * Connection status indicator showing a colored dot and connection type text.
- * - Green dot + "局域网" when connected via LAN
- * - Green dot + "公网" when connected via WAN
- * - Gray dot + "未连接" when disconnected
- * - Gray dot + "连接中..." when connecting
+ * Slim, information-dense header: brand on the left, a compact connection pill
+ * on the right. Sits under the (transparent) status bar edge-to-edge.
  */
 @Composable
-private fun ConnectionStatusIndicator(connectionState: ConnectionState) {
-    val (dotColor, statusText) = when (connectionState) {
-        is ConnectionState.Connected -> {
-            when (connectionState.type) {
-                ConnectionType.LAN -> Color(0xFF4CAF50) to "局域网"
-                ConnectionType.WAN -> Color(0xFF4CAF50) to "公网"
-            }
-        }
-        is ConnectionState.Connecting -> Color.Gray to "连接中..."
-        is ConnectionState.Disconnected -> Color.Gray to "未连接"
-    }
-
+private fun GlassHeader(connectionState: ConnectionState) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Start
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(dotColor)
-        )
         Text(
-            text = statusText,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(start = 8.dp)
+            text = "PhotoVault",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
         )
+        Spacer(modifier = Modifier.weight(1f))
+        ConnectionPill(connectionState = connectionState)
     }
 }
+
+/**
+ * Compact glass pill: colored dot + short status text.
+ */
+@Composable
+private fun ConnectionPill(connectionState: ConnectionState) {
+    val (dotColor, statusText) = when (connectionState) {
+        is ConnectionState.Connected -> when (connectionState.type) {
+            ConnectionType.LAN -> Color(0xFF34C759) to "局域网"
+            ConnectionType.WAN -> Color(0xFF34C759) to "公网"
+        }
+        is ConnectionState.Connecting -> Color(0xFFFF9F0A) to "连接中"
+        is ConnectionState.Disconnected -> Color(0xFF8E8E93) to "未连接"
+    }
+    val animatedDot by animateColorAsState(dotColor, label = "dot")
+
+    GlassBar(
+        shape = CircleShape
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(animatedDot)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+

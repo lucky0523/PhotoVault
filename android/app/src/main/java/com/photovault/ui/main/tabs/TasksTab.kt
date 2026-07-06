@@ -41,8 +41,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,9 +58,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.BackupStatus
+import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.service.FileInfo
 
 /**
@@ -105,7 +106,7 @@ private fun SegmentedControl(
     selectedSegment: TasksSegment,
     onSegmentSelected: (TasksSegment) -> Unit
 ) {
-    TabRow(
+    PrimaryTabRow(
         selectedTabIndex = selectedSegment.ordinal,
         modifier = Modifier
             .fillMaxWidth()
@@ -137,7 +138,12 @@ private fun SegmentedControl(
 private fun CurrentTasksView(uiState: TasksTabUiState) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            bottom = 16.dp + LocalBottomBarPadding.current
+        ),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Pause reason banner
@@ -257,7 +263,7 @@ private fun CurrentUploadCard(upload: CurrentUploadState) {
 
             // Progress bar
             LinearProgressIndicator(
-                progress = upload.progress,
+                progress = { upload.progress },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(8.dp)
@@ -432,7 +438,12 @@ private fun HistoryView(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 8.dp,
+                    bottom = 8.dp + LocalBottomBarPadding.current
+                ),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 uiState.historyGroups.forEach { group ->

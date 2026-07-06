@@ -43,6 +43,10 @@ class DirectoryInfoResponse(BaseModel):
     file_count: int = 0
     size: int = 0
     latest_file_time: Optional[str] = None
+    # Per-directory counts bucketed by status
+    backed_up_count: int = 0
+    trashed_count: int = 0
+    purged_count: int = 0
 
 
 class FileInfoResponse(BaseModel):
@@ -213,6 +217,9 @@ async def browse_directory(
             file_count=d.file_count,
             size=d.size,
             latest_file_time=d.latest_file_time,
+            backed_up_count=d.backed_up_count,
+            trashed_count=d.trashed_count,
+            purged_count=d.purged_count,
         )
         for d in listing.directories
     ]
@@ -311,6 +318,9 @@ async def list_files(
             file_count=d.file_count,
             size=d.size,
             latest_file_time=d.latest_file_time,
+            backed_up_count=d.backed_up_count,
+            trashed_count=d.trashed_count,
+            purged_count=d.purged_count,
         )
         for d in listing.directories
     ]

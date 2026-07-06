@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -45,12 +45,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.photovault.data.local.SettingsPreferences
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.network.ConnectionState
 import com.photovault.data.network.ConnectionType
 import com.photovault.ui.main.components.StoragePolicySheet
+import com.photovault.ui.theme.LocalBottomBarPadding
+import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.liquid.LiquidSlider
+import com.photovault.ui.theme.liquid.LiquidToggle
 
 /**
  * 设置 Tab - 显示应用设置选项，包括备份条件配置、存储策略管理、账户信息和退出登录。
@@ -86,7 +90,12 @@ fun SettingsTab(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp)
+            .padding(
+                start = 16.dp,
+                end = 16.dp,
+                top = 16.dp,
+                bottom = 16.dp + LocalBottomBarPadding.current
+            )
     ) {
         // 账户信息 group
         AccountInfoGroup(
@@ -228,7 +237,7 @@ private fun StorageStrategyManagementGroup(
                     onClick = { onFolderClick(folder) }
                 )
                 if (index < folders.size - 1) {
-                    Divider(
+                    HorizontalDivider(
                         modifier = Modifier.padding(vertical = 8.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
@@ -328,7 +337,7 @@ private fun AccountInfoGroup(
             value = username.ifEmpty { "未登录" }
         )
 
-        Divider(
+        HorizontalDivider(
             modifier = Modifier.padding(vertical = 8.dp),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
@@ -338,7 +347,7 @@ private fun AccountInfoGroup(
             value = serverAddress.ifEmpty { "未配置" }
         )
 
-        Divider(
+        HorizontalDivider(
             modifier = Modifier.padding(vertical = 8.dp),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
@@ -456,10 +465,19 @@ private fun WifiOnlySetting(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Switch(
-            checked = enabled,
-            onCheckedChange = onEnabledChange
-        )
+        val glassBackdrop = LocalGlassBackdrop.current
+        if (glassBackdrop != null) {
+            LiquidToggle(
+                selected = { enabled },
+                onSelect = onEnabledChange,
+                backdrop = glassBackdrop
+            )
+        } else {
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange
+            )
+        }
     }
 }
 
@@ -499,22 +517,39 @@ private fun MinBatteryLevelSetting(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Slider(
-            value = sliderPosition,
-            onValueChange = { sliderPosition = it },
-            onValueChangeFinished = {
-                // Snap to nearest 5% and commit
-                val snapped = (Math.round(sliderPosition / 5f) * 5)
-                    .coerceIn(
-                        SettingsPreferences.MIN_BATTERY_LEVEL_LOWER,
-                        SettingsPreferences.MIN_BATTERY_LEVEL_UPPER
-                    )
-                sliderPosition = snapped.toFloat()
-                onLevelChanged(snapped)
-            },
-            valueRange = SettingsPreferences.MIN_BATTERY_LEVEL_LOWER.toFloat()..SettingsPreferences.MIN_BATTERY_LEVEL_UPPER.toFloat(),
-            steps = 11 // (80-20)/5 - 1 = 11 steps between endpoints
-        )
+        val glassBackdrop = LocalGlassBackdrop.current
+        val valueRange = SettingsPreferences.MIN_BATTERY_LEVEL_LOWER.toFloat()..
+            SettingsPreferences.MIN_BATTERY_LEVEL_UPPER.toFloat()
+        // Commit the value snapped to the nearest 5%, only when it actually changes,
+        // so we don't spam preference writes during the drag.
+        val commitSnapped: (Float) -> Unit = { raw ->
+            val snapped = (Math.round(raw / 5f) * 5).coerceIn(
+                SettingsPreferences.MIN_BATTERY_LEVEL_LOWER,
+                SettingsPreferences.MIN_BATTERY_LEVEL_UPPER
+            )
+            if (snapped != currentLevel) onLevelChanged(snapped)
+        }
+        if (glassBackdrop != null) {
+            LiquidSlider(
+                value = { sliderPosition },
+                onValueChange = {
+                    sliderPosition = it
+                    commitSnapped(it)
+                },
+                valueRange = valueRange,
+                visibilityThreshold = 0.01f,
+                backdrop = glassBackdrop,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        } else {
+            Slider(
+                value = sliderPosition,
+                onValueChange = { sliderPosition = it },
+                onValueChangeFinished = { commitSnapped(sliderPosition) },
+                valueRange = valueRange,
+                steps = 11 // (80-20)/5 - 1 = 11 steps between endpoints
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween

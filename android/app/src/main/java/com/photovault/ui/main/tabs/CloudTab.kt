@@ -1,5 +1,6 @@
 package com.photovault.ui.main.tabs
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.Cloud
@@ -25,7 +27,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -40,14 +42,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.photovault.data.api.model.DirectoryInfo
+import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.main.components.StatusChip
+import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.data.api.model.FileBrowseInfo
 
 /**
@@ -77,7 +84,7 @@ fun CloudTab(
             onBreadcrumbClick = { viewModel.navigateToBreadcrumb(it) }
         )
 
-        Divider()
+        HorizontalDivider()
 
         // Content area
         Box(
@@ -111,14 +118,17 @@ fun CloudTab(
                     // Directory content list
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        contentPadding = PaddingValues(
+                            top = 8.dp,
+                            bottom = 8.dp + LocalBottomBarPadding.current
+                        )
                     ) {
                         // Directories
                         items(
                             items = uiState.directories,
                             key = { "dir_${it.path}" }
                         ) { directory ->
-                            DirectoryItem(
+                            CloudDirectoryRow(
                                 directory = directory,
                                 onClick = { viewModel.navigateToDirectory(directory.path) }
                             )
@@ -201,60 +211,98 @@ private fun BreadcrumbNavigation(
 }
 
 /**
- * A single directory item in the list.
- * Shows folder icon, name, and file count.
+ * A single cloud directory row, aligned with LocalTab's [FolderRow] compact
+ * list-row style (no card): a rounded tinted box with a folder glyph, the
+ * directory name, a compact subtitle, and a row of three per-status
+ * [StatusChip]s — backed up (green), trashed (orange), purged (red).
+ *
+ * The status counts come straight from the browse response fields
+ * ([DirectoryInfo.backedUpCount] / [DirectoryInfo.trashedCount] /
+ * [DirectoryInfo.purgedCount]); when a legacy server omits them they default
+ * to 0 and the chips simply render 0 without blocking the rest of the row.
  */
 @Composable
-private fun DirectoryItem(
+private fun CloudDirectoryRow(
     directory: DirectoryInfo,
     onClick: () -> Unit
 ) {
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clickable(onClick = onClick),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
+        // Folder glyph in a rounded tinted box (mirrors FolderRow).
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+            contentAlignment = Alignment.Center
         ) {
-            // Folder icon
             Icon(
                 imageVector = Icons.Filled.Folder,
                 contentDescription = null,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.primary
             )
+        }
 
-            Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
-            // Directory info
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = directory.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = directory.name,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = buildString {
+                    append("${directory.fileCount} 项")
+                    directory.latestFileTime?.let {
+                        append(" · ")
+                        append(formatTime(it))
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            // Per-directory status chips: backed up (green) / trashed / purged.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusChip(
+                    label = "已备份",
+                    count = directory.backedUpCount,
+                    color = Color(0xFF34C759)
                 )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "${directory.fileCount} 个文件",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                StatusChip(
+                    label = "回收站",
+                    count = directory.trashedCount,
+                    color = CloudStatusColors.Trashed
+                )
+                StatusChip(
+                    label = "已删除",
+                    count = directory.purgedCount,
+                    color = CloudStatusColors.Purged
                 )
             }
-
-            // Arrow indicator
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.NavigateNext,
-                contentDescription = "进入目录",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // Arrow indicator
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.NavigateNext,
+            contentDescription = "进入目录",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -425,3 +473,4 @@ private fun formatTime(timeStr: String): String {
         timeStr
     }
 }
+
