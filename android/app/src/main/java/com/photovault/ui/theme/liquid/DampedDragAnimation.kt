@@ -139,6 +139,18 @@ class DampedDragAnimation(
         }
     }
 
+    /**
+     * Slides the value toward [value] WITHOUT feeding the velocity tracker. Used for
+     * the long-press "grab": the pressed thumb glides under the finger so a drag can
+     * begin from there, but without the velocity-driven squish that a real drag has.
+     */
+    fun slideValueTo(value: Float) {
+        val targetValue = value.coerceIn(valueRange)
+        animationScope.launch {
+            valueAnimation.animateTo(targetValue, valueAnimationSpec)
+        }
+    }
+
     fun animateToValue(value: Float) {
         animationScope.launch {
             mutatorMutex.mutate {

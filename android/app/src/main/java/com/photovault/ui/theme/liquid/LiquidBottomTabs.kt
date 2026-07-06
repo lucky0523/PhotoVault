@@ -49,11 +49,16 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
+
+/** How long the finger must rest on a tab before the thumb "grabs" to it. */
+private const val LongPressGrabMs = 100L
 
 /**
  * Ported from the Backdrop catalog `LiquidBottomTabs`: a liquid-glass tab bar with
@@ -110,6 +115,10 @@ fun LiquidBottomTabs(
         val dragOrigin = remember { floatArrayOf(0f, 0f) }
         var didDrag by remember { mutableStateOf(false) }
         val dampedDragAnimation = remember(animationScope) {
+            // Timer that fires when the finger has been held long enough to count as a
+            // long-press "grab" (see onDragStarted). Cancelled on release or as soon
+            // as a real drag begins.
+            var longPressJob: Job? = null
             DampedDragAnimation(
                 animationScope = animationScope,
                 initialValue = selectedTabIndex().toFloat(),
@@ -127,8 +136,22 @@ fun LiquidBottomTabs(
                     dragOrigin[0] = index.toFloat()
                     dragOrigin[1] = 0f
                     didDrag = false
+                    // Long-press to grab: if the finger keeps resting on a tab past
+                    // the threshold (without lifting or dragging), glide the pressed
+                    // thumb under the finger so a drag can begin right from there.
+                    longPressJob?.cancel()
+                    longPressJob = animationScope.launch {
+                        delay(LongPressGrabMs)
+                        if (!didDrag) {
+                            // Treat the grab as the drag origin so the subsequent
+                            // drag continues smoothly from the finger's tab.
+                            didDrag = true
+                            slideValueTo(dragOrigin[0])
+                        }
+                    }
                 },
                 onDragStopped = {
+                    longPressJob?.cancel()
                     val targetIndex = if (didDrag) {
                         targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
                     } else {
@@ -137,8 +160,18 @@ fun LiquidBottomTabs(
                         dragOrigin[0].fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
                     }
                     didDrag = false
-                    currentIndex = targetIndex
-                    animateToValue(targetIndex.toFloat())
+                    if (targetIndex != currentIndex) {
+                        // Index changed: updating currentIndex drives the snapshotFlow
+                        // effect below, which runs animateToValue() and notifies
+                        // onTabSelected(). Calling animateToValue() here as well would
+                        // fire a duplicate press/release squish cycle, so we don't.
+                        currentIndex = targetIndex
+                    } else {
+                        // Same tab (e.g. dragged a little and released back onto it):
+                        // the effect won't fire, so settle the thumb onto the integer
+                        // slot directly.
+                        animateToValue(targetIndex.toFloat())
+                    }
                     animationScope.launch {
                         offsetAnimation.animateTo(
                             0f,
@@ -155,6 +188,8 @@ fun LiquidBottomTabs(
                     // oval via the layerBlock's velocity term. Pure taps are resolved
                     // in onDragStopped via animateToValue(), which carries no velocity.
                     if (dragAmount.x != 0f || didDrag) {
+                        // A real drag started: the long-press grab is no longer needed.
+                        longPressJob?.cancel()
                         if (!didDrag) {
                             didDrag = true
                             // First real movement: seed the drag from the pressed tab.
