@@ -33,6 +33,14 @@ interface PhotoStatusDao {
     @Query("SELECT * FROM photo_status WHERE status = :status")
     suspend fun getByStatus(status: String): List<PhotoStatus>
 
+    /**
+     * Returns all non-active records (trashed + purged) in a single indexed query.
+     * Used by the restore reconciliation to build the candidate set without
+     * two separate status scans.
+     */
+    @Query("SELECT * FROM photo_status WHERE status != 'active'")
+    suspend fun getNonActive(): List<PhotoStatus>
+
     @Query("SELECT * FROM photo_status")
     suspend fun getAll(): List<PhotoStatus>
 

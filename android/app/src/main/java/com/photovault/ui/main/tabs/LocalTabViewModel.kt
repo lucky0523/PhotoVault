@@ -10,6 +10,7 @@ import com.photovault.data.repository.AuthRepository
 import com.photovault.data.repository.BackupFolderRepository
 import com.photovault.service.BackupConditionChecker
 import com.photovault.service.BackgroundScanWorker
+import com.photovault.service.StatusSyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -31,6 +32,7 @@ class LocalTabViewModel @Inject constructor(
     private val backupConditionChecker: BackupConditionChecker,
     private val authRepository: AuthRepository,
     private val credentialManager: CredentialManager,
+    private val statusSyncManager: StatusSyncManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -171,5 +173,19 @@ class LocalTabViewModel @Inject constructor(
      */
     fun getMinBatteryLevel(): Int {
         return backupConditionChecker.getMinBatteryLevel()
+    }
+
+    /**
+     * Throttled status sync, triggered when the Local tab resumes (tab entry or
+     * app returning to foreground). Picks up recycle-bin deletions and restores
+     * done on the server so the folder chips reflect them promptly, without the
+     * cost of syncing on every resume — [StatusSyncManager.syncStatusIfStale]
+     * skips if a sync ran recently. No-op when signed out.
+     */
+    fun syncStatusOnResume() {
+        if (!credentialManager.hasValidToken()) return
+        viewModelScope.launch {
+            statusSyncManager.syncStatusIfStale()
+        }
     }
 }

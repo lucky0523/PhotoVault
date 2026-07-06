@@ -84,6 +84,15 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Index photo_status.status so status-filtered reads (restore
+            // reconciliation) use the index instead of scanning the whole table.
+            // Name must match Room's generated index name for the schema hash to validate.
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_photo_status_status ON photo_status (status)")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -92,7 +101,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photovault_db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
     }
 

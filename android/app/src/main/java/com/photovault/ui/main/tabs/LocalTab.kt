@@ -63,6 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.ui.main.components.StatusChip
 import com.photovault.ui.main.components.StoragePolicySheet
@@ -93,6 +95,13 @@ fun LocalTab(
     val pendingFolderUri by viewModel.pendingFolderUri.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Sync server-side status (recycle-bin deletions / restores) when this tab
+    // resumes — on tab entry and when the app returns to foreground. Throttled in
+    // the manager so rapid switches don't repeat the full sync.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.syncStatusOnResume()
+    }
 
     // Pull-to-refresh state (Material3 1.10 API: caller owns the isRefreshing flag).
     val pullToRefreshState = rememberPullToRefreshState()

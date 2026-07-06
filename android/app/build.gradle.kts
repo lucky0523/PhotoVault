@@ -50,6 +50,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests {
+            // Return default values for android.* stubs (e.g. android.util.Log,
+            // android.os.Build) instead of throwing "not mocked" in JVM unit tests.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 // With AGP 9 built-in Kotlin, kotlinOptions moves to the top-level kotlin block.

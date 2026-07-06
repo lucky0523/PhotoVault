@@ -2,6 +2,7 @@ package com.photovault.data.local.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -19,7 +20,12 @@ import androidx.room.PrimaryKey
  *
  * A file with no PhotoStatus row is treated as "not_backed_up".
  */
-@Entity(tableName = "photo_status")
+@Entity(
+    tableName = "photo_status",
+    // Indexed so status-filtered reads (e.g. the restore reconciliation's
+    // "all non-active records" query) don't full-scan the table on large libraries.
+    indices = [Index(value = ["status"])]
+)
 data class PhotoStatus(
     @PrimaryKey
     @ColumnInfo(name = "file_uri")
