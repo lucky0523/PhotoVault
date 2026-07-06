@@ -18,6 +18,9 @@ class MainViewModel @Inject constructor(
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
 
+    // Debug: seconds until the next heartbeat probe fires.
+    val heartbeatCountdown: StateFlow<Int> = connectionManager.heartbeatCountdown
+
     init {
         // Attempt connection on initialization
         val serverAddress = credentialManager.getServerAddress()

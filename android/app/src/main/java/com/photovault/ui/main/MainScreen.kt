@@ -100,6 +100,7 @@ fun MainScreen(
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
+    val heartbeatCountdown by viewModel.heartbeatCountdown.collectAsState()
     val tabNavController = rememberNavController()
 
     // Request media-read runtime permission (required for MediaStore image/video scanning).
@@ -155,7 +156,10 @@ fun MainScreen(
             Scaffold(
                 containerColor = Color.Transparent,
                 topBar = {
-                    GlassHeader(connectionState = connectionState)
+                    GlassHeader(
+                        connectionState = connectionState,
+                        heartbeatCountdown = heartbeatCountdown
+                    )
                 }
             ) { paddingValues ->
                 // Full-screen content layer captured by contentBackdrop. Content
@@ -259,7 +263,7 @@ fun MainScreen(
  * on the right. Sits under the (transparent) status bar edge-to-edge.
  */
 @Composable
-private fun GlassHeader(connectionState: ConnectionState) {
+private fun GlassHeader(connectionState: ConnectionState, heartbeatCountdown: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -274,7 +278,10 @@ private fun GlassHeader(connectionState: ConnectionState) {
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(modifier = Modifier.weight(1f))
-        ConnectionPill(connectionState = connectionState)
+        ConnectionPill(
+            connectionState = connectionState,
+            heartbeatCountdown = heartbeatCountdown
+        )
     }
 }
 
@@ -282,14 +289,22 @@ private fun GlassHeader(connectionState: ConnectionState) {
  * Compact glass pill: colored dot + short status text.
  */
 @Composable
-private fun ConnectionPill(connectionState: ConnectionState) {
-    val (dotColor, statusText) = when (connectionState) {
+private fun ConnectionPill(connectionState: ConnectionState, heartbeatCountdown: Int) {
+    val (dotColor, baseText) = when (connectionState) {
         is ConnectionState.Connected -> when (connectionState.type) {
             ConnectionType.LAN -> Color(0xFF34C759) to "局域网"
             ConnectionType.WAN -> Color(0xFF34C759) to "公网"
         }
         is ConnectionState.Connecting -> Color(0xFFFF9F0A) to "连接中"
         is ConnectionState.Disconnected -> Color(0xFF8E8E93) to "未连接"
+    }
+    // Debug: append the countdown whenever the heartbeat/reconnect loop is
+    // active (countdown >= 0), regardless of connection state, so we can see
+    // when the next probe/reconnect attempt fires.
+    val statusText = if (heartbeatCountdown >= 0) {
+        "$baseText · ♥${heartbeatCountdown}s"
+    } else {
+        baseText
     }
     val animatedDot by animateColorAsState(dotColor, label = "dot")
 
