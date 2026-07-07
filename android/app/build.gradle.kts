@@ -56,6 +56,9 @@ android {
             // Return default values for android.* stubs (e.g. android.util.Log,
             // android.os.Build) instead of throwing "not mocked" in JVM unit tests.
             isReturnDefaultValues = true
+            // Robolectric needs the merged manifest/resources to bootstrap a
+            // real Context + ContentResolver for ViewModel/MediaStore tests.
+            isIncludeAndroidResources = true
         }
     }
 }
@@ -160,6 +163,11 @@ dependencies {
     // Kotest property-based testing (standalone Arb/checkAll, runs inside JUnit4)
     testImplementation("io.kotest:kotest-property:5.9.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    // Robolectric — provides a real Context + ContentResolver (and SQLite for
+    // Room in-memory) so FolderDetailViewModel can be exercised in JVM tests
+    // with injectable MediaStore results via ShadowContentResolver.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation(composeBom)

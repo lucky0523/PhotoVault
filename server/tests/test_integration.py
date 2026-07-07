@@ -570,3 +570,115 @@ class TestMultiUserIsolation:
                 dirs_to_visit.append(d["path"])
 
         return all_files
+
+
+# ---------------------------------------------------------------------------
+# Test: Re-upload a purged file restores it (re-backup end-to-end)
+# ---------------------------------------------------------------------------
+
+
+class TestRebackupPurgedFile:
+    """A purged file re-uploaded from the phone must be restored to active."""
+
+    async def _upload(self, client, headers, file_data, file_hash, file_name):
+        init = await client.post(
+            "/api/v1/backup/init",
+            json={
+                "file_hash": file_hash,
+                "file_name": file_name,
+                "file_size": len(file_data),
+                "file_path": f"/DCIM/Camera/{file_name}",
+                "device_name": "Pixel9Pro",
+                "source_folder": "/DCIM/Camera",
+                "storage_policy": {
+                    "use_custom_path": False,
+                    "custom_path": None,
+                    "use_year_month_layer": False,
+                },
+            },
+            headers=headers,
+        )
+        assert init.status_code == 200, init.text
+        body = init.json()
+        # A purged file is not an active duplicate → must allow a fresh session.
+        assert body["is_duplicate"] is False, body
+        session_id = body["session_id"]
+        chunk_size = body["chunk_size"]
+
+        for i, chunk in enumerate(_split_into_chunks(file_data, chunk_size)):
+            resp = await client.post(
+                "/api/v1/backup/chunk",
+                data={"session_id": session_id, "chunk_index": str(i), "checksum": _compute_md5(chunk)},
+                files={"file": ("chunk", chunk, "application/octet-stream")},
+                headers=headers,
+            )
+            assert resp.status_code == 200, resp.text
+
+        complete = await client.post(
+            "/api/v1/backup/complete",
+            json={"session_id": session_id},
+            headers=headers,
+        )
+        assert complete.status_code == 200, complete.text
+        return complete.json()
+
+    async def test_reupload_after_purge_restores_record_and_file(self, seeded_db, client: AsyncClient):
+        from app.core.config import get_settings
+        from app.services.file_browse_service import FileBrowseService
+
+        file_data = _generate_test_file(3 * 1024 * 1024)
+        file_hash = _compute_sha256(file_data)
+        file_name = "MVIMG_20260707_005345.jpg"
+
+        async with client:
+            headers = await _auth_headers(client, "alice", "password123")
+
+            # 1) Initial backup.
+            first = await self._upload(client, headers, file_data, file_hash, file_name)
+            file_id = first["file_id"]
+            assert os.path.isfile(first["stored_path"])
+
+            settings = get_settings()
+            service = FileBrowseService(seeded_db, settings.storage_root, settings.trash_retention_days)
+
+            # 2) Trash then purge on the server (physical file deleted, record kept).
+            ok, msg = await service.delete_file(user_id=1, file_id=file_id)
+            assert ok, msg
+            ok, msg = await service.purge_file(user_id=1, file_id=file_id)
+            assert ok, msg
+
+            cursor = await seeded_db.execute(
+                "SELECT file_path, deleted_at, purged_at FROM file_records WHERE id = ?", (file_id,)
+            )
+            purged = await cursor.fetchone()
+            assert purged["purged_at"] is not None
+            assert not os.path.isfile(purged["file_path"])  # physical file gone
+
+            # 3) Re-upload the same file from the phone (re-backup).
+            again = await self._upload(client, headers, file_data, file_hash, file_name)
+
+            # 4) The record must be restored to active (no duplicate row), with the
+            #    physical file back at a normal (non-.trash) path.
+            cursor = await seeded_db.execute(
+                "SELECT id, file_path, deleted_at, purged_at FROM file_records WHERE user_id = 1 AND file_hash = ?",
+                (file_hash,),
+            )
+            rows = await cursor.fetchall()
+            assert len(rows) == 1, f"expected a single record, got {len(rows)}"
+            rec = rows[0]
+            assert rec["deleted_at"] is None, "deleted_at must be cleared on re-backup"
+            assert rec["purged_at"] is None, "purged_at must be cleared on re-backup"
+            assert ".trash" not in rec["file_path"], f"file_path must point to a live location: {rec['file_path']}"
+            assert os.path.isfile(rec["file_path"]), "physical file must exist after re-backup"
+
+            # 5) A subsequent duplicate check now reports active.
+            dup = await client.post(
+                "/api/v1/backup/check",
+                json={"file_hash": file_hash, "file_path": f"/DCIM/Camera/{file_name}", "device_name": "Pixel9Pro"},
+                headers=headers,
+            )
+            assert dup.status_code == 200
+            assert dup.json()["is_duplicate"] is True
+            assert dup.json()["status"] == "active"
+
+

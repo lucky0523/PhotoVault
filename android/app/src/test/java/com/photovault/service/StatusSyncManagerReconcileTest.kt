@@ -206,6 +206,9 @@ class StatusSyncManagerReconcileTest {
 
         override suspend fun getAll(): List<PhotoStatus> = store.toList()
 
+        override fun observeAll(): kotlinx.coroutines.flow.Flow<List<PhotoStatus>> =
+            kotlinx.coroutines.flow.flowOf(store.toList())
+
         override suspend fun updateStatusByHash(
             fileHash: String,
             status: String,

@@ -19,8 +19,10 @@ import com.photovault.data.api.model.UploadState
 import com.photovault.data.local.CredentialManager
 import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.BackupHistoryDao
+import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.BackupStatus
+import com.photovault.ui.main.tabs.applyBackedUpCountDelta
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -103,6 +105,9 @@ class BackupForegroundService : Service() {
     lateinit var backupHistoryDao: BackupHistoryDao
 
     @Inject
+    lateinit var photoStatusDao: PhotoStatusDao
+
+    @Inject
     lateinit var credentialManager: CredentialManager
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -163,13 +168,25 @@ class BackupForegroundService : Service() {
                 val fileInfo = backupQueue.dequeue() ?: break
                 currentFileName = fileInfo.fileName
 
+                // Capture the file's status BEFORE uploading (the uploader flips it
+                // to `active` via StatusSyncManager.markActive on success). A
+                // re-backup of a trashed/purged file must move it out of that
+                // bucket, not just add to backed-up — see [incrementBackedUpCount].
+                val priorStatus = try {
+                    photoStatusDao.getByFileUri(fileInfo.uri)?.status
+                } catch (e: Exception) {
+                    null
+                }
+
                 updateNotification(
                     title = "正在备份: $currentFileName",
                     content = "进度: ${completedFiles + 1}/$totalFiles"
                 )
 
-                // Look up the folder's storage policy for this file
-                val folder = backupFolderDao.getByUri(fileInfo.folderUri)
+                // Look up the folder's storage policy for this file. Matched by
+                // canonical key so a re-backup's URL-decoded folderUri still
+                // resolves to the stored (percent-encoded) folder row.
+                val folder = findFolder(fileInfo.folderUri)
                 val storagePolicy = StoragePolicyConfig(
                     useCustomPath = folder?.useCustomPath ?: false,
                     customPath = folder?.customPath,
@@ -215,7 +232,7 @@ class BackupForegroundService : Service() {
                         )
                         // Save success record and increment backed up count
                         saveHistoryRecord(fileInfo, BackupStatus.SUCCESS)
-                        incrementBackedUpCount(fileInfo.folderUri)
+                        incrementBackedUpCount(fileInfo.folderUri, priorStatus)
                     }
                     is UploadResult.Duplicate -> {
                         android.util.Log.i(
@@ -224,7 +241,7 @@ class BackupForegroundService : Service() {
                         )
                         // Save skipped record with reason "云端已存在" and increment backed up count
                         saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, "云端已存在")
-                        incrementBackedUpCount(fileInfo.folderUri)
+                        incrementBackedUpCount(fileInfo.folderUri, priorStatus)
                     }
                     is UploadResult.Skipped -> {
                         android.util.Log.i(
@@ -236,7 +253,7 @@ class BackupForegroundService : Service() {
                         // as backed up; a deleted source file does not.
                         saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
                         if (result.countsAsBackedUp) {
-                            incrementBackedUpCount(fileInfo.folderUri)
+                            incrementBackedUpCount(fileInfo.folderUri, priorStatus)
                         }
                     }
                     is UploadResult.Failed -> {
@@ -336,15 +353,37 @@ class BackupForegroundService : Service() {
     }
 
     /**
-     * Increments the backed up images count for the given folder.
+     * Resolves a [com.photovault.data.local.entity.BackupFolder] for [folderUri],
+     * tolerant of URL-encoding differences.
+     *
+     * A re-backup's folderUri arrives URL-decoded (see [canonicalFolderKey]) and
+     * no longer matches the percent-encoded value stored in the DB, so an exact
+     * `getByUri` fails. We fall back to matching by canonical key across all
+     * folders. Plain backups (folderUri straight from the DB) hit the fast exact
+     * match and skip the scan.
      */
-    private suspend fun incrementBackedUpCount(folderUri: String) {
+    private suspend fun findFolder(folderUri: String): com.photovault.data.local.entity.BackupFolder? {
+        backupFolderDao.getByUri(folderUri)?.let { return it }
+        val key = canonicalFolderKey(folderUri)
+        return backupFolderDao.getAllOnce().firstOrNull { canonicalFolderKey(it.folderUri) == key }
+    }
+
+    /**
+     * Increments the backed up images count for the given folder, keeping the
+     * aggregate status counts consistent.
+     *
+     * A plain upload of a not-backed-up file simply moves it into the backed-up
+     * bucket (backed-up + 1; the not-backed-up count is derived, so no other
+     * column changes). A re-backup of a **trashed/purged** file additionally
+     * moves it OUT of that bucket, so we decrement the corresponding column —
+     * otherwise the 回收站/已删除 chip in LocalTab would keep counting a file that
+     * is now backed up. [priorStatus] is the photo_status value captured BEFORE
+     * the upload flipped it to `active`.
+     */
+    private suspend fun incrementBackedUpCount(folderUri: String, priorStatus: String?) {
         try {
-            val folder = backupFolderDao.getByUri(folderUri)
-            if (folder != null) {
-                val updated = folder.copy(backedUpImages = folder.backedUpImages + 1)
-                backupFolderDao.update(updated)
-            }
+            val folder = findFolder(folderUri) ?: return
+            backupFolderDao.update(applyBackedUpCountDelta(folder, priorStatus))
         } catch (e: Exception) {
             android.util.Log.e(
                 "PhotoVaultBackup",

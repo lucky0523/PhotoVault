@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +61,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -123,6 +126,14 @@ fun FolderDetailScreen(
 
     LaunchedEffect(folderUri) {
         viewModel.loadImages(folderUri)
+    }
+
+    // Fallback refresh: when the screen returns to the foreground, re-align the
+    // displayed statuses with the photo_status table. Covers the "switch away →
+    // upload completes → switch back" scenario where the reactive Flow
+    // subscription was stopped while backgrounded (requirement 2.6).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.reloadStatuses()
     }
 
     val backgroundBrush = appBackgroundBrush()
@@ -196,7 +207,7 @@ fun FolderDetailScreen(
                                             Text(
                                                 text = filter.label,
                                                 modifier = Modifier.padding(horizontal = 14.dp),
-                                                fontSize = 14.sp,
+                                                fontSize = 12.sp,
                                                 maxLines = 1,
                                                 // Selected: white text over the color
                                                 // tint. Unselected: the status color.
@@ -364,6 +375,23 @@ private fun ImageThumbnailItem(
             )
         }
 
+        // Uploading overlay: a scrim + spinner shown while a manual re-backup of
+        // this photo is in flight (until it converges to 已备份).
+        if (image.isUploading) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.5.dp,
+                    color = Color.White
+                )
+            }
+        }
+
         // Status badge (bottom-right corner)
         StatusBadge(image)
     }
@@ -450,7 +478,7 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
             val remaining = formatRemainingTime(image.status?.expiresAt)
             BadgeLabel(
                 backgroundColor = CloudStatusColors.Trashed,
-                text = if (remaining != null) "回收站 $remaining" else "回收站"
+                text = remaining
             ) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
@@ -496,7 +524,7 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeIcon(
 @Composable
 private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
     backgroundColor: Color,
-    text: String,
+    text: String?,
     icon: @Composable () -> Unit
 ) {
     Box(
@@ -507,17 +535,19 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
             .padding(horizontal = 4.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             icon()
-            Text(
-                text = text,
-                color = Color.White,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold
-            )
+            if (!text.isNullOrEmpty()) {
+                Text(
+                    text = text,
+                    color = Color.White,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

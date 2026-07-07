@@ -275,13 +275,16 @@ class ChunkUploader @Inject constructor(
      *   (skip upload, update local photo_status so future scans skip it too)
      * - null if the file is not found (proceed with upload) or the check fails
      */
-    private suspend fun checkDuplicate(fileHash: String, fileInfo: FileInfo): UploadResult? {
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun checkDuplicate(fileHash: String, fileInfo: FileInfo): UploadResult? {
         return try {
             val response = backupApi.checkDuplicate(
                 DuplicateCheckRequest(
                     fileHash = fileHash,
                     filePath = fileInfo.uri,
-                    deviceName = android.os.Build.MODEL
+                    // deviceName is unused by the hash-based check; fall back to a
+                    // constant so a null Build.MODEL can't break the request.
+                    deviceName = android.os.Build.MODEL ?: "android"
                 )
             )
             if (!response.isSuccessful) return null
@@ -296,14 +299,26 @@ class ChunkUploader @Inject constructor(
                     UploadResult.Duplicate(body.fileId)
                 }
                 status == PhotoStatusValue.TRASHED -> {
-                    // File was moved to recycle bin on the server — skip and record locally
-                    statusSyncManager.markTrashed(fileInfo.uri, fileHash, body.expiresAt)
-                    UploadResult.Skipped("文件在回收站中")
+                    if (fileInfo.forceReupload) {
+                        // Manual re-upload: don't short-circuit. Proceed to upload
+                        // so /backup/complete reactivates the trashed record.
+                        null
+                    } else {
+                        // File was moved to recycle bin on the server — skip and record locally
+                        statusSyncManager.markTrashed(fileInfo.uri, fileHash, body.expiresAt)
+                        UploadResult.Skipped("文件在回收站中")
+                    }
                 }
                 status == PhotoStatusValue.PURGED -> {
-                    // File was permanently deleted on the server — skip and record locally
-                    statusSyncManager.markPurged(fileInfo.uri, fileHash)
-                    UploadResult.Skipped("文件已彻底删除")
+                    if (fileInfo.forceReupload) {
+                        // Manual re-upload: don't short-circuit. Proceed to upload
+                        // so /backup/complete reactivates the purged record.
+                        null
+                    } else {
+                        // File was permanently deleted on the server — skip and record locally
+                        statusSyncManager.markPurged(fileInfo.uri, fileHash)
+                        UploadResult.Skipped("文件已彻底删除")
+                    }
                 }
                 else -> {
                     // status == "not_found" — proceed with upload
@@ -462,22 +477,9 @@ class ChunkUploader @Inject constructor(
         }
     }
 
-    /**
-     * Converts a SAF tree URI string into a clean relative folder path.
-     * e.g. content://com.android.externalstorage.documents/tree/primary%3ADCIM%2FCamera
-     *      -> "DCIM/Camera"
-     * Falls back to the original string if it cannot be parsed.
-     */
-    private fun treeUriToRelativePath(folderUri: String): String {
-        return try {
-            val treeUri = android.net.Uri.parse(folderUri)
-            val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
-            // docId looks like "primary:DCIM/Camera"
-            docId.substringAfter(':').trim('/')
-        } catch (e: Exception) {
-            folderUri
-        }
-    }
+    /** Converts a SAF tree URI string into a clean relative folder path. */
+    private fun treeUriToRelativePath(folderUri: String): String =
+        safTreeUriToRelativePath(folderUri)
 
     /**
      * Uploads a single chunk with retry logic.
@@ -715,4 +717,31 @@ class ChunkUploader @Inject constructor(
         val sessionId: String,
         val startChunkIndex: Int
     )
+}
+
+
+/**
+ * Converts a SAF tree URI string into a clean relative folder path, e.g.
+ * `content://.../tree/primary%3ADCIM%2FCamera` -> `DCIM/Camera`.
+ *
+ * Parses from the decoded [android.net.Uri.getPath] rather than
+ * [android.provider.DocumentsContract.getTreeDocumentId]: a re-backup's folderUri
+ * arrives URL-decoded from the navigation layer (`.../tree/primary:DCIM/Camera`),
+ * which splits the single tree doc-id into multiple path segments.
+ * getTreeDocumentId then returns only the first segment (`primary:DCIM`), dropping
+ * `Camera` and saving the file one directory level too high. Uri.path is already
+ * decoded and preserves the full relative path, so this works for BOTH the encoded
+ * (normal backup) and decoded (re-backup) forms — mirroring
+ * FolderDetailViewModel.queryMediaStoreImages.
+ *
+ * Falls back to the original string if it cannot be parsed.
+ */
+internal fun safTreeUriToRelativePath(folderUri: String): String {
+    return try {
+        val treeUri = android.net.Uri.parse(folderUri)
+        val path = treeUri.path ?: return folderUri // "/tree/primary:DCIM/Camera"
+        path.removePrefix("/tree/").substringAfter(':').trim('/')
+    } catch (e: Exception) {
+        folderUri
+    }
 }

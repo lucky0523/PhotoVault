@@ -13,9 +13,16 @@ import com.photovault.service.FileInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -32,7 +39,14 @@ data class FolderImage(
     val createdTime: Long,
     val mimeType: String,
     val status: PhotoStatus? = null,
-    val isMotionPhoto: Boolean = false
+    val isMotionPhoto: Boolean = false,
+    /**
+     * True while a manual re-backup of this photo is in flight (queued/uploading)
+     * and it has not yet converged to `active`. Drives the uploading spinner in
+     * the grid. Cleared automatically once the photo becomes backed up, or pruned
+     * by [reloadStatuses] when the backup service is no longer running.
+     */
+    val isUploading: Boolean = false
 ) {
     val isBackedUp: Boolean get() = status?.status == PhotoStatusValue.ACTIVE
     val isTrashed: Boolean get() = status?.status == PhotoStatusValue.TRASHED
@@ -47,23 +61,118 @@ class FolderDetailViewModel @Inject constructor(
     private val backupQueue: BackupQueue
 ) : ViewModel() {
 
-    private val _images = MutableStateFlow<List<FolderImage>>(emptyList())
-    val images: StateFlow<List<FolderImage>> = _images.asStateFlow()
+    /**
+     * Cached result of the heavy MediaStore scan (`queryMediaStoreImages` +
+     * `MotionPhotoDetector`) WITHOUT any `status`. MediaStore is only scanned on
+     * first load and on an explicit fallback refresh, so `photo_status` changes
+     * never re-run the scan — the association step below is a pure O(n) mapping.
+     */
+    private val _rawImages = MutableStateFlow<List<FolderImage>>(emptyList())
+
+    /**
+     * One-shot `photo_status` snapshots pushed by [reloadStatuses] (the ON_RESUME
+     * fallback). Merged with the reactive [PhotoStatusDao.observeAll] Flow so a
+     * manual re-align can re-drive the association even when the reactive
+     * subscription was stopped in the background.
+     */
+    private val _manualStatuses = MutableSharedFlow<List<PhotoStatus>>(replay = 0)
+
+    /** Remembered folder so [reloadStatuses] can rescan MediaStore if needed. */
+    private var lastFolderUri: String? = null
+
+    /**
+     * URIs of photos with an in-flight manual re-backup. Added by [rebackup];
+     * surfaced as [FolderImage.isUploading] via the combine below (only while the
+     * photo has not yet converged to `active`); pruned by [reloadStatuses].
+     */
+    private val _uploadingUris = MutableStateFlow<Set<String>>(emptySet())
+
+    private val statusUpdates: Flow<List<PhotoStatus>> =
+        merge(photoStatusDao.observeAll(), _manualStatuses)
+
+    /**
+     * Reactive merge of the cached MediaStore images ([_rawImages]) and the
+     * authoritative `photo_status` table ([statusUpdates]).
+     *
+     * On every emission from either source, performs a single O(n)
+     * `associateBy { fileUri }` association producing the displayed
+     * [FolderImage] list with the latest `status`. This is a pure mapping — it
+     * NEVER re-runs `queryMediaStoreImages` or [MotionPhotoDetector]. Because the
+     * DAO's `observeAll()` re-emits whenever the table changes (e.g. after
+     * `StatusSyncManager.markActive` on a successful upload), the displayed
+     * status converges to the table without a manual re-query.
+     *
+     * Exposed via `stateIn(WhileSubscribed(5000))`: the Flow stays hot for 5s
+     * after the last subscriber goes away (covers config changes / brief
+     * backgrounding); [reloadStatuses] handles longer background gaps.
+     */
+    val images: StateFlow<List<FolderImage>> =
+        combine(_rawImages, statusUpdates, _uploadingUris) { rawImages, statuses, uploading ->
+            associateStatuses(rawImages, statuses, uploading)
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
+    /**
+     * First-load entry point. Runs ONLY the heavy MediaStore scan
+     * (`queryMediaStoreImages` + `MotionPhotoDetector`, without `status`) and
+     * writes the result into [_rawImages]. The reactive [images] combine then
+     * associates it with the `photo_status` table.
+     */
     fun loadImages(folderUri: String) {
+        lastFolderUri = folderUri
         viewModelScope.launch {
             _loading.value = true
             try {
-                val loaded = withContext(Dispatchers.IO) {
-                    loadFolderImagesWithStatus(context, folderUri)
+                val raw = withContext(Dispatchers.IO) {
+                    loadRawFolderImages(context, folderUri)
                 }
-                _images.value = loaded
+                _rawImages.value = raw
             } finally {
                 _loading.value = false
             }
+        }
+    }
+
+    /**
+     * ON_RESUME fallback: covers `photo_status` changes that happened while the
+     * reactive [images] subscription was stopped in the background.
+     *
+     * Does a one-shot read of [PhotoStatusDao.getAll] and re-associates it with
+     * the cached [_rawImages] by pushing the snapshot through [_manualStatuses].
+     * If [_rawImages] is empty (nothing scanned yet), triggers one MediaStore
+     * rescan instead.
+     */
+    fun reloadStatuses() {
+        viewModelScope.launch {
+            if (_rawImages.value.isEmpty()) {
+                lastFolderUri?.let { loadImages(it) }
+                return@launch
+            }
+            val statuses = withContext(Dispatchers.IO) { photoStatusDao.getAll() }
+            pruneUploading(statuses)
+            _manualStatuses.emit(statuses)
+        }
+    }
+
+    /**
+     * Prunes stale [_uploadingUris] markers. Removes URIs that have converged to
+     * `active` (the re-backup succeeded); and if the backup service is no longer
+     * running, clears the rest too — the upload finished without success
+     * (failed/stopped), so the spinner must stop.
+     */
+    private fun pruneUploading(statuses: List<PhotoStatus>) {
+        val activeUris = statuses
+            .filter { it.status == PhotoStatusValue.ACTIVE }
+            .map { it.fileUri }
+            .toSet()
+        _uploadingUris.update { current ->
+            if (!BackupForegroundService.isRunning) emptySet() else current - activeUris
         }
     }
 
@@ -74,8 +183,16 @@ class FolderDetailViewModel @Inject constructor(
      * BackupQueue, then starts the foreground service. On the server side,
      * /backup/complete calls reactivate_record to clear the deletion markers
      * on the existing record (no duplicate record created).
+     *
+     * Does NOT pre-write `active` / call `markActive`: `photo_status` is only
+     * updated by `StatusSyncManager.markActive` after a successful upload, so an
+     * incomplete or failed re-backup never shows as "backed up".
      */
     fun rebackup(image: FolderImage, folderUri: String) {
+        // Immediately mark the photo as uploading so the grid shows a spinner
+        // while the async enqueue + foreground upload runs. Cleared once the
+        // photo_status table converges to `active` (or pruned in reloadStatuses).
+        _uploadingUris.update { it + image.uri.toString() }
         viewModelScope.launch {
             val fileInfo = FileInfo(
                 uri = image.uri.toString(),
@@ -83,7 +200,10 @@ class FolderDetailViewModel @Inject constructor(
                 fileSize = image.fileSize,
                 createdTime = image.createdTime,
                 mimeType = image.mimeType,
-                folderUri = folderUri
+                folderUri = folderUri,
+                // Force re-upload so the trashed/purged skip in ChunkUploader is
+                // bypassed and the server reactivates the record on complete.
+                forceReupload = true
             )
             backupQueue.enqueue(listOf(fileInfo))
             BackupForegroundService.start(context)
@@ -91,23 +211,43 @@ class FolderDetailViewModel @Inject constructor(
     }
 
     /**
-     * Loads images in the given SAF tree folder via MediaStore, then enriches
-     * each with its PhotoStatus from the local database.
+     * Pure O(n) association of cached [rawImages] with the current [statuses]
+     * from the `photo_status` table, keyed by `fileUri`. No MediaStore query or
+     * motion-photo detection happens here.
      */
-    private suspend fun loadFolderImagesWithStatus(
+    private fun associateStatuses(
+        rawImages: List<FolderImage>,
+        statuses: List<PhotoStatus>,
+        uploadingUris: Set<String>
+    ): List<FolderImage> {
+        if (rawImages.isEmpty()) return emptyList()
+        val statusByUri = statuses.associateBy { it.fileUri }
+        return rawImages.map { img ->
+            val key = img.uri.toString()
+            val status = statusByUri[key]
+            img.copy(
+                status = status,
+                // Show the spinner only until the photo actually converges to
+                // active — success then flips it to the "已备份" badge instead.
+                isUploading = uploadingUris.contains(key) &&
+                    status?.status != PhotoStatusValue.ACTIVE
+            )
+        }
+    }
+
+    /**
+     * Runs the heavy MediaStore scan and enriches each image with motion-photo
+     * detection, WITHOUT associating `status` (that is done reactively in
+     * [images]). This keeps the association step a pure mapping.
+     */
+    private fun loadRawFolderImages(
         context: Context,
         folderUri: String
     ): List<FolderImage> {
         val rawImages = queryMediaStoreImages(context, folderUri)
         if (rawImages.isEmpty()) return emptyList()
-
-        // Batch-fetch all photo_status rows we might need
-        val allStatuses = photoStatusDao.getAll()
-        val statusByUri = allStatuses.associateBy { it.fileUri }
-
         return rawImages.map { img ->
             img.copy(
-                status = statusByUri[img.uri.toString()],
                 isMotionPhoto = MotionPhotoDetector.isMotionPhoto(context, img.uri, img.mimeType)
             )
         }

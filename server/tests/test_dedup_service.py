@@ -502,3 +502,118 @@ class TestCheckDuplicateEndpoint:
             )
 
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Re-backup: register_or_reactivate_file
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterOrReactivate:
+    """Tests for DeduplicationService.register_or_reactivate_file() (re-backup flow)."""
+
+    @pytest.mark.asyncio
+    async def test_reactivates_trashed_record_without_creating_duplicate(self, seeded_db):
+        """A re-backup of a trashed file restores the SAME record (no duplicate row)."""
+        service = DeduplicationService(seeded_db)
+
+        original = await service.register_file(
+            user_id=1,
+            file_hash="rebackup_hash",
+            file_path="/storage/alice/DCIM/photo.jpg",
+            original_path="/DCIM/Camera/photo.jpg",
+            device_name="Pixel9Pro",
+            file_size=1000,
+            file_name="photo.jpg",
+        )
+
+        # Trash it on the server.
+        await seeded_db.execute(
+            "UPDATE file_records SET deleted_at = '2024-01-01T00:00:00' WHERE id = ?",
+            (original.id,),
+        )
+        await seeded_db.commit()
+        # While trashed, check() must not see it.
+        assert await service.check(user_id=1, file_hash="rebackup_hash") is None
+
+        # Re-backup completes → reactivate.
+        restored = await service.register_or_reactivate_file(
+            user_id=1,
+            file_hash="rebackup_hash",
+            file_path="/storage/alice/DCIM/photo.jpg",
+            original_path="/DCIM/Camera/photo.jpg",
+            device_name="Pixel9Pro",
+            file_size=1000,
+            file_name="photo.jpg",
+        )
+
+        # Same record reused (no duplicate insert).
+        assert restored.id == original.id
+        cursor = await seeded_db.execute(
+            "SELECT COUNT(*) AS n FROM file_records WHERE user_id = 1 AND file_hash = 'rebackup_hash'"
+        )
+        assert (await cursor.fetchone())["n"] == 1
+
+        # Deletion markers cleared → check() now finds it as active.
+        cursor = await seeded_db.execute(
+            "SELECT deleted_at, purged_at FROM file_records WHERE id = ?", (original.id,)
+        )
+        row = await cursor.fetchone()
+        assert row["deleted_at"] is None
+        assert row["purged_at"] is None
+        assert await service.check(user_id=1, file_hash="rebackup_hash") is not None
+
+    @pytest.mark.asyncio
+    async def test_reactivates_purged_record(self, seeded_db):
+        """A re-backup of a purged file clears purged_at and refreshes the path."""
+        service = DeduplicationService(seeded_db)
+
+        original = await service.register_file(
+            user_id=1,
+            file_hash="purged_hash",
+            file_path="/storage/alice/old.jpg",
+            original_path="/DCIM/Camera/old.jpg",
+            device_name="Pixel9Pro",
+            file_size=2000,
+            file_name="old.jpg",
+        )
+        await seeded_db.execute(
+            "UPDATE file_records SET purged_at = '2024-02-02T00:00:00' WHERE id = ?",
+            (original.id,),
+        )
+        await seeded_db.commit()
+
+        restored = await service.register_or_reactivate_file(
+            user_id=1,
+            file_hash="purged_hash",
+            file_path="/storage/alice/new.jpg",
+            original_path="/DCIM/Camera/old.jpg",
+            device_name="Pixel9Pro",
+            file_size=2000,
+            file_name="old.jpg",
+        )
+
+        assert restored.id == original.id
+        assert restored.file_path == "/storage/alice/new.jpg"
+        cursor = await seeded_db.execute(
+            "SELECT purged_at FROM file_records WHERE id = ?", (original.id,)
+        )
+        assert (await cursor.fetchone())["purged_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_inserts_new_record_when_none_exists(self, seeded_db):
+        """With no prior record, it behaves like register_file (fresh insert)."""
+        service = DeduplicationService(seeded_db)
+
+        record = await service.register_or_reactivate_file(
+            user_id=1,
+            file_hash="fresh_hash",
+            file_path="/storage/alice/fresh.jpg",
+            original_path="/DCIM/Camera/fresh.jpg",
+            device_name="Pixel9Pro",
+            file_size=500,
+            file_name="fresh.jpg",
+        )
+
+        assert record.id is not None
+        assert await service.check(user_id=1, file_hash="fresh_hash") is not None

@@ -327,8 +327,9 @@ class UploadService:
                 is_motion, motion_offset = detect_motion_photo(str(final_path))
                 is_ultra_hdr = detect_ultra_hdr(str(final_path))
 
-                # Register file record (pointing to existing file)
-                record = await self._dedup_service.register_file(
+                # Register file record (pointing to existing file). Reactivates an
+                # existing trashed/purged record so a re-backup restores it in place.
+                record = await self._dedup_service.register_or_reactivate_file(
                     user_id=user_id,
                     file_hash=session["file_hash"],
                     file_path=str(final_path),
@@ -374,8 +375,9 @@ class UploadService:
         is_motion, motion_offset = detect_motion_photo(str(final_path))
         is_ultra_hdr = detect_ultra_hdr(str(final_path))
 
-        # Step 6: Register file record
-        record = await self._dedup_service.register_file(
+        # Step 6: Register file record. Reactivates an existing trashed/purged
+        # record so a re-backup restores it in place instead of leaving a stale row.
+        record = await self._dedup_service.register_or_reactivate_file(
             user_id=user_id,
             file_hash=session["file_hash"],
             file_path=str(final_path),

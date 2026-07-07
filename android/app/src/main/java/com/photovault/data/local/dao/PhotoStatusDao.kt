@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.photovault.data.local.entity.PhotoStatus
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Data Access Object for [PhotoStatus] entity.
@@ -43,6 +44,17 @@ interface PhotoStatusDao {
 
     @Query("SELECT * FROM photo_status")
     suspend fun getAll(): List<PhotoStatus>
+
+    /**
+     * Reactive query over the entire photo_status table.
+     *
+     * Emits the current list on subscription and re-emits whenever any row in
+     * photo_status changes (insert / upsert / [markActive] / [updateStatusByHash]
+     * / [delete]). Used by FolderDetailViewModel to keep the displayed photo
+     * status converged to this authoritative table without a manual re-query.
+     */
+    @Query("SELECT * FROM photo_status")
+    fun observeAll(): Flow<List<PhotoStatus>>
 
     /**
      * Updates the status of all records matching [fileHash] to [status].

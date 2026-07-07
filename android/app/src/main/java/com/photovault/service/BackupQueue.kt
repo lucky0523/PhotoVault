@@ -13,7 +13,14 @@ data class FileInfo(
     val fileSize: Long,
     val createdTime: Long,
     val mimeType: String,
-    val folderUri: String
+    val folderUri: String,
+    /**
+     * When true, this file is a manual re-upload of a trashed/purged photo.
+     * The uploader must NOT short-circuit on the server's trashed/purged status
+     * (see ChunkUploader.checkDuplicate); it should upload and complete so the
+     * server reactivates the existing record.
+     */
+    val forceReupload: Boolean = false
 )
 
 /**

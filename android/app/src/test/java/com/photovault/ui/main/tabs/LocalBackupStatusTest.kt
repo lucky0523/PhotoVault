@@ -1,5 +1,7 @@
 package com.photovault.ui.main.tabs
 
+import com.photovault.data.local.entity.BackupFolder
+import com.photovault.data.local.entity.PhotoStatusValue
 import io.kotest.property.Arb
 import io.kotest.property.PropertyTesting
 import io.kotest.property.arbitrary.int
@@ -130,4 +132,82 @@ class LocalBackupStatusTest {
                 assertTrue(counts.purged >= 0)
             }
         }
+
+    // --- applyBackedUpCountDelta (rebackup count consistency) ----------------
+
+    private fun folder(
+        total: Int,
+        backedUp: Int,
+        trashed: Int = 0,
+        purged: Int = 0
+    ): BackupFolder = BackupFolder(
+        id = 1L,
+        folderUri = "content://tree/primary:DCIM/Test",
+        folderName = "测试文件夹",
+        totalImages = total,
+        backedUpImages = backedUp,
+        trashedImages = trashed,
+        purgedImages = purged,
+        lastScanTime = 0L
+    )
+
+    /**
+     * A re-backup of a trashed file must move it OUT of the trashed bucket into
+     * backed-up (this is the LocalTab count-refresh bug): trashed -1, backedUp +1.
+     */
+    @Test
+    fun `applyBackedUpCountDelta - trashed rebackup moves the file into backed up`() {
+        val before = folder(total = 5, backedUp = 2, trashed = 2, purged = 1)
+        val after = applyBackedUpCountDelta(before, PhotoStatusValue.TRASHED)
+
+        assertEquals(3, after.backedUpImages)
+        assertEquals(1, after.trashedImages)
+        assertEquals(1, after.purgedImages)
+        // Derived counts stay consistent: total unchanged, buckets sum correctly.
+        val counts = deriveLocalCounts(after)
+        assertEquals(3, counts.backedUp)
+        assertEquals(1, counts.trashed)
+        assertEquals(1, counts.purged)
+        assertEquals(0, counts.pending) // 5 - 3 - 1 - 1
+    }
+
+    /** A re-backup of a purged file: purged -1, backedUp +1. */
+    @Test
+    fun `applyBackedUpCountDelta - purged rebackup moves the file into backed up`() {
+        val before = folder(total = 4, backedUp = 1, trashed = 0, purged = 2)
+        val after = applyBackedUpCountDelta(before, PhotoStatusValue.PURGED)
+
+        assertEquals(2, after.backedUpImages)
+        assertEquals(1, after.purgedImages)
+        assertEquals(0, after.trashedImages)
+    }
+
+    /**
+     * A plain upload of a not-backed-up file (no prior status, or a status other
+     * than trashed/purged) only increments backed-up — existing behavior, no
+     * other bucket changes.
+     */
+    @Test
+    fun `applyBackedUpCountDelta - plain upload only increments backed up`() {
+        val before = folder(total = 3, backedUp = 0, trashed = 1, purged = 1)
+
+        val afterNull = applyBackedUpCountDelta(before, null)
+        assertEquals(1, afterNull.backedUpImages)
+        assertEquals(1, afterNull.trashedImages)
+        assertEquals(1, afterNull.purgedImages)
+
+        val afterActive = applyBackedUpCountDelta(before, PhotoStatusValue.ACTIVE)
+        assertEquals(1, afterActive.backedUpImages)
+        assertEquals(1, afterActive.trashedImages)
+        assertEquals(1, afterActive.purgedImages)
+    }
+
+    /** Decrement is clamped at 0 even if the source bucket is already empty. */
+    @Test
+    fun `applyBackedUpCountDelta - decrement never goes negative`() {
+        val before = folder(total = 1, backedUp = 0, trashed = 0, purged = 0)
+        val after = applyBackedUpCountDelta(before, PhotoStatusValue.TRASHED)
+        assertEquals(1, after.backedUpImages)
+        assertEquals(0, after.trashedImages)
+    }
 }
