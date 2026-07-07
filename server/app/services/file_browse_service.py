@@ -382,11 +382,22 @@ class FileBrowseService:
         # Note: this query is NOT pre-filtered on deleted_at/purged_at so that
         # trashed and purged files also participate in the per-directory
         # status-bucket counts.
+        #
+        # Moving a file to the recycle bin rewrites its file_path to
+        # {base}/.trash/{device}/{rel}, so trashed/purged rows no longer sit
+        # under search_prefix. We therefore ALSO fetch rows under the mirrored
+        # .trash prefix and normalize their path back to the logical (pre-trash)
+        # location below, so they still aggregate under their original directory.
+        if path:
+            trash_search_prefix = f"{base_prefix}.trash/{path}/"
+        else:
+            trash_search_prefix = f"{base_prefix}.trash/"
+        trash_marker = f"{base_prefix}.trash/"
         cursor = await self._db.execute(
             """SELECT file_path, file_size, exif_time, created_at, deleted_at, purged_at
                FROM file_records
-               WHERE user_id = ? AND file_path LIKE ?""",
-            (user_id, f"{search_prefix}%"),
+               WHERE user_id = ? AND (file_path LIKE ? OR file_path LIKE ?)""",
+            (user_id, f"{search_prefix}%", f"{trash_search_prefix}%"),
         )
         all_files = await cursor.fetchall()
 
@@ -398,8 +409,16 @@ class FileBrowseService:
             deleted_at: Optional[str] = row["deleted_at"]
             purged_at: Optional[str] = row["purged_at"]
 
+            # Normalize a trashed/purged path back to its logical location by
+            # stripping the ".trash/" segment that sits right after the user root
+            # ({base}/.trash/{device}/... -> {base}/{device}/...). Active files
+            # are left untouched.
+            logical_path = file_path
+            if logical_path.startswith(trash_marker):
+                logical_path = base_prefix + logical_path[len(trash_marker):]
+
             # Get the relative path after the search prefix
-            relative = file_path[len(search_prefix):]
+            relative = logical_path[len(search_prefix):]
             parts = relative.split("/")
 
             if len(parts) > 1:
@@ -425,11 +444,12 @@ class FileBrowseService:
                         dir_info.trashed_count += 1
                     else:
                         dir_info.backed_up_count += 1
-                    # Update latest_file_time - prefer exif_time, then created_at
-                    file_time = exif_time or created_at
-                    if file_time:
-                        if dir_info.latest_file_time is None or file_time > dir_info.latest_file_time:
-                            dir_info.latest_file_time = file_time
+                        # Update latest_file_time from backed_up files only, so
+                        # the "latest" semantics stay active-only (unchanged).
+                        file_time = exif_time or created_at
+                        if file_time:
+                            if dir_info.latest_file_time is None or file_time > dir_info.latest_file_time:
+                                dir_info.latest_file_time = file_time
             # Files directly in this directory will be fetched separately
 
         # Get files directly in this directory (not in subdirectories)

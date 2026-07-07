@@ -237,6 +237,54 @@ async def test_list_directory_pagination(service_with_data):
 
 
 @pytest.mark.asyncio
+async def test_list_directory_counts_trashed_after_relocation(service_with_data):
+    """Trashing a file relocates its file_path under .trash/, but it must still
+    be counted in its ORIGINAL directory's trashed_count (regression test).
+
+    Reproduces the reported bug: a folder with 3 photos where one is moved to
+    the recycle bin showed "回收站 0" because the aggregation matched the raw
+    file_path against the original directory prefix, which no longer matched
+    once the file was relocated to the .trash mirror.
+    """
+    service, db, storage_root = service_with_data
+
+    # Simulate moving photo1 (id=1) to the recycle bin exactly like
+    # _move_to_trash does: set deleted_at and rewrite file_path to the
+    # {base}/.trash/{device}/{rel} mirror location.
+    trashed_path = str(
+        Path(storage_root) / "alice" / ".trash" / "Pixel9Pro" / "DCIM" / "Camera" / "photo1.jpg"
+    )
+    await db.execute(
+        "UPDATE file_records SET deleted_at = '2026-03-18 09:00:00', file_path = ? WHERE id = 1",
+        (trashed_path,),
+    )
+    await db.commit()
+
+    # At root, the device folder aggregates 2 backed_up + 1 trashed = 3 total.
+    root_listing = await service.list_directory(user_id=1, path="")
+    device_dirs = {d.name: d for d in root_listing.directories}
+    assert "Pixel9Pro" in device_dirs
+    # The .trash mirror must NOT surface as its own directory.
+    assert ".trash" not in device_dirs
+    pixel = device_dirs["Pixel9Pro"]
+    assert pixel.file_count == 3
+    assert pixel.backed_up_count == 2
+    assert pixel.trashed_count == 1
+    assert pixel.purged_count == 0
+
+    # Drilling into Pixel9Pro/DCIM, the Camera subdir reflects the same split.
+    dcim_listing = await service.list_directory(user_id=1, path="Pixel9Pro/DCIM")
+    camera = {d.name: d for d in dcim_listing.directories}["Camera"]
+    assert camera.backed_up_count == 2
+    assert camera.trashed_count == 1
+
+    # The trashed file must not appear in the direct file list of its folder.
+    camera_listing = await service.list_directory(user_id=1, path="Pixel9Pro/DCIM/Camera")
+    assert camera_listing.total_files == 1
+    assert {f.file_name for f in camera_listing.files} == {"photo2.jpg"}
+
+
+@pytest.mark.asyncio
 async def test_list_directory_user_isolation(service_with_data):
     """Test that users can only see their own files."""
     service, db, storage_root = service_with_data
