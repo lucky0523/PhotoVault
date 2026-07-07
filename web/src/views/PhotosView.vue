@@ -25,6 +25,7 @@
               <el-icon v-else><Folder /></el-icon>
               <span>{{ node.label }}</span>
               <span v-if="data.file_count" class="tree-node-count">{{ data.file_count }}</span>
+              <!-- file_count here holds the active (backed_up) count set in loadTreeNode -->
             </span>
           </template>
         </el-tree>
@@ -122,7 +123,7 @@
                 <el-icon :size="32" color="#e6a23c"><Folder /></el-icon>
                 <div class="directory-info">
                   <span class="directory-name">{{ dir.name }}</span>
-                  <span class="directory-count">{{ dir.file_count }} 个文件</span>
+                  <span class="directory-count">{{ dir.backed_up_count }} 个文件</span>
                 </div>
               </div>
             </div>
@@ -142,7 +143,7 @@
               <el-table-column prop="name" label="名称" min-width="200" />
               <el-table-column label="文件数" width="100">
                 <template #default="{ row }">
-                  {{ row.file_count }}
+                  {{ row.backed_up_count }}
                 </template>
               </el-table-column>
               <el-table-column label="大小" width="120">
@@ -525,7 +526,7 @@ async function loadTreeNode(
           path: dir.path,
           isLeaf: false,
           isDevice: true,
-          file_count: dir.file_count,
+          file_count: dir.backed_up_count,
         }))
       treeData.value = nodes
       resolve(nodes)
@@ -540,8 +541,8 @@ async function loadTreeNode(
       const nodes: TreeNode[] = visibleDirs.map((dir) => ({
         label: dir.name,
         path: dir.path,
-        isLeaf: dir.file_count === 0 && visibleDirs.length === 0,
-        file_count: dir.file_count,
+        isLeaf: dir.backed_up_count === 0 && visibleDirs.length === 0,
+        file_count: dir.backed_up_count,
       }))
       // If no subdirectories, mark as leaf
       if (nodes.length === 0) {

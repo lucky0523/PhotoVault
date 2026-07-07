@@ -6,6 +6,11 @@ export interface DirectoryInfo {
   file_count: number
   size: number
   latest_file_time?: string
+  // Per-status counts. file_count is the total across all statuses;
+  // backed_up_count reflects only active (non-trashed, non-purged) files.
+  backed_up_count: number
+  trashed_count: number
+  purged_count: number
 }
 
 export interface DeviceStats {
