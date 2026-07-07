@@ -97,4 +97,37 @@ class LocalBackupStatusTest {
                 assertEquals(backedUp, counts.backedUp)
             }
         }
+
+    /**
+     * Feature: local-folder-backup-status, Property 1 (four buckets): 四项云端状态计数正确且非负
+     *
+     * 对于任意非负整数 totalImages / backedUpImages / trashedImages / purgedImages：
+     *  - backedUp == max(0, backedUpImages)
+     *  - trashed  == max(0, trashedImages)
+     *  - purged   == max(0, purgedImages)
+     *  - pending  == max(0, totalImages - backedUpImages - trashedImages - purgedImages)
+     *  - 四项均为非负整数
+     *
+     * 使用有界生成器 [0, 1_000_000] 以避免参考计算中的 Int 溢出。
+     *
+     * Validates: Requirements 1.1, 1.2, 1.3, 1.5, 1.6
+     */
+    @Test
+    fun `Feature local-folder-backup-status, Property 1 - four cloud status counts derived correctly and non-negative`() =
+        runTest {
+            val bound = Arb.int(0, 1_000_000)
+            checkAll(bound, bound, bound, bound) { total, backedUp, trashed, purged ->
+                val counts = deriveLocalCounts(total, backedUp, trashed, purged)
+
+                assertEquals(max(0, backedUp), counts.backedUp)
+                assertEquals(max(0, trashed), counts.trashed)
+                assertEquals(max(0, purged), counts.purged)
+                assertEquals(max(0, total - backedUp - trashed - purged), counts.pending)
+
+                assertTrue(counts.backedUp >= 0)
+                assertTrue(counts.pending >= 0)
+                assertTrue(counts.trashed >= 0)
+                assertTrue(counts.purged >= 0)
+            }
+        }
 }

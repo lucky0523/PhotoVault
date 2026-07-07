@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
@@ -67,6 +66,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.photovault.data.local.entity.BackupFolder
+import com.photovault.ui.main.components.CloudStatusColors
 import com.photovault.ui.main.components.StatusChip
 import com.photovault.ui.main.components.StoragePolicySheet
 import com.photovault.ui.theme.LocalBottomBarPadding
@@ -385,62 +385,67 @@ internal fun FolderRow(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Folder glyph
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(statusColor.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Folder,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = statusColor
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = folder.folderName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = buildString {
-                        append("${folder.totalImages} 项")
-                        if (notBackedUp > 0) {
-                            append(" · 待备份 ")
-                            append(notBackedUp)
-                        }
-                        append(" · ")
-                        append(relativeTime(folder.lastScanTime))
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Folder name and the compact stats subtitle share one line to
+                // save vertical space: the name shrinks/ellipsizes as needed while
+                // the subtitle stays fully visible on the trailing edge.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = folder.folderName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = buildString {
+                            append("${folder.totalImages} 项")
+                            if (notBackedUp > 0) {
+                                append(" · 待备份 ")
+                                append(notBackedUp)
+                            }
+                            append(" · ")
+                            append(relativeTime(folder.lastScanTime))
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Spacer(modifier = Modifier.height(6.dp))
-                // Local backup status chips: only "已备份" (green) and "未备份" (amber).
-                // Cloud statuses (recycle bin / purged) are intentionally not shown here.
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Local files' cloud status chips: 已备份 (green) / 未备份 (blue) /
+                // 回收站 (orange) / 已删除 (red). Reflects where each local file
+                // currently stands on the server. All four share one row; each chip
+                // takes an equal weight so they shrink uniformly instead of the
+                // last one getting squeezed / wrapped on narrow widths.
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     StatusChip(
                         label = "已备份",
                         count = localCounts.backedUp,
-                        color = Color(0xFF34C759)
+                        color = CloudStatusColors.BackedUp,
+                        modifier = Modifier.weight(1f)
                     )
                     StatusChip(
                         label = "未备份",
                         count = localCounts.pending,
-                        color = Color(0xFFFF9F0A)
+                        color = Color(0xFF007AFF),
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatusChip(
+                        label = "回收站",
+                        count = localCounts.trashed,
+                        color = CloudStatusColors.Trashed,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatusChip(
+                        label = "已删除",
+                        count = localCounts.purged,
+                        color = CloudStatusColors.Purged,
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 Spacer(modifier = Modifier.height(6.dp))

@@ -4,11 +4,11 @@
 
 本功能采用**全栈改动**方案，调整 Android 客户端「本地 Tab」（`LocalTab.kt`）与「云端 Tab」（`CloudTab.kt`）的备份状态展示，并配套一处必要的服务端改动，使云端目录的分状态计数可被逐目录展示。
 
-- **本地 Tab（不变）**：`FolderRow` 只展示与本地相关的两项数量——已备份（`LocalBackedUp_Count`，绿色 `Color(0xFF34C759)`）与未备份（`LocalPending_Count`，琥珀色 `Color(0xFFFF9F0A)`）。数据复用现有 `BackupFolder` 的 `totalImages` 与 `backedUpImages` 列，无数据层改动。两项数量通过纯函数 `deriveLocalCounts` 派生，便于属性测试。本地侧行为保持不变。
+- **本地 Tab（展示本地文件对应的云端状态）**：`FolderRow` 展示本地文件对应在云端的四个分状态计数——已备份（`LocalBackedUp_Count`，绿色 `Color(0xFF34C759)`）、未备份（`LocalPending_Count`，蓝色 `Color(0xFF007AFF)`，与回收站橙色区分）、回收站（`LocalTrashed_Count`，橙色 `CloudStatusColors.Trashed`）、已删除（`LocalPurged_Count`，红色 `CloudStatusColors.Purged`），四枚 chip 分两行排布避免窄屏挤压。数据复用现有 `BackupFolder` 的 `totalImages` / `backedUpImages` / `trashedImages` / `purgedImages` 列，无数据层改动。四项数量通过纯函数 `deriveLocalCounts` 派生（四项互斥、均 `coerceAtLeast(0)`），便于属性测试。
 - **服务端（新增聚合字段）**：`GET /api/v1/files/browse` 的目录聚合当前使用 `deleted_at IS NULL AND purged_at IS NULL` 过滤掉了回收站/已删除文件，且每个子目录只返回 `file_count`/`size`/`latest_file_time`。本设计改为**按状态分桶聚合**：为每个子目录分别统计 `backed_up`/`trashed`/`purged` 三类计数，并在 `DirectoryInfo` / `DirectoryInfoResponse` 新增 `backed_up_count`/`trashed_count`/`purged_count` 字段。状态派生逻辑与同文件中现有的 `get_device_stats` 保持一致（`purged_at → purged`，`elif deleted_at → trashed`，`else backed_up`）。
 - **云端 Tab（列表行重设计）**：**移除顶部的 `CloudStatsBar` 全局汇总统计条**，不再做整个服务器的汇总展示。云端每个目录改以与 LocalTab `FolderRow` 对齐的紧凑列表行样式 `CloudDirectoryRow`（非 Card 样式）呈现，并在每一行复用共享的 `StatusChip` 展示该目录的三个分状态计数——已备份（绿）、回收站（橙）、已删除（红）。计数直接取自 browse 响应的新增字段。保留面包屑导航、目录列表与文件列表。
 
-设计目标是把云端 Tab 的视觉与交互风格与本地 Tab 对齐，并把展示职责按数据归属拆分：本地 Tab 展示本地两项数量，云端 Tab 逐目录展示三项云端状态计数。
+设计目标是把云端 Tab 的视觉与交互风格与本地 Tab 对齐：本地 Tab 逐文件夹展示本地文件对应云端的四项分状态计数，云端 Tab 逐目录展示三项云端状态计数，两侧复用同一 `StatusChip` 组件与颜色约定。
 
 ### 数据来源变更说明（Browse_Directory_Aggregation）
 
@@ -32,11 +32,13 @@
 客户端（Android / Kotlin / Jetpack Compose）
  FileModels.kt  DirectoryInfo（新增 backedUpCount / trashedCount / purgedCount）
 
- LocalTab.kt（不变）
+ LocalTab.kt（四分状态）
   └─ FolderRow(folder: BackupFolder)
       └─ deriveLocalCounts(folder): LocalBackupCounts   ← 纯函数（可测）
           └─ StatusChip("已备份", backedUp, 绿色 0xFF34C759)
-          └─ StatusChip("未备份", pending,  琥珀色 0xFFFF9F0A)
+          └─ StatusChip("未备份", pending,  蓝色 0xFF007AFF)
+          └─ StatusChip("回收站", trashed, CloudStatusColors.Trashed)
+          └─ StatusChip("已删除", purged,  CloudStatusColors.Purged)
 
  CloudTab.kt（重设计）
   ├─ (移除) CloudStatsBar 及其在 Column 顶部的调用
@@ -183,31 +185,45 @@ DirectoryInfoResponse(
 )
 ```
 
-### 本地 Tab 侧（不变）
+### 本地 Tab 侧（四分状态）
 
 #### 纯派生函数 `deriveLocalCounts`
 
-保持现状（`LocalTab.kt` / 同包工具文件）：
+`LocalTab.kt` / 同包工具文件 `LocalBackupStatus.kt`：
 
 ```kotlin
 data class LocalBackupCounts(
-    val backedUp: Int,   // LocalBackedUp_Count
-    val pending: Int     // LocalPending_Count
+    val backedUp: Int,          // LocalBackedUp_Count
+    val pending: Int,           // LocalPending_Count
+    val trashed: Int = 0,       // LocalTrashed_Count
+    val purged: Int = 0         // LocalPurged_Count
 )
 
-fun deriveLocalCounts(totalImages: Int, backedUpImages: Int): LocalBackupCounts {
+fun deriveLocalCounts(
+    totalImages: Int,
+    backedUpImages: Int,
+    trashedImages: Int = 0,
+    purgedImages: Int = 0
+): LocalBackupCounts {
     val backedUp = backedUpImages.coerceAtLeast(0)
-    val pending = (totalImages - backedUpImages).coerceAtLeast(0)
-    return LocalBackupCounts(backedUp = backedUp, pending = pending)
+    val trashed = trashedImages.coerceAtLeast(0)
+    val purged = purgedImages.coerceAtLeast(0)
+    val pending = (totalImages - backedUpImages - trashedImages - purgedImages).coerceAtLeast(0)
+    return LocalBackupCounts(backedUp = backedUp, pending = pending, trashed = trashed, purged = purged)
 }
 
 fun deriveLocalCounts(folder: BackupFolder): LocalBackupCounts =
-    deriveLocalCounts(folder.totalImages, folder.backedUpImages)
+    deriveLocalCounts(
+        folder.totalImages,
+        folder.backedUpImages,
+        folder.trashedImages,
+        folder.purgedImages
+    )
 ```
 
-#### `FolderRow` 集成（不变）
+#### `FolderRow` 集成
 
-`FolderRow` 使用 `StatusChip` 展示「已备份」（绿 `0xFF34C759`）与「未备份」（琥珀 `0xFFFF9F0A`）两枚 chip，不展示云端状态。现有进度条/百分比逻辑保持不变。
+`FolderRow` 使用 `StatusChip` 展示「已备份」（绿 `0xFF34C759`）、「未备份」（蓝 `0xFF007AFF`）、「回收站」（`CloudStatusColors.Trashed`）、「已删除」（`CloudStatusColors.Purged`）四枚 chip，分两行排布（已备份+未备份 / 回收站+已删除）避免窄屏挤压。现有进度条/百分比逻辑保持不变。
 
 ### 云端 Tab 侧
 
@@ -330,7 +346,7 @@ data class DirectoryInfo(
 
 ### 本地
 
-无新增持久化模型。复用 `BackupFolder`（`totalImages`、`backedUpImages`）。展示派生结果用轻量 `LocalBackupCounts(backedUp, pending)`。
+无新增持久化模型。复用 `BackupFolder`（`totalImages`、`backedUpImages`、`trashedImages`、`purgedImages`）。展示派生结果用轻量 `LocalBackupCounts(backedUp, pending, trashed, purged)`，满足 `backedUp + pending + trashed + purged == totalImages`（各项 `coerceAtLeast(0)`）。
 
 ### 服务端目录聚合
 
@@ -342,7 +358,7 @@ data class DirectoryInfo(
 
 ## Error Handling
 
-- **本地派生：** `deriveLocalCounts` 对 `pending` 与 `backedUp` 做 `coerceAtLeast(0)`，保证任何输入（含 `backedUpImages > totalImages`、`totalImages == 0`）都产生非负结果，不抛异常。
+- **本地派生：** `deriveLocalCounts` 对 `backedUp`、`trashed`、`purged` 与 `pending` 四项均做 `coerceAtLeast(0)`，保证任何输入（含各计数之和大于 `totalImages`、`totalImages == 0`）都产生非负结果，不抛异常。
 - **服务端聚合：** 计数从 0 起累加，天然非负；`derive_file_status` 对任意 `(deleted_at, purged_at)` 组合都返回三桶之一，不存在未分类文件。
 - **字段缺失兼容：** Android `DirectoryInfo` 的三项计数带默认值 0，旧版服务端未返回时反序列化为 0，`CloudDirectoryRow` 正常渲染 0，不阻塞面包屑/目录/文件列表（满足需求 2.5）。
 - **目录/文件列表加载失败：** 沿用现有 `CloudTabViewModel.loadDirectory` 的错误态处理（`error` 展示与重试），不受本次改动影响。
@@ -355,7 +371,7 @@ data class DirectoryInfo(
   - 客户端 `deriveLocalCounts`：使用 Kotlin 属性测试库（kotest-property / jqwik）生成随机 `Int`，覆盖 `total=0`、`backedUp>total` 等边界（见「正确性属性」Property 1）。
   - 服务端逐目录状态分桶：由于该逻辑为 Python，属性测试放在服务端测试套件（pytest + Hypothesis）中，针对纯函数 `derive_file_status` 与一个纯聚合辅助（对文件行列表按状态分桶）生成随机 `(deleted_at, purged_at)` 组合，验证「恰好归入一个桶」「三桶之和等于总数」「各计数非负」（见「正确性属性」Property 2）。
 - **示例/组件测试：**
-  - 断言 `FolderRow` 只渲染「已备份」「未备份」两类 chip（不含云端状态）。
+  - 断言 `FolderRow` 渲染「已备份」「未备份」「回收站」「已删除」四类 chip，且计数取自对应列派生。
   - 断言 `CloudDirectoryRow` 渲染「已备份」「回收站」「已删除」三枚 chip，且颜色符合约定（绿 `0xFF34C759` / `CloudStatusColors.Trashed` / `CloudStatusColors.Purged`）。
   - 断言 `CloudTab` 顶部不再渲染统计条，且面包屑、目录、文件列表正常渲染。
   - 服务端：给定包含 backed_up/trashed/purged 三态文件的目录，`browse` 响应中对应子目录返回正确的 `backed_up_count`/`trashed_count`/`purged_count`。
@@ -369,9 +385,9 @@ data class DirectoryInfo(
 
 ### Property 1: 本地数量派生正确且非负
 
-*对于任意* 整数 `totalImages` 与 `backedUpImages`，`deriveLocalCounts` 返回的 `backedUp` 等于 `max(0, backedUpImages)`，`pending` 等于 `max(0, totalImages − backedUpImages)`，且两个分量均为非负整数；特别地，当 `totalImages == 0` 时两项均为 0。
+*对于任意* 整数 `totalImages`、`backedUpImages`、`trashedImages` 与 `purgedImages`，`deriveLocalCounts` 返回的 `backedUp` 等于 `max(0, backedUpImages)`、`trashed` 等于 `max(0, trashedImages)`、`purged` 等于 `max(0, purgedImages)`，`pending` 等于 `max(0, totalImages − backedUpImages − trashedImages − purgedImages)`，且四个分量均为非负整数；特别地，当 `totalImages == 0` 时四项均为 0。
 
-**Validates: Requirements 1.2, 1.3, 1.5, 1.6**
+**Validates: Requirements 1.1, 1.2, 1.3, 1.5, 1.6**
 
 ### Property 2: 云端目录按状态分桶正确、互斥且守恒
 

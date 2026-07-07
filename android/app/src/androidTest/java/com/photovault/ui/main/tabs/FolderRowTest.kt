@@ -9,12 +9,12 @@ import org.junit.Rule
 import org.junit.Test
 
 /**
- * Compose UI 组件测试：验证 [FolderRow] 的本地备份状态展示。
+ * Compose UI 组件测试：验证 [FolderRow] 的本地文件云端状态展示。
  *
  * 覆盖需求：
- * - 1.1 / 1.4：FolderRow 仅展示本地相关的「已备份」「未备份」两枚 chip，
- *   不展示任何云端状态（回收站、已删除）。
- * - 1.6：当 totalImages == 0 时，两项数量均展示为 0。
+ * - 1.1 / 1.4：FolderRow 展示本地文件对应云端的「已备份」「未备份」「回收站」「已删除」
+ *   四枚 chip，且四项计数从 BackupFolder 现有列派生、互斥。
+ * - 1.6：当 totalImages == 0 时，四项数量均展示为 0。
  *
  * 注意：这些是 Android 仪器化（androidTest）Compose 测试，需要连接的设备/模拟器才能运行。
  */
@@ -53,25 +53,24 @@ class FolderRowTest {
     }
 
     @Test
-    fun folderRow_rendersOnlyLocalChips_noCloudStatusChips() {
-        // Even when the folder carries cloud-side counts (trashed / purged),
-        // FolderRow must not surface them.
+    fun folderRow_rendersAllFourCloudStatusChips() {
+        // total=10, backedUp=6, trashed=2, purged=1 → pending = 10-6-2-1 = 1
         setFolderRow(folder(totalImages = 10, backedUpImages = 6, trashedImages = 2, purgedImages = 1))
 
-        // Local chips are present. StatusChip renders "$label $count" as one node.
+        // All four chips present. StatusChip renders "$label $count" as one node.
         composeRule.onNodeWithText("已备份 6").assertIsDisplayed()
-        composeRule.onNodeWithText("未备份 4").assertIsDisplayed()
-
-        // No cloud status chips of any kind.
-        composeRule.onNodeWithText("回收站", substring = true).assertDoesNotExist()
-        composeRule.onNodeWithText("已删除", substring = true).assertDoesNotExist()
+        composeRule.onNodeWithText("未备份 1").assertIsDisplayed()
+        composeRule.onNodeWithText("回收站 2").assertIsDisplayed()
+        composeRule.onNodeWithText("已删除 1").assertIsDisplayed()
     }
 
     @Test
-    fun folderRow_totalImagesZero_showsBothCountsAsZero() {
+    fun folderRow_totalImagesZero_showsAllCountsAsZero() {
         setFolderRow(folder(totalImages = 0, backedUpImages = 0))
 
         composeRule.onNodeWithText("已备份 0").assertIsDisplayed()
         composeRule.onNodeWithText("未备份 0").assertIsDisplayed()
+        composeRule.onNodeWithText("回收站 0").assertIsDisplayed()
+        composeRule.onNodeWithText("已删除 0").assertIsDisplayed()
     }
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-本计划将设计拆解为一系列增量式编码任务。本地侧改动（共享 `StatusChip` 组件、`deriveLocalCounts` 纯派生函数、`FolderRow` 集成）已完成并验证，作为已完成项保留。
+本计划将设计拆解为一系列增量式编码任务。本地侧改动（共享 `StatusChip` 组件、`deriveLocalCounts` 纯派生函数、`FolderRow` 集成）已完成并验证；本地 Tab 现展示本地文件对应云端的**四个分状态计数**（已备份 / 未备份 / 回收站 / 已删除），全部从 `BackupFolder` 现有列（`totalImages`/`backedUpImages`/`trashedImages`/`purgedImages`）派生，无新增本地数据层改动。
 
 新的工作为**云端 Tab 全栈重设计**：先落地服务端 `GET /api/v1/files/browse` 的目录分状态聚合（新增纯函数 `derive_file_status`、`DirectoryInfo` 分桶计数、响应字段透传），并配套服务端属性测试；再改动客户端——`DirectoryInfo` 模型新增字段、以 `CloudDirectoryRow` 紧凑列表行替换 Card 样式并复用 `StatusChip` 展示三枚分状态 chip、移除 `CloudStatsBar` 及相关死代码与其过时测试、补充组件测试；最后统一跑通服务端与 Android 测试。状态派生逻辑集中在纯函数（客户端 `deriveLocalCounts`、服务端 `derive_file_status`）中，便于属性测试覆盖；每一步均建立在前序步骤之上，不留孤立、未接入的代码。
 
@@ -15,21 +15,21 @@
     - 定义 `CloudStatusColors` 对象：`BackedUp = Color(0xFF34C759)`（绿）、`Trashed = Color(0xFFFF9500)`（橙）、`Purged = Color(0xFFFF3B30)`（红）
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
 
-- [x] 2. 本地 Tab 展示本地备份数量（已完成，保持不变）
-  - [x] 2.1 实现 deriveLocalCounts 纯派生函数
-    - `LocalBackupCounts(backedUp, pending)` 数据类与 `deriveLocalCounts(totalImages, backedUpImages)` / `deriveLocalCounts(folder)` 纯函数，均做 `coerceAtLeast(0)`
+- [x] 2. 本地 Tab 展示本地文件对应的云端状态（四分状态）
+  - [x] 2.1 实现 deriveLocalCounts 纯派生函数（四分状态）
+    - `LocalBackupCounts(backedUp, pending, trashed, purged)` 数据类与 `deriveLocalCounts(totalImages, backedUpImages, trashedImages, purgedImages)` / `deriveLocalCounts(folder)` 纯函数，各计数均做 `coerceAtLeast(0)`；`pending = max(0, totalImages − backedUpImages − trashedImages − purgedImages)`
     - _Requirements: 1.2, 1.3, 1.5, 1.6, 5.3_
 
   - [x]* 2.2 编写 deriveLocalCounts 属性测试
-    - **Property 1: 本地数量派生正确且非负**
-    - **Validates: Requirements 1.2, 1.3, 1.5, 1.6**
+    - **Property 1: 本地数量派生正确且非负**（覆盖四分状态：backedUp/trashed/purged 取 `max(0, ·)`，pending 为四列差值且 `coerceAtLeast(0)`，四项互斥非负）
+    - **Validates: Requirements 1.1, 1.2, 1.3, 1.5, 1.6**
 
-  - [x] 2.3 在 FolderRow 中集成本地两项 chip
-    - `FolderRow` 调用 `deriveLocalCounts(folder)`，展示「已备份」(绿 `0xFF34C759`)、「未备份」(琥珀 `0xFFFF9F0A`) 两枚 `StatusChip`，不展示云端状态
-    - _Requirements: 1.1, 1.4, 5.3_
+  - [x] 2.3 在 FolderRow 中集成本地四项 chip
+    - `FolderRow` 调用 `deriveLocalCounts(folder)`，复用 `StatusChip` 展示「已备份」(绿 `CloudStatusColors.BackedUp` `0xFF34C759`)、「未备份」(蓝 `0xFF007AFF`)、「回收站」(`CloudStatusColors.Trashed`)、「已删除」(`CloudStatusColors.Purged`) 四枚 chip，分两行排布避免挤压
+    - _Requirements: 1.1, 1.4, 4.1, 4.2, 4.3, 5.3_
 
   - [x]* 2.4 编写 FolderRow 组件测试
-    - 断言仅渲染「已备份」「未备份」两类 chip；`totalImages == 0` 时两项均为 0
+    - 断言渲染「已备份」「未备份」「回收站」「已删除」四类 chip 且计数取自对应列派生；`totalImages == 0` 时四项均为 0
     - _Requirements: 1.1, 1.4, 1.6_
 
 - [x] 3. 服务端目录分状态聚合（Browse_Directory_Aggregation）
@@ -72,7 +72,7 @@
     - 移除前先核实 `FileApi.getDeviceStats` 与 `DeviceStatsResponse` 是否被别处引用；如无其他用途方可移除，否则保留
     - _Requirements: 2.4, 5.2_
 
-  - [~]* 4.4 编写 CloudDirectoryRow 组件测试
+  - [ ]* 4.4 编写 CloudDirectoryRow 组件测试
     - 断言 `CloudDirectoryRow` 从 `DirectoryInfo` 渲染「已备份」「回收站」「已删除」三枚 chip 且计数取自对应字段，颜色符合约定（绿 `0xFF34C759` / `CloudStatusColors.Trashed` / `CloudStatusColors.Purged`）
     - 断言 `CloudTab` 顶部不再渲染 `CloudStatsBar`，面包屑、目录、文件列表仍正常渲染
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 4.3, 4.4, 4.5_
