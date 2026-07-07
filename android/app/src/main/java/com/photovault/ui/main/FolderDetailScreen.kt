@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -353,8 +354,77 @@ private fun ImageThumbnailItem(
             )
         }
 
+        // Motion photo "LIVE" badge (top-right corner), mirroring the web style
+        if (!image.isVideo && image.isMotionPhoto) {
+            MotionPhotoBadge(
+                modifier = Modifier.align(Alignment.TopEnd)
+            )
+        }
+
         // Status badge (bottom-right corner)
         StatusBadge(image)
+    }
+}
+
+/**
+ * "LIVE" pill shown on motion-photo thumbnails, matching the web client:
+ * a semi-transparent dark rounded background with an iOS Live-Photo glyph
+ * and the "LIVE" label.
+ */
+@Composable
+private fun MotionPhotoBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .padding(4.dp)
+            .size(20.dp)
+            .background(Color.Black.copy(alpha = 0.5f), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        LivePhotoIcon(
+            modifier = Modifier.size(14.dp),
+            color = Color.White
+        )
+    }
+}
+
+/**
+ * iOS "Live Photo"-style glyph: a solid center dot, a thin ring, and an outer
+ * dashed ring. Drawn with Canvas so it matches the web `LivePhotoIcon.vue`.
+ */
+@Composable
+private fun LivePhotoIcon(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier = modifier) {
+        val c = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+        val unit = size.minDimension / 24f
+
+        // Solid center dot (r = 3.1)
+        drawCircle(color = color, radius = 3.1f * unit, center = c)
+
+        // Thin inner ring (r = 6, stroke 1.4)
+        drawCircle(
+            color = color,
+            radius = 6f * unit,
+            center = c,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.4f * unit)
+        )
+
+        // Outer dashed ring (r = 9.3, stroke 1.5)
+        drawCircle(
+            color = color,
+            radius = 9.3f * unit,
+            center = c,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = 1.5f * unit,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    floatArrayOf(0.2f * unit, 3.1f * unit),
+                    0f
+                )
+            )
+        )
     }
 }
 

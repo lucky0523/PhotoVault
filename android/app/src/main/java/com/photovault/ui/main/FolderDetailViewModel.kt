@@ -31,7 +31,8 @@ data class FolderImage(
     val fileSize: Long,
     val createdTime: Long,
     val mimeType: String,
-    val status: PhotoStatus? = null
+    val status: PhotoStatus? = null,
+    val isMotionPhoto: Boolean = false
 ) {
     val isBackedUp: Boolean get() = status?.status == PhotoStatusValue.ACTIVE
     val isTrashed: Boolean get() = status?.status == PhotoStatusValue.TRASHED
@@ -105,7 +106,10 @@ class FolderDetailViewModel @Inject constructor(
         val statusByUri = allStatuses.associateBy { it.fileUri }
 
         return rawImages.map { img ->
-            img.copy(status = statusByUri[img.uri.toString()])
+            img.copy(
+                status = statusByUri[img.uri.toString()],
+                isMotionPhoto = MotionPhotoDetector.isMotionPhoto(context, img.uri, img.mimeType)
+            )
         }
     }
 
