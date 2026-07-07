@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -288,13 +289,19 @@ private fun BoxScope.PullRefreshCloudIndicator(
     val indicatorSizePx = with(density) { indicatorSize.toPx() }
 
     // Material3 1.10 exposes only distanceFraction (0f at rest, 1f at the trigger
-    // threshold, and may exceed 1f on over-pull). Map it onto our travel and
-    // animate to a fixed resting position while refreshing.
+    // threshold, and may exceed 1f on over-pull). Map it onto our travel.
     val pullPx = (state.distanceFraction * restingPx).coerceAtLeast(0f)
     val targetPos = if (isRefreshing) restingPx else pullPx
+
+    // While the finger is actively dragging (not yet refreshing and there is a
+    // pull distance) track the position 1:1 with `snap()` so the indicator feels
+    // glued to the finger. Only the settle-into-refresh and retract-when-done
+    // transitions use a tween. animateFloatAsState keeps its internal value
+    // across the spec switch, so the handoff stays continuous with no jump.
+    val isDragging = !isRefreshing && pullPx > 0f
     val pos by animateFloatAsState(
         targetValue = targetPos,
-        animationSpec = tween(durationMillis = if (isRefreshing) 320 else 240),
+        animationSpec = if (isDragging) snap() else tween(durationMillis = if (isRefreshing) 320 else 240),
         label = "pullPos"
     )
 
