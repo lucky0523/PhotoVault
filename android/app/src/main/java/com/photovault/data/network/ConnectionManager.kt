@@ -122,8 +122,38 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * Attempt to connect to the server.
-     * Tries LAN first (10s timeout), then WAN (15s timeout).
+     * Result of a successful connectivity probe: which test URL succeeded and
+     * over which transport, so callers can bind these as the active
+     * connection for subsequent heartbeats.
+     */
+    private data class ProbeResult(val testUrl: String, val type: ConnectionType)
+
+    /**
+     * Probe the server for reachability without touching any observable state.
+     * Tries LAN first, then WAN, using the supplied clients so callers can pick
+     * the appropriate timeouts (long for a user-initiated connect, short for a
+     * silent background retry). Returns the winning transport, or null if
+     * neither succeeded.
+     */
+    private suspend fun probe(
+        serverAddress: String,
+        lan: OkHttpClient,
+        wan: OkHttpClient
+    ): ProbeResult? {
+        val baseUrl = normalizeServerUrl(serverAddress)
+        val testUrl = "${baseUrl}api/v1/connection/test"
+
+        if (tryConnect(testUrl, lan)) return ProbeResult(testUrl, ConnectionType.LAN)
+        if (tryConnect(testUrl, wan)) return ProbeResult(testUrl, ConnectionType.WAN)
+        return null
+    }
+
+    /**
+     * User-initiated connect (first login / manual retry).
+     *
+     * This is the only path that surfaces [ConnectionState.Connecting], because
+     * it represents an attempt the user is actively waiting on. Tries LAN first
+     * (10s timeout), then WAN (15s timeout).
      */
     suspend fun connect(serverAddress: String): ConnectionState {
         // The user wants a connection; allow the loop to auto-recover if it
@@ -131,34 +161,18 @@ class ConnectionManager @Inject constructor(
         autoReconnectEnabled = true
         _connectionState.value = ConnectionState.Connecting
 
-        val baseUrl = normalizeServerUrl(serverAddress)
-        val testUrl = "${baseUrl}api/v1/connection/test"
-
-        // Try LAN first (10s timeout)
-        val lanResult = tryConnect(testUrl, lanClient)
-        if (lanResult) {
-            activeTestUrl = testUrl
-            activeConnectionType = ConnectionType.LAN
-            val state = ConnectionState.Connected(ConnectionType.LAN)
-            _connectionState.value = state
-            return state
+        val result = probe(serverAddress, lanClient, wanClient)
+        val state = if (result != null) {
+            activeTestUrl = result.testUrl
+            activeConnectionType = result.type
+            ConnectionState.Connected(result.type)
+        } else {
+            activeTestUrl = null
+            activeConnectionType = null
+            ConnectionState.Disconnected
         }
-
-        // LAN failed, try WAN (15s timeout)
-        val wanResult = tryConnect(testUrl, wanClient)
-        if (wanResult) {
-            activeTestUrl = testUrl
-            activeConnectionType = ConnectionType.WAN
-            val state = ConnectionState.Connected(ConnectionType.WAN)
-            _connectionState.value = state
-            return state
-        }
-
-        // Both failed
-        activeTestUrl = null
-        activeConnectionType = null
-        _connectionState.value = ConnectionState.Disconnected
-        return ConnectionState.Disconnected
+        _connectionState.value = state
+        return state
     }
 
     /**
@@ -227,6 +241,14 @@ class ConnectionManager @Inject constructor(
     /**
      * While disconnected, quietly retry the configured server so the client
      * recovers on its own once the server is reachable again.
+     *
+     * Unlike [connect], this is a *silent* probe: the state stays
+     * [ConnectionState.Disconnected] for the whole attempt and only flips to
+     * [ConnectionState.Connected] once the server actually answers. This avoids
+     * showing "连接中" for a background retry the user isn't waiting on (which,
+     * given the retry cadence, would otherwise keep the pill stuck on
+     * "connecting" while the server is down). It also uses the short-timeout
+     * [heartbeatClient] so an unreachable server fails fast.
      */
     private suspend fun attemptReconnect() {
         if (!autoReconnectEnabled) {
@@ -238,8 +260,20 @@ class ConnectionManager @Inject constructor(
             android.util.Log.d("ConnMgrDebug", "skip reconnect, no server address configured")
             return
         }
-        android.util.Log.d("ConnMgrDebug", "attempting reconnect to $serverAddress")
-        connect(serverAddress)
+        android.util.Log.d("ConnMgrDebug", "silently probing reconnect to $serverAddress")
+        val result = probe(serverAddress, heartbeatClient, heartbeatClient)
+        if (result == null) {
+            android.util.Log.d("ConnMgrDebug", "reconnect probe failed, staying disconnected")
+            return
+        }
+        // Only promote to Connected if we're still Disconnected, so we don't
+        // clobber a concurrent explicit connect()/disconnect().
+        if (_connectionState.value is ConnectionState.Disconnected) {
+            activeTestUrl = result.testUrl
+            activeConnectionType = result.type
+            _connectionState.value = ConnectionState.Connected(result.type)
+            android.util.Log.d("ConnMgrDebug", "reconnect probe succeeded via ${result.type}")
+        }
     }
 
     private suspend fun sendHeartbeatIfConnected() {
