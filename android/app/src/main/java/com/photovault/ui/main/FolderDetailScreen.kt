@@ -1,13 +1,20 @@
 package com.photovault.ui.main
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -20,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.AlertDialog
@@ -31,7 +39,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,7 +61,22 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.SurfaceLiquidButton
+import com.photovault.ui.theme.appBackgroundBrush
 import java.util.concurrent.TimeUnit
+
+/**
+ * Photo status filters shown by the folder detail FAB.
+ */
+private enum class PhotoFilter(val label: String) {
+    ALL("全部"),
+    BACKED_UP("已备份"),
+    TRASHED("回收站"),
+    PURGED("已删除")
+}
 
 /**
  * Folder detail screen showing a grid of image thumbnails with four-state
@@ -79,67 +104,171 @@ fun FolderDetailScreen(
     val loading by viewModel.loading.collectAsState()
 
     var rebackupTarget by remember { mutableStateOf<FolderImage?>(null) }
+    var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
+    var filterExpanded by remember { mutableStateOf(false) }
+
+    val filteredImages = remember(images, selectedFilter) {
+        when (selectedFilter) {
+            PhotoFilter.ALL -> images
+            PhotoFilter.BACKED_UP -> images.filter { it.isBackedUp }
+            PhotoFilter.TRASHED -> images.filter { it.isTrashed }
+            PhotoFilter.PURGED -> images.filter { it.isPurged }
+        }
+    }
 
     LaunchedEffect(folderUri) {
         viewModel.loadImages(folderUri)
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(folderName) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
-                        )
-                    }
-                }
-            )
+    val backgroundBrush = appBackgroundBrush()
+    // Content backdrop captures the gradient + the photo grid, so the FAB and
+    // filter buttons genuinely refract the photos beneath them (a real liquid-
+    // glass, see-through effect). The buttons live in the Scaffold's FAB slot —
+    // a sibling of the captured content layer — so they never sample themselves.
+    val contentBackdrop = rememberLayerBackdrop(
+        onDraw = {
+            drawRect(backgroundBrush)
+            drawContent()
         }
-    ) { paddingValues ->
-        if (images.isEmpty() && !loading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Filled.Image,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "暂无图片",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
-                }
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(images) { image ->
-                    ImageThumbnailItem(
-                        image = image,
-                        onLongPress = { img ->
-                            if (img.isTrashed || img.isPurged) {
-                                rebackupTarget = img
+    )
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // On-screen gradient painted behind the transparent Scaffold.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(backgroundBrush)
+        )
+
+        CompositionLocalProvider(LocalGlassBackdrop provides contentBackdrop) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                topBar = {
+                    TopAppBar(
+                        title = { Text(folderName) },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = Color.Transparent
+                        ),
+                        navigationIcon = {
+                            IconButton(onClick = onNavigateBack) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "返回"
+                                )
                             }
                         }
                     )
+                },
+                floatingActionButton = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Filter pills. When expanded all four show; when
+                        // collapsed only the active (non-ALL) filter stays
+                        // visible so the current filter state is always shown.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            PhotoFilter.entries.forEach { filter ->
+                                val selected = filter == selectedFilter
+                                val chipVisible = filterExpanded ||
+                                    (selected && filter != PhotoFilter.ALL)
+                                AnimatedVisibility(
+                                    visible = chipVisible,
+                                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
+                                ) {
+                                    Box(modifier = Modifier.padding(end = 8.dp)) {
+                                        SurfaceLiquidButton(
+                                            onClick = { selectedFilter = filter },
+                                            surfaceColor = if (selected) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                            } else {
+                                                null
+                                            },
+                                            modifier = Modifier.height(40.dp)
+                                        ) {
+                                            Text(
+                                                text = filter.label,
+                                                modifier = Modifier.padding(horizontal = 14.dp),
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                color = if (selected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Toggle FAB.
+                        SurfaceLiquidButton(
+                            onClick = { filterExpanded = !filterExpanded },
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.FilterList,
+                                contentDescription = "筛选照片状态",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            ) { paddingValues ->
+                // The photo grid is recorded into contentBackdrop so the
+                // floating buttons above genuinely refract it.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(contentBackdrop)
+                ) {
+                if (filteredImages.isEmpty() && !loading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Filled.Image,
+                                contentDescription = null,
+                                modifier = Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (selectedFilter == PhotoFilter.ALL) "暂无图片" else "该状态下暂无图片",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues),
+                        contentPadding = PaddingValues(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(filteredImages) { image ->
+                            ImageThumbnailItem(
+                                image = image,
+                                onLongPress = { img ->
+                                    if (img.isTrashed || img.isPurged) {
+                                        rebackupTarget = img
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
                 }
             }
         }
