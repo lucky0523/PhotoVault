@@ -61,14 +61,16 @@ fun StatusChip(
 }
 
 /**
- * 云端状态颜色约定。
+ * 备份状态颜色约定，供本地 Tab、云端 Tab 与文件夹详情页统一复用，避免硬编码。
  *
  * - [BackedUp] 已备份：绿色
+ * - [Pending] 未备份：蓝色
  * - [Trashed] 回收站：橙色
  * - [Purged] 已删除：红色
  */
 object CloudStatusColors {
     val BackedUp = Color(0xFF34C759) // 绿色
+    val Pending = Color(0xFF007AFF)  // 蓝色
     val Trashed = Color(0xFFFF9500)  // 橙色
     val Purged = Color(0xFFFF3B30)   // 红色
 }

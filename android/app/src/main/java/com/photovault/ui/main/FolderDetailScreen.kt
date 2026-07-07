@@ -64,6 +64,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.photovault.ui.main.components.CloudStatusColors
 import com.photovault.ui.theme.LocalGlassBackdrop
 import com.photovault.ui.theme.SurfaceLiquidButton
 import com.photovault.ui.theme.appBackgroundBrush
@@ -72,11 +73,14 @@ import java.util.concurrent.TimeUnit
 /**
  * Photo status filters shown by the folder detail FAB.
  */
-private enum class PhotoFilter(val label: String) {
-    ALL("全部"),
-    BACKED_UP("已备份"),
-    TRASHED("回收站"),
-    PURGED("已删除")
+private enum class PhotoFilter(val label: String, val color: Color) {
+    // Colors come from the shared CloudStatusColors palette (see StatusChip).
+    // 全部 has no dedicated status color, so it reuses the "未备份" blue as a
+    // neutral accent.
+    ALL("全部", CloudStatusColors.Pending),
+    BACKED_UP("已备份", CloudStatusColors.BackedUp),
+    TRASHED("回收站", CloudStatusColors.Trashed),
+    PURGED("已删除", CloudStatusColors.Purged)
 }
 
 /**
@@ -181,11 +185,12 @@ fun FolderDetailScreen(
                                     Box(modifier = Modifier.padding(end = 8.dp)) {
                                         SurfaceLiquidButton(
                                             onClick = { selectedFilter = filter },
-                                            surfaceColor = if (selected) {
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                            } else {
-                                                null
-                                            },
+                                            // Selected: tint the surface with the
+                                            // status color. Unselected: default glass.
+                                            surfaceColor = if (selected) filter.color else null,
+                                            // No shadow: prevents shadow "jumps"
+                                            // when the pills expand/collapse.
+                                            showShadow = false,
                                             modifier = Modifier.height(40.dp)
                                         ) {
                                             Text(
@@ -193,11 +198,9 @@ fun FolderDetailScreen(
                                                 modifier = Modifier.padding(horizontal = 14.dp),
                                                 fontSize = 14.sp,
                                                 maxLines = 1,
-                                                color = if (selected) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSurface
-                                                },
+                                                // Selected: white text over the color
+                                                // tint. Unselected: the status color.
+                                                color = if (selected) Color.White else filter.color,
                                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
                                             )
                                         }
@@ -433,7 +436,7 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
     when {
         image.isBackedUp -> {
             BadgeIcon(
-                backgroundColor = Color(0xFF4CAF50)
+                backgroundColor = CloudStatusColors.BackedUp
             ) {
                 Icon(
                     imageVector = Icons.Filled.Check,
@@ -446,7 +449,7 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
         image.isTrashed -> {
             val remaining = formatRemainingTime(image.status?.expiresAt)
             BadgeLabel(
-                backgroundColor = Color(0xFFFF9800),
+                backgroundColor = CloudStatusColors.Trashed,
                 text = if (remaining != null) "回收站 $remaining" else "回收站"
             ) {
                 Icon(
@@ -459,7 +462,7 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
         }
         image.isPurged -> {
             BadgeIcon(
-                backgroundColor = Color(0xFFF44336)
+                backgroundColor = CloudStatusColors.Purged
             ) {
                 Icon(
                     imageVector = Icons.Filled.Close,

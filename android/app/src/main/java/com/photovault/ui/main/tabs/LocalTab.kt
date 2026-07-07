@@ -432,7 +432,7 @@ internal fun FolderRow(
                     StatusChip(
                         label = "未备份",
                         count = localCounts.pending,
-                        color = Color(0xFF007AFF),
+                        color = CloudStatusColors.Pending,
                         modifier = Modifier.weight(1f)
                     )
                     StatusChip(

@@ -27,6 +27,7 @@ import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
 import com.kyant.shapes.RoundedRectangle
 
@@ -236,6 +237,7 @@ fun SurfaceLiquidButton(
     modifier: Modifier = Modifier,
     backdrop: Backdrop? = LocalGlassBackdrop.current,
     surfaceColor: Color? = null,
+    showShadow: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
     val dark = isSystemInDarkTheme()
@@ -246,6 +248,9 @@ fun SurfaceLiquidButton(
         Modifier.drawBackdrop(
             backdrop = backdrop,
             shape = { shape },
+            // Disable the backdrop's default drop shadow when requested so that
+            // showing/hiding sibling buttons doesn't cause shadow "jumps".
+            shadow = { if (showShadow) Shadow.Default else null },
             effects = {
                 vibrancy()
                 blur(2f.dp.toPx())
@@ -256,7 +261,7 @@ fun SurfaceLiquidButton(
     } else {
         val border = if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.6f)
         Modifier
-            .shadow(6.dp, shape, clip = false)
+            .then(if (showShadow) Modifier.shadow(6.dp, shape, clip = false) else Modifier)
             .clip(shape)
             .background(surface)
             .border(BorderStroke(1.dp, border), shape)

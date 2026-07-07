@@ -280,7 +280,7 @@ private fun CloudDirectoryRow(
                 StatusChip(
                     label = "已备份",
                     count = directory.backedUpCount,
-                    color = Color(0xFF34C759)
+                    color = CloudStatusColors.BackedUp
                 )
                 StatusChip(
                     label = "回收站",
