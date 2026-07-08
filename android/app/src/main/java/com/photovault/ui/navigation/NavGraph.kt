@@ -8,11 +8,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import android.net.Uri
 import com.photovault.ui.login.LoginScreen
 import com.photovault.ui.main.FolderDetailScreen
 import com.photovault.ui.main.MainScreen
-import java.net.URLDecoder
-import java.net.URLEncoder
 
 object Routes {
     const val LOGIN = "login"
@@ -20,8 +19,13 @@ object Routes {
     const val FOLDER_DETAIL = "folder_detail/{folderId}/{folderName}/{folderUri}/{backedUpImages}"
 
     fun folderDetail(folderId: Long, folderName: String, folderUri: String, backedUpImages: Int): String {
-        val encodedUri = URLEncoder.encode(folderUri, "UTF-8")
-        val encodedName = URLEncoder.encode(folderName, "UTF-8")
+        // Encode with Uri.encode (percent-encoding, space -> %20) so it round-trips
+        // cleanly with Navigation's single automatic Uri.decode of path arguments.
+        // (URLEncoder used application/x-www-form-urlencoded — '+' for space — and
+        // the previous extra manual URLDecoder.decode double-decoded the value,
+        // corrupting SAF tree URIs, e.g. dropping the "Camera" path segment.)
+        val encodedUri = Uri.encode(folderUri)
+        val encodedName = Uri.encode(folderName)
         return "folder_detail/$folderId/$encodedName/$encodedUri/$backedUpImages"
     }
 }
@@ -92,12 +96,10 @@ fun NavGraph() {
                 )
             }
         ) { backStackEntry ->
-            val folderName = URLDecoder.decode(
-                backStackEntry.arguments?.getString("folderName") ?: "", "UTF-8"
-            )
-            val folderUri = URLDecoder.decode(
-                backStackEntry.arguments?.getString("folderUri") ?: "", "UTF-8"
-            )
+            // Navigation already Uri.decode()s path arguments once, so read them
+            // directly — no manual decode (which previously double-decoded).
+            val folderName = backStackEntry.arguments?.getString("folderName") ?: ""
+            val folderUri = backStackEntry.arguments?.getString("folderUri") ?: ""
             val backedUpImages = backStackEntry.arguments?.getInt("backedUpImages") ?: 0
 
             FolderDetailScreen(

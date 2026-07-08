@@ -24,6 +24,15 @@
         </el-button>
         <el-button
           type="danger"
+          plain
+          :disabled="selectedItems.length === 0"
+          :loading="purgeSelectedLoading"
+          @click="handlePurgeSelected"
+        >
+          彻底删除已选的 {{ selectedItems.length }} 个文件
+        </el-button>
+        <el-button
+          type="danger"
           :disabled="items.length === 0"
           :loading="purgeAllLoading"
           @click="handlePurgeAll"
@@ -117,6 +126,7 @@ const currentPage = ref(1)
 const pageSize = ref(50)
 const loading = ref(false)
 const purgeAllLoading = ref(false)
+const purgeSelectedLoading = ref(false)
 const restoreSelectedLoading = ref(false)
 const restoreAllLoading = ref(false)
 const selectedItems = ref<TrashItem[]>([])
@@ -234,6 +244,41 @@ async function handlePurge(row: TrashItem) {
     if (e !== 'cancel') {
       ElMessage.error('删除失败')
     }
+  }
+}
+
+async function handlePurgeSelected() {
+  if (selectedItems.value.length === 0) return
+
+  const count = selectedItems.value.length
+  try {
+    await ElMessageBox.confirm(
+      `确认彻底删除选中的 ${count} 个文件吗？此操作不可恢复！`,
+      '彻底删除',
+      { type: 'warning', confirmButtonText: '彻底删除', cancelButtonText: '取消' }
+    )
+    purgeSelectedLoading.value = true
+    let successCount = 0
+    for (const item of selectedItems.value) {
+      try {
+        await purgeFile(item.id)
+        successCount++
+      } catch {
+      }
+    }
+    const failed = count - successCount
+    if (failed > 0) {
+      ElMessage.warning(`已彻底删除 ${successCount} 个，${failed} 个失败`)
+    } else {
+      ElMessage.success(`已彻底删除 ${successCount} 个文件`)
+    }
+    await loadTrash()
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  } finally {
+    purgeSelectedLoading.value = false
   }
 }
 

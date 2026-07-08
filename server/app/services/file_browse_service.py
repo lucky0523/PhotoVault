@@ -43,6 +43,30 @@ def derive_file_status(deleted_at: Optional[str], purged_at: Optional[str]) -> s
     return "backed_up"
 
 
+# Path segment marking a physical file that lives in the recycle bin.
+_TRASH_SEGMENT = "/.trash/"
+
+
+def effective_file_status(
+    deleted_at: Optional[str], purged_at: Optional[str], file_path: Optional[str]
+) -> str:
+    """Status bucket hardened against inconsistent "zombie" records.
+
+    A record whose lifecycle columns say "backed_up" (deleted_at/purged_at both
+    NULL) but whose physical file still lives under ``.trash/`` is contradictory
+    — such rows were produced by an earlier re-backup bug. They must NOT inflate
+    the backed-up counts (that made deleted folders keep showing a file count),
+    so they are bucketed as "trashed" to reflect their physical location.
+
+    Normal active files (path not under .trash) and normal trashed/purged files
+    (which carry deleted_at/purged_at) are unaffected.
+    """
+    status = derive_file_status(deleted_at, purged_at)
+    if status == "backed_up" and file_path and _TRASH_SEGMENT in file_path:
+        return "trashed"
+    return status
+
+
 @dataclass
 class DirectoryInfo:
     """Information about a subdirectory."""
@@ -436,8 +460,10 @@ class FileBrowseService:
                     dir_info = directories[subdir_name]
                     dir_info.file_count += 1
                     dir_info.size += file_size
-                    # Bucket the file into backed_up / trashed / purged
-                    status = derive_file_status(deleted_at, purged_at)
+                    # Bucket the file into backed_up / trashed / purged.
+                    # Use effective_file_status so an "active but physically in
+                    # .trash" zombie record doesn't inflate backed_up_count.
+                    status = effective_file_status(deleted_at, purged_at, file_path)
                     if status == "purged":
                         dir_info.purged_count += 1
                     elif status == "trashed":
@@ -553,7 +579,7 @@ class FileBrowseService:
         # rather than parsing file_path, which changes to a ".trash/..." path once
         # a file is moved to the recycle bin.
         cursor = await self._db.execute(
-            """SELECT device_name, exif_time, created_at, deleted_at, purged_at
+            """SELECT device_name, file_path, exif_time, created_at, deleted_at, purged_at
                FROM file_records
                WHERE user_id = ?""",
             (user_id,),
@@ -572,7 +598,10 @@ class FileBrowseService:
                 device = DeviceStats(name=device_name, path=device_name)
                 devices[device_name] = device
 
-            status = derive_file_status(row["deleted_at"], row["purged_at"])
+            # Hardened against "active but physically in .trash" zombie records.
+            status = effective_file_status(
+                row["deleted_at"], row["purged_at"], row["file_path"]
+            )
             if status == "purged":
                 device.purged_count += 1
             elif status == "trashed":
