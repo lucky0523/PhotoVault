@@ -132,7 +132,14 @@ fun LocalTab(
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
             val documentFile = DocumentFile.fromTreeUri(context, it)
             val folderName = documentFile?.name ?: "未知文件夹"
-            viewModel.onFolderPicked(it, folderName)
+            val added = viewModel.onFolderPicked(it, folderName)
+            if (!added) {
+                android.widget.Toast.makeText(
+                    context,
+                    "该文件夹已添加，请勿重复添加",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 

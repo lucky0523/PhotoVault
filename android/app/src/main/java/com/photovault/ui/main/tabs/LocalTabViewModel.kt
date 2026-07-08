@@ -11,6 +11,7 @@ import com.photovault.data.repository.BackupFolderRepository
 import com.photovault.service.BackupConditionChecker
 import com.photovault.service.BackgroundScanWorker
 import com.photovault.service.StatusSyncManager
+import com.photovault.service.canonicalFolderKey
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -51,14 +52,26 @@ class LocalTabViewModel @Inject constructor(
     /**
      * Called when user picks a folder from the system folder picker.
      * Stores the URI and shows the policy configuration sheet.
+     *
+     * Rejects the pick if the same folder (by canonical URI key, tolerant of
+     * URL-encoding differences) is already in the backup list, to avoid adding
+     * a duplicate path.
+     *
+     * @return true if the folder was accepted, false if it is a duplicate.
      */
-    fun onFolderPicked(uri: Uri, folderName: String) {
+    fun onFolderPicked(uri: Uri, folderName: String): Boolean {
+        val newKey = canonicalFolderKey(uri.toString())
+        val isDuplicate = folders.value.any { canonicalFolderKey(it.folderUri) == newKey }
+        if (isDuplicate) {
+            return false
+        }
         _pendingFolderUri.value = uri
         _selectedFolder.value = BackupFolder(
             folderUri = uri.toString(),
             folderName = folderName
         )
         _showPolicySheet.value = true
+        return true
     }
 
     /**
