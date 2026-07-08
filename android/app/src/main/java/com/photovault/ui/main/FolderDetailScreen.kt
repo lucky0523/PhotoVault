@@ -8,7 +8,6 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -149,13 +148,7 @@ fun FolderDetailScreen(
         }
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            // 将整页标记为系统手势排除区，屏蔽从左侧边缘向右滑动触发的返回手势。
-            // 系统返回键/返回操作仍走正常的 onBackPressed 流程，不受影响。
-            .systemGestureExclusion()
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
         // On-screen gradient painted behind the transparent Scaffold.
         Box(
             modifier = Modifier
