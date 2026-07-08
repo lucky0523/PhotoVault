@@ -109,14 +109,20 @@ fun MainScreen(
     ) { /* result handled implicitly; scanning checks at runtime */ }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        val permissions = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(
-                android.Manifest.permission.READ_MEDIA_IMAGES,
-                android.Manifest.permission.READ_MEDIA_VIDEO
-            )
-        } else {
-            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        val permissions = buildList {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                add(android.Manifest.permission.READ_MEDIA_IMAGES)
+                add(android.Manifest.permission.READ_MEDIA_VIDEO)
+            } else {
+                add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            // ACCESS_MEDIA_LOCATION (API 29+) lets us read un-redacted original bytes
+            // for byte-identical backups (R5.2). Not being granted is non-blocking —
+            // MediaBytesReader falls back to a plain read (R5.4).
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                add(android.Manifest.permission.ACCESS_MEDIA_LOCATION)
+            }
+        }.toTypedArray()
         mediaPermissionLauncher.launch(permissions)
     }
 

@@ -50,8 +50,9 @@ class ChunkUploaderCheckDuplicateTest {
         return ChunkUploader(
             backupApi = backupApi,
             uploadRecordDao = FakeUploadRecordDao(),
-            fileHasher = FileHasher(),
-            statusSyncManager = statusSyncManager
+            fileHasher = FileHasher(MediaBytesReader()),
+            statusSyncManager = statusSyncManager,
+            mediaBytesReader = MediaBytesReader()
         )
     }
 

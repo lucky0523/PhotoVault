@@ -14,7 +14,9 @@ import javax.inject.Singleton
  * Reads the file in 8KB chunks to compute the hash incrementally.
  */
 @Singleton
-class FileHasher @Inject constructor() {
+class FileHasher @Inject constructor(
+    private val mediaBytesReader: MediaBytesReader
+) {
 
     companion object {
         private const val BUFFER_SIZE = 8 * 1024 // 8KB read buffer
@@ -39,13 +41,13 @@ class FileHasher @Inject constructor() {
         val buffer = ByteArray(BUFFER_SIZE)
         var total = 0L
 
-        context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+        mediaBytesReader.openOriginal(context, fileUri).use { inputStream ->
             var bytesRead: Int
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 digest.update(buffer, 0, bytesRead)
                 total += bytesRead
             }
-        } ?: throw IllegalArgumentException("Cannot open file: $fileUri")
+        }
 
         return HashAndSize(digest.digest().toHexString(), total)
     }
@@ -63,12 +65,12 @@ class FileHasher @Inject constructor() {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(BUFFER_SIZE)
 
-        context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+        mediaBytesReader.openOriginal(context, fileUri).use { inputStream ->
             var bytesRead: Int
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 digest.update(buffer, 0, bytesRead)
             }
-        } ?: throw IllegalArgumentException("Cannot open file: $fileUri")
+        }
 
         return digest.digest().toHexString()
     }

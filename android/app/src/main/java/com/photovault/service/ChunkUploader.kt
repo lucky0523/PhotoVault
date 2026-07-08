@@ -51,7 +51,8 @@ class ChunkUploader @Inject constructor(
     private val backupApi: BackupApi,
     private val uploadRecordDao: UploadRecordDao,
     private val fileHasher: FileHasher,
-    private val statusSyncManager: StatusSyncManager
+    private val statusSyncManager: StatusSyncManager,
+    private val mediaBytesReader: MediaBytesReader
 ) {
 
     companion object {
@@ -168,6 +169,24 @@ class ChunkUploader @Inject constructor(
             "PhotoVaultBackup",
             "Prepared ${fileInfo.fileName}: mediaStoreSize=${fileInfo.fileSize}, snapshotSize=$actualSize, precheckHash=$precheckHash, snapshotHash=$fileHash"
         )
+
+        // Guard against uploading a not-fully-written snapshot (camera still
+        // finalizing / pre-allocated but unfilled). Compare the hashed snapshot
+        // bytes against the trusted MediaStore.SIZE, check for trailing zero
+        // padding, and validate format structure. (R3.1/3.2/3.3/5.5)
+        val expected = fileInfo.fileSize.takeIf { it > 0 } // MediaStore.SIZE, null if untrusted (R4.3)
+        when (val v = SnapshotValidator.validate(snapshot, actualSize, expected, fileInfo.fileName, fileInfo.mimeType)) {
+            is SnapshotValidation.Invalid -> {
+                android.util.Log.w(
+                    "PhotoVaultBackup",
+                    "snapshot invalid ${fileInfo.fileName}: ${v.reason} ${v.detail} mediaStoreSize=${fileInfo.fileSize} snapshotSize=$actualSize"
+                )
+                // The outer finally{} deletes the snapshot (R3.5); the upload
+                // record is left intact so the file is retried later (R3.4).
+                return UploadResult.Failed("Source not fully written yet: ${v.reason}", shouldRetry = true)
+            }
+            SnapshotValidation.Valid -> { /* proceed with existing flow */ }
+        }
 
         // Authoritative size = snapshot length, which matches the hashed bytes.
         val upload = fileInfo.copy(fileSize = actualSize)
@@ -399,7 +418,7 @@ class ChunkUploader @Inject constructor(
      */
     private fun extractExifTime(context: Context, fileUri: Uri): String? {
         return try {
-            context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
+            mediaBytesReader.openOriginal(context, fileUri).use { inputStream ->
                 val exif = androidx.exifinterface.media.ExifInterface(inputStream)
                 val dateStr = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL)
                     ?: exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME)
@@ -584,11 +603,11 @@ class ChunkUploader @Inject constructor(
         cacheDir.mkdirs()
         val safeName = displayName.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val dest = java.io.File(cacheDir, "${System.nanoTime()}_$safeName")
-        context.contentResolver.openInputStream(fileUri)?.use { input ->
+        mediaBytesReader.openOriginal(context, fileUri).use { input ->
             dest.outputStream().use { output ->
                 input.copyTo(output, 64 * 1024)
             }
-        } ?: throw java.io.IOException("Cannot open source: $fileUri")
+        }
         return dest
     }
 

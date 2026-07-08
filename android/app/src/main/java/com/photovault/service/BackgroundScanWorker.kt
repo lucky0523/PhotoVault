@@ -307,18 +307,40 @@ class BackgroundScanWorker @AssistedInject constructor(
             // Scan for newly modified files (for incremental backup)
             val effectiveScanTime = if (forceFullScan) 0L else folder.lastScanTime
             val folderNewFiles = scanFolder(folder.folderUri, effectiveScanTime)
+            // DATE_MODIFIED (epoch ms) of files skipped this round because they are within
+            // the quiet period (camera may still be writing). Used to roll back lastScanTime
+            // so they are re-discovered next scan (R1.2). Applies to both forceFullScan and
+            // periodic scans since both share this result-layer path (R1.4).
+            val skippedModifiedTimes = mutableListOf<Long>()
             for (fileInfo in folderNewFiles) {
                 val status = statusMap[fileInfo.uri]
                 if (status == null) {
-                    // No record = truly new file, add to backup queue
-                    newFiles.add(fileInfo)
+                    // No record = truly new file. Skip it this round if it was modified so
+                    // recently it may still be being written/finalized (R1.1). A skipped file
+                    // is neither enqueued nor treated as "seen" (R1.3). createdTime == 0 is
+                    // never skipped (handled inside shouldSkipForQuietPeriod, R1.5).
+                    if (QuietPeriodLogic.shouldSkipForQuietPeriod(currentTime, fileInfo.createdTime)) {
+                        val secondsAgo = (currentTime - fileInfo.createdTime) / 1000
+                        android.util.Log.i(
+                            "PhotoVaultScan",
+                            "quiet-period skip '${fileInfo.fileName}' modified ${secondsAgo}s ago"
+                        )
+                        skippedModifiedTimes.add(fileInfo.createdTime)
+                    } else {
+                        // Truly new and stable file, add to backup queue
+                        newFiles.add(fileInfo)
+                    }
                 }
                 // Files with existing status (active/trashed/purged) are NOT re-uploaded
             }
 
+            // Roll back lastScanTime past the earliest skipped file so it isn't missed
+            // next scan; preserves currentTime when nothing was skipped (R1.2/R1.3).
+            val nextScanTime = QuietPeriodLogic.computeNextScanTime(currentTime, skippedModifiedTimes)
+
             backupFolderDao.update(
                 folder.copy(
-                    lastScanTime = currentTime,
+                    lastScanTime = nextScanTime,
                     totalImages = totalImages,
                     backedUpImages = folderBackedUp,
                     trashedImages = folderTrashed,
@@ -425,9 +447,12 @@ class BackgroundScanWorker @AssistedInject constructor(
         val selection: String
         val args: Array<String>
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            // RELATIVE_PATH matches "Pictures/bili/" and any nested subfolder
+            // RELATIVE_PATH matches "Pictures/bili/" and any nested subfolder.
+            // IS_PENDING = 0 excludes media the creator (camera/downloader) hasn't
+            // finalized yet, so we never pick up files still being written (R2.1).
             selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND " +
-                "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} > ?"
+                "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} > ?" +
+                " AND ${android.provider.MediaStore.MediaColumns.IS_PENDING} = 0"
             args = arrayOf("$relativeDir/%", lastScanSeconds.toString())
         } else {
             @Suppress("DEPRECATION")
@@ -495,7 +520,10 @@ class BackgroundScanWorker @AssistedInject constructor(
         val selection: String
         val args: Array<String>
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+            // Same IS_PENDING = 0 filter as queryMediaStore so total/backedUp/pending
+            // counts share one consistent basis with the scan query (R2.3).
+            selection = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?" +
+                " AND ${android.provider.MediaStore.MediaColumns.IS_PENDING} = 0"
             args = arrayOf("$relativeDir/%")
         } else {
             @Suppress("DEPRECATION")

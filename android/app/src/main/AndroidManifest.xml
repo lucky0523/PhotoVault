@@ -13,6 +13,9 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- Read un-redacted original media bytes (incl. location EXIF) so backups
+         are byte-for-byte identical to the on-device originals (R5.2). -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
 
     <application
         android:name=".PhotoVaultApplication"
