@@ -1,5 +1,6 @@
 package com.photovault.ui.main
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -8,6 +9,7 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -114,6 +117,9 @@ fun FolderDetailScreen(
     var rebackupTarget by remember { mutableStateOf<FolderImage?>(null) }
     var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
     var filterExpanded by remember { mutableStateOf(false) }
+
+    // Handle system back gesture explicitly so it always navigates back cleanly.
+    BackHandler { onNavigateBack() }
 
     val filteredImages = remember(images, selectedFilter) {
         when (selectedFilter) {
@@ -235,9 +241,14 @@ fun FolderDetailScreen(
             ) { paddingValues ->
                 // The photo grid is recorded into contentBackdrop so the
                 // floating buttons above genuinely refract it.
+                // Apply systemGestureExclusion to the grid area only (not the
+                // whole screen) so the left-edge back gesture is blocked here,
+                // preventing accidental navigation while browsing photos. The
+                // top-bar area still allows the back gesture.
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .systemGestureExclusion()
                         .layerBackdrop(contentBackdrop)
                 ) {
                 if (filteredImages.isEmpty() && !loading) {
