@@ -45,7 +45,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -220,7 +219,12 @@ fun MainScreen(
             selectedIndex = index
             val tab = tabs[index]
             tabNavController.navigate(tab.route) {
-                popUpTo(tabNavController.graph.findStartDestination().id) {
+                // Clear the whole tab back stack (saving each tab's state) so
+                // switching tabs never leaves a poppable entry. This way the
+                // system back on any tab has nothing to pop here and falls
+                // through to exit the app, instead of returning to LocalTab.
+                popUpTo(tabNavController.graph.id) {
+                    inclusive = true
                     saveState = true
                 }
                 launchSingleTop = true
