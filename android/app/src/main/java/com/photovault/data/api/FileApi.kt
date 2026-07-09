@@ -2,9 +2,13 @@ package com.photovault.data.api
 
 import com.photovault.data.api.model.DirectoryListingResponse
 import com.photovault.data.api.model.StatusSyncResponse
+import com.photovault.data.api.model.TrashActionResponse
+import com.photovault.data.api.model.TrashListResponse
 import okhttp3.ResponseBody
 import retrofit2.Response
+import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -62,4 +66,30 @@ interface FileApi {
      */
     @GET("/api/v1/files/status-sync")
     suspend fun getStatusSync(): Response<StatusSyncResponse>
+
+    /**
+     * List files currently in the recycle bin (trashed, not yet purged).
+     * Backs the trash view surfaced inside the Cloud Tab.
+     */
+    @GET("/api/v1/files/trash")
+    suspend fun listTrash(
+        @Query("page") page: Int = 1,
+        @Query("page_size") pageSize: Int = 200
+    ): Response<TrashListResponse>
+
+    /**
+     * Restore a single file from the recycle bin back to its original location.
+     */
+    @POST("/api/v1/files/trash/{file_id}/restore")
+    suspend fun restoreTrashFile(
+        @Path("file_id") fileId: Int
+    ): Response<TrashActionResponse>
+
+    /**
+     * Permanently delete a single file from the recycle bin.
+     */
+    @DELETE("/api/v1/files/trash/{file_id}")
+    suspend fun purgeTrashFile(
+        @Path("file_id") fileId: Int
+    ): Response<TrashActionResponse>
 }

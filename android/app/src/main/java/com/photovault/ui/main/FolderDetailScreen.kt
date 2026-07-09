@@ -531,7 +531,7 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
         modifier = Modifier
             .align(Alignment.BottomStart)
             .padding(4.dp)
-            .background(backgroundColor, RoundedCornerShape(4.dp))
+            .background(backgroundColor.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
             .padding(horizontal = 4.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -544,8 +544,7 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
                 Text(
                     text = text,
                     color = Color.White,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = 9.sp
                 )
             }
         }

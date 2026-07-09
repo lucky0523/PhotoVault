@@ -39,3 +39,34 @@ data class FileBrowseInfo(
     @SerializedName("thumbnail_url") val thumbnailUrl: String?,
     @SerializedName("created_at") val createdAt: String
 )
+
+// --- Trash (recycle bin) ---
+
+data class TrashListResponse(
+    @SerializedName("items") val items: List<TrashItemInfo>,
+    @SerializedName("total") val total: Int,
+    @SerializedName("page") val page: Int,
+    @SerializedName("page_size") val pageSize: Int
+)
+
+data class TrashItemInfo(
+    @SerializedName("id") val id: Int,
+    @SerializedName("file_name") val fileName: String,
+    @SerializedName("file_size") val fileSize: Long,
+    @SerializedName("display_path") val displayPath: String,
+    @SerializedName("device_name") val deviceName: String,
+    @SerializedName("mime_type") val mimeType: String?,
+    @SerializedName("media_type") val mediaType: String = "image",
+    @SerializedName("exif_time") val exifTime: String?,
+    @SerializedName("created_at") val createdAt: String?,
+    @SerializedName("deleted_at") val deletedAt: String?,
+    @SerializedName("deleted_batch_id") val deletedBatchId: String?,
+    @SerializedName("expires_at") val expiresAt: String?,
+    @SerializedName("is_reference") val isReference: Boolean = false
+)
+
+data class TrashActionResponse(
+    @SerializedName("success") val success: Boolean,
+    @SerializedName("message") val message: String,
+    @SerializedName("count") val count: Int? = null
+)

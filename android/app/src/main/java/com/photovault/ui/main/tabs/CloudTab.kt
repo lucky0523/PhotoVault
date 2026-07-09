@@ -1,5 +1,6 @@
 package com.photovault.ui.main.tabs
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.Card
@@ -77,73 +79,108 @@ fun CloudTab(
     var previewFile by remember { mutableStateOf<FileBrowseInfo?>(null) }
     val serverBaseUrl = viewModel.serverBaseUrl
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Breadcrumb navigation
-        BreadcrumbNavigation(
-            breadcrumbs = uiState.breadcrumbs,
-            onBreadcrumbClick = { viewModel.navigateToBreadcrumb(it) }
-        )
+    // In the recycle-bin view, the system back gesture returns to the browser
+    // rather than leaving the Cloud Tab.
+    BackHandler(enabled = uiState.viewMode == CloudViewMode.Trash) {
+        viewModel.exitTrash()
+    }
 
-        HorizontalDivider()
+    when (uiState.viewMode) {
+        CloudViewMode.Trash -> {
+            TrashView(
+                items = uiState.trashItems,
+                isLoading = uiState.isTrashLoading,
+                error = uiState.trashError,
+                serverBaseUrl = serverBaseUrl,
+                onBack = { viewModel.exitTrash() },
+                onRestore = { viewModel.restoreFile(it.id) },
+                onPurge = { viewModel.purgeFile(it.id) }
+            )
+        }
 
-        // Content area
-        Box(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            when {
-                uiState.isLoading && !uiState.isRefreshing -> {
-                    // Initial loading state
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                }
+        CloudViewMode.Browse -> Column(modifier = Modifier.fillMaxSize()) {
+            // Breadcrumb navigation
+            BreadcrumbNavigation(
+                breadcrumbs = uiState.breadcrumbs,
+                onBreadcrumbClick = { viewModel.navigateToBreadcrumb(it) }
+            )
 
-                uiState.error != null -> {
-                    // Error state
-                    ErrorState(
-                        message = uiState.error!!,
-                        onRetry = { viewModel.loadDirectory(uiState.currentPath) }
-                    )
-                }
+            HorizontalDivider()
 
-                uiState.isEmpty -> {
-                    // Empty state
-                    EmptyState()
-                }
-
-                else -> {
-                    // Directory content list
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            top = 8.dp,
-                            bottom = 8.dp + LocalBottomBarPadding.current
-                        )
-                    ) {
-                        // Directories
-                        items(
-                            items = uiState.directories,
-                            key = { "dir_${it.path}" }
-                        ) { directory ->
-                            CloudDirectoryRow(
-                                directory = directory,
-                                onClick = { viewModel.navigateToDirectory(directory.path) }
-                            )
+            // Content area
+            Box(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when {
+                    uiState.isLoading && !uiState.isRefreshing -> {
+                        // Initial loading state
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
                         }
+                    }
 
-                        // Files
-                        items(
-                            items = uiState.files,
-                            key = { "file_${it.id}" }
-                        ) { file ->
-                            FileItem(
-                                file = file,
-                                serverBaseUrl = serverBaseUrl,
-                                onClick = { previewFile = file }
+                    uiState.error != null -> {
+                        // Error state
+                        ErrorState(
+                            message = uiState.error!!,
+                            onRetry = { viewModel.loadDirectory(uiState.currentPath) }
+                        )
+                    }
+
+                    uiState.isEmpty && !uiState.showTrashEntry -> {
+                        // Empty state (only when there is nothing at all — at root
+                        // the pinned trash entry keeps the list non-empty).
+                        EmptyState()
+                    }
+
+                    else -> {
+                        // Directory content list
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                top = 8.dp,
+                                bottom = 8.dp + LocalBottomBarPadding.current
                             )
+                        ) {
+                            // Pinned recycle-bin entry — always first, root only.
+                            if (uiState.showTrashEntry) {
+                                item(key = "trash_entry") {
+                                    TrashEntryRow(
+                                        count = uiState.trashTotal,
+                                        onClick = { viewModel.enterTrash() }
+                                    )
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                    )
+                                }
+                            }
+
+                            // Directories
+                            items(
+                                items = uiState.directories,
+                                key = { "dir_${it.path}" }
+                            ) { directory ->
+                                CloudDirectoryRow(
+                                    directory = directory,
+                                    onClick = { viewModel.navigateToDirectory(directory.path) }
+                                )
+                            }
+
+                            // Files
+                            items(
+                                items = uiState.files,
+                                key = { "file_${it.id}" }
+                            ) { file ->
+                                FileItem(
+                                    file = file,
+                                    serverBaseUrl = serverBaseUrl,
+                                    onClick = { previewFile = file }
+                                )
+                            }
                         }
                     }
                 }
@@ -158,6 +195,70 @@ fun CloudTab(
             file = file,
             downloadUrl = downloadUrl,
             onDismiss = { previewFile = null }
+        )
+    }
+}
+
+/**
+ * Pinned "回收站" entry row, styled to match [CloudDirectoryRow] so it sits
+ * naturally among the folders while its warning-tinted glyph and count badge
+ * make it obviously an entry point rather than a regular folder.
+ */
+@Composable
+private fun TrashEntryRow(
+    count: Int,
+    onClick: () -> Unit
+) {
+    val accent = CloudStatusColors.Trashed
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(accent.copy(alpha = 0.15f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Delete,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = accent
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "回收站",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = if (count > 0) "$count 项待还原或清理" else "空",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.NavigateNext,
+            contentDescription = "进入回收站",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

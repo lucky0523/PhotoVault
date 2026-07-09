@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
@@ -55,7 +54,6 @@ import com.photovault.ui.main.tabs.CloudTab
 import com.photovault.ui.main.tabs.LocalTab
 import com.photovault.ui.main.tabs.SettingsTab
 import com.photovault.ui.main.tabs.TasksTab
-import com.photovault.ui.main.tabs.TrashTab
 import com.photovault.ui.theme.GlassBar
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.LocalGlassBackdrop
@@ -76,7 +74,6 @@ sealed class MainTab(
     data object Local : MainTab("tab_local", "本地", Icons.Filled.PhoneAndroid)
     data object Cloud : MainTab("tab_cloud", "云端", Icons.Filled.Cloud)
     data object Tasks : MainTab("tab_tasks", "备份任务", Icons.Filled.Sync)
-    data object Trash : MainTab("tab_trash", "回收站", Icons.Filled.Delete)
     data object Settings : MainTab("tab_settings", "设置", Icons.Filled.Settings)
 }
 
@@ -84,7 +81,6 @@ private val tabs = listOf(
     MainTab.Local,
     MainTab.Cloud,
     MainTab.Tasks,
-    MainTab.Trash,
     MainTab.Settings
 )
 
@@ -191,9 +187,6 @@ fun MainScreen(
                     }
                     composable(MainTab.Tasks.route) {
                         TasksTab()
-                    }
-                    composable(MainTab.Trash.route) {
-                        TrashTab()
                     }
                         composable(MainTab.Settings.route) {
                             SettingsTab(onLogout = onLogout)

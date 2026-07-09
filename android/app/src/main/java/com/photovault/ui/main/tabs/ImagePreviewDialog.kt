@@ -1,7 +1,12 @@
 package com.photovault.ui.main.tabs
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -19,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +41,8 @@ import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
 import com.photovault.data.api.model.FileBrowseInfo
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * Full-screen image preview dialog.
@@ -48,6 +56,10 @@ fun ImagePreviewDialog(
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    val scope = rememberCoroutineScope()
+    // Tracks a running "snap back to default size" animation so a new gesture
+    // can cancel it before taking over the transform.
+    var snapBackJob by remember { mutableStateOf<Job?>(null) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -75,15 +87,41 @@ fun ImagePreviewDialog(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.5f, 5f)
-                            offset = if (scale > 1f) {
-                                Offset(
-                                    x = offset.x + pan.x,
-                                    y = offset.y + pan.y
-                                )
-                            } else {
-                                Offset.Zero
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            // Cancel any in-flight snap-back so the finger takes
+                            // over immediately.
+                            snapBackJob?.cancel()
+
+                            do {
+                                val event = awaitPointerEvent()
+                                val zoom = event.calculateZoom()
+                                val pan = event.calculatePan()
+                                if (zoom != 1f || pan != Offset.Zero) {
+                                    // Allow shrinking below 1x during the gesture
+                                    // for tactile feedback; it snaps back on release.
+                                    scale = (scale * zoom).coerceIn(0.5f, 5f)
+                                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                                    event.changes.forEach { it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+
+                            // Gesture ended. If the user shrank the image below its
+                            // default size, animate it back to 1x (and re-center).
+                            if (scale < 1f) {
+                                val startScale = scale
+                                val startOffset = offset
+                                snapBackJob = scope.launch {
+                                    val anim = Animatable(0f)
+                                    anim.animateTo(1f, animationSpec = tween(200)) {
+                                        val t = value
+                                        scale = startScale + (1f - startScale) * t
+                                        offset = Offset(
+                                            startOffset.x * (1f - t),
+                                            startOffset.y * (1f - t)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
