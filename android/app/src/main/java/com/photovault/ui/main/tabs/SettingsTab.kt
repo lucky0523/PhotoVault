@@ -2,6 +2,9 @@ package com.photovault.ui.main.tabs
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,7 +25,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -33,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -85,11 +88,20 @@ fun SettingsTab(
     val connectionState by viewModel.connectionState.collectAsState()
 
     var showLogoutDialog by remember { mutableStateOf(false) }
+    // While the user is operating an interactive control (dragging the battery
+    // slider or the WiFi switch), block the page's vertical scroll so the gesture
+    // doesn't also pan the whole settings list.
+    var isBatterySliderDragging by remember { mutableStateOf(false) }
+    var isWifiToggleInteracting by remember { mutableStateOf(false) }
+    val blockPageScroll = isBatterySliderDragging || isWifiToggleInteracting
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(
+                rememberScrollState(),
+                enabled = !blockPageScroll
+            )
             .padding(
                 start = 16.dp,
                 end = 16.dp,
@@ -121,7 +133,9 @@ fun SettingsTab(
             scanIntervalMinutes = scanIntervalMinutes,
             onWifiOnlyChanged = { viewModel.setWifiOnly(it) },
             onBatteryLevelChanged = { viewModel.setMinBatteryLevel(it) },
-            onScanIntervalChanged = { viewModel.setScanInterval(it) }
+            onScanIntervalChanged = { viewModel.setScanInterval(it) },
+            onBatterySliderDraggingChange = { isBatterySliderDragging = it },
+            onWifiToggleInteractingChange = { isWifiToggleInteracting = it }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -177,13 +191,16 @@ private fun BackupConditionsGroup(
     scanIntervalMinutes: Int,
     onWifiOnlyChanged: (Boolean) -> Unit,
     onBatteryLevelChanged: (Int) -> Unit,
-    onScanIntervalChanged: (Int) -> Unit
+    onScanIntervalChanged: (Int) -> Unit,
+    onBatterySliderDraggingChange: (Boolean) -> Unit,
+    onWifiToggleInteractingChange: (Boolean) -> Unit
 ) {
     SettingsGroupCard(title = "备份条件") {
         // WiFi 开关
         WifiOnlySetting(
             enabled = wifiOnly,
-            onEnabledChange = onWifiOnlyChanged
+            onEnabledChange = onWifiOnlyChanged,
+            onInteractingChange = onWifiToggleInteractingChange
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -191,7 +208,8 @@ private fun BackupConditionsGroup(
         // 最低电量滑块
         MinBatteryLevelSetting(
             currentLevel = minBatteryLevel,
-            onLevelChanged = onBatteryLevelChanged
+            onLevelChanged = onBatteryLevelChanged,
+            onDraggingChange = onBatterySliderDraggingChange
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -447,7 +465,8 @@ private fun ConnectionState.toDisplayString(): String {
 @Composable
 private fun WifiOnlySetting(
     enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit
+    onEnabledChange: (Boolean) -> Unit,
+    onInteractingChange: (Boolean) -> Unit = {}
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -462,7 +481,10 @@ private fun WifiOnlySetting(
             Text(
                 text = if (enabled) "备份仅在 WiFi 连接时进行" else "允许使用移动数据备份（可能产生流量费用）",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Reserve two lines so toggling between the short/long copy doesn't
+                // change the row height and shift the layout.
+                minLines = 2
             )
         }
         val glassBackdrop = LocalGlassBackdrop.current
@@ -470,12 +492,32 @@ private fun WifiOnlySetting(
             LiquidToggle(
                 selected = { enabled },
                 onSelect = onEnabledChange,
-                backdrop = glassBackdrop
+                backdrop = glassBackdrop,
+                // Block the page's vertical scroll while pressing/dragging the toggle.
+                onDragStateChange = onInteractingChange
             )
         } else {
+            // Observe the Switch's press/drag interactions so we can block the page's
+            // vertical scroll for the duration of the touch, matching the toggle above.
+            val interactionSource = remember { MutableInteractionSource() }
+            LaunchedEffect(interactionSource) {
+                var active = 0
+                interactionSource.interactions.collect { interaction ->
+                    when (interaction) {
+                        is PressInteraction.Press -> active++
+                        is PressInteraction.Release -> active--
+                        is PressInteraction.Cancel -> active--
+                        is DragInteraction.Start -> active++
+                        is DragInteraction.Stop -> active--
+                        is DragInteraction.Cancel -> active--
+                    }
+                    onInteractingChange(active > 0)
+                }
+            }
             Switch(
                 checked = enabled,
-                onCheckedChange = onEnabledChange
+                onCheckedChange = onEnabledChange,
+                interactionSource = interactionSource
             )
         }
     }
@@ -488,11 +530,17 @@ private fun WifiOnlySetting(
 @Composable
 private fun MinBatteryLevelSetting(
     currentLevel: Int,
-    onLevelChanged: (Int) -> Unit
+    onLevelChanged: (Int) -> Unit,
+    onDraggingChange: (Boolean) -> Unit = {}
 ) {
-    // Local slider state for smooth dragging
-    var sliderPosition by remember(currentLevel) {
-        mutableFloatStateOf(currentLevel.toFloat())
+    // Local slider state for smooth dragging.
+    var sliderPosition by remember { mutableFloatStateOf(currentLevel.toFloat()) }
+    var isDragging by remember { mutableStateOf(false) }
+    // Mirror external changes onto the thumb, but never while the user is dragging
+    // (that would fight the finger). Re-keying the state on every commit is what
+    // previously desynced the slider, so we sync explicitly instead.
+    LaunchedEffect(currentLevel, isDragging) {
+        if (!isDragging) sliderPosition = currentLevel.toFloat()
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -505,8 +553,14 @@ private fun MinBatteryLevelSetting(
                 text = "最低电量",
                 style = MaterialTheme.typography.bodyLarge
             )
+            // Show the value snapped to the nearest 5% step so the readout matches
+            // where the thumb will settle.
+            val displayLevel = (Math.round(sliderPosition / 5f) * 5).coerceIn(
+                SettingsPreferences.MIN_BATTERY_LEVEL_LOWER,
+                SettingsPreferences.MIN_BATTERY_LEVEL_UPPER
+            )
             Text(
-                text = "${sliderPosition.toInt()}%",
+                text = "$displayLevel%",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -520,21 +574,36 @@ private fun MinBatteryLevelSetting(
         val glassBackdrop = LocalGlassBackdrop.current
         val valueRange = SettingsPreferences.MIN_BATTERY_LEVEL_LOWER.toFloat()..
             SettingsPreferences.MIN_BATTERY_LEVEL_UPPER.toFloat()
-        // Commit the value snapped to the nearest 5%, only when it actually changes,
-        // so we don't spam preference writes during the drag.
-        val commitSnapped: (Float) -> Unit = { raw ->
-            val snapped = (Math.round(raw / 5f) * 5).coerceIn(
+        // Snap a raw slider value to the nearest 5% step, clamped to the range.
+        val snapToStep: (Float) -> Int = { raw ->
+            (Math.round(raw / 5f) * 5).coerceIn(
                 SettingsPreferences.MIN_BATTERY_LEVEL_LOWER,
                 SettingsPreferences.MIN_BATTERY_LEVEL_UPPER
             )
+        }
+        // Snap the thumb back onto the nearest step and commit the value (only when
+        // it actually changes, so we don't spam preference writes).
+        val settleToStep: () -> Unit = {
+            val snapped = snapToStep(sliderPosition)
+            sliderPosition = snapped.toFloat()
             if (snapped != currentLevel) onLevelChanged(snapped)
         }
         if (glassBackdrop != null) {
             LiquidSlider(
                 value = { sliderPosition },
-                onValueChange = {
-                    sliderPosition = it
-                    commitSnapped(it)
+                onValueChange = { raw ->
+                    // During a drag keep the raw position for a smooth thumb; only
+                    // snap+commit once the finger lifts (handled in onDragStateChange).
+                    sliderPosition = raw
+                    // A track tap doesn't go through the drag callbacks, so snap it
+                    // immediately here.
+                    if (!isDragging) settleToStep()
+                },
+                onDragStateChange = { dragging ->
+                    isDragging = dragging
+                    // Block the page's vertical scroll for the duration of the drag.
+                    onDraggingChange(dragging)
+                    if (!dragging) settleToStep()
                 },
                 valueRange = valueRange,
                 visibilityThreshold = 0.01f,
@@ -544,8 +613,14 @@ private fun MinBatteryLevelSetting(
         } else {
             Slider(
                 value = sliderPosition,
-                onValueChange = { sliderPosition = it },
-                onValueChangeFinished = { commitSnapped(sliderPosition) },
+                onValueChange = {
+                    sliderPosition = it
+                    onDraggingChange(true)
+                },
+                onValueChangeFinished = {
+                    onDraggingChange(false)
+                    settleToStep()
+                },
                 valueRange = valueRange,
                 steps = 11 // (80-20)/5 - 1 = 11 steps between endpoints
             )
@@ -625,27 +700,34 @@ private fun ScanIntervalSetting(
 
 /**
  * A card wrapper for settings groups with a title header.
+ *
+ * Uses a rounded [background] rather than a [Card]/[Surface] on purpose: a Card
+ * clips its content to the rounded shape, which would cut off the liquid slider's
+ * thumb where it overflows the track ends. A background modifier paints the same
+ * rounded surface but does NOT clip children, so the thumb can extend into the
+ * card's inner padding while keeping its full size and a full-width track.
  */
 @Composable
 private fun SettingsGroupCard(
     title: String,
     content: @Composable () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                shape = CardDefaults.shape
             )
-            Spacer(modifier = Modifier.height(12.dp))
-            content()
-        }
+            .padding(16.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        content()
     }
 }
 

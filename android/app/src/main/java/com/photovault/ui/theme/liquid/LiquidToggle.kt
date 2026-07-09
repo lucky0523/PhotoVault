@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -52,10 +53,15 @@ fun LiquidToggle(
     selected: () -> Boolean,
     onSelect: (Boolean) -> Unit,
     backdrop: Backdrop,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDragStateChange: (isDragging: Boolean) -> Unit = {}
 ) {
     val accentColor = MaterialTheme.colorScheme.primary
     val trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
+
+    // DampedDragAnimation is created once (remember(animationScope)), so route the
+    // callback through rememberUpdatedState to avoid capturing a stale lambda.
+    val currentOnDragStateChange by rememberUpdatedState(onDragStateChange)
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
@@ -71,7 +77,9 @@ fun LiquidToggle(
             visibilityThreshold = 0.001f,
             initialScale = 1f,
             pressedScale = 1.5f,
-            onDragStarted = {},
+            onDragStarted = {
+                currentOnDragStateChange(true)
+            },
             onDragStopped = {
                 if (didDrag) {
                     fraction = if (targetValue >= 0.5f) 1f else 0f
@@ -85,6 +93,7 @@ fun LiquidToggle(
                     fraction = if (fraction >= 0.5f) 0f else 1f
                     onSelect(fraction == 1f)
                 }
+                currentOnDragStateChange(false)
             },
             onDrag = { _, dragAmount ->
                 if (!didDrag) {
