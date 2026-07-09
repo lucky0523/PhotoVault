@@ -474,6 +474,10 @@ class ChunkUploader @Inject constructor(
                     fileName = fileInfo.fileName,
                     fileSize = fileInfo.fileSize,
                     fileModifiedTime = fileInfo.createdTime,
+                    // Persist folder + MIME so the upload can be rebuilt and
+                    // resumed after a process kill (see UploadRecord docs).
+                    folderUri = fileInfo.folderUri,
+                    mimeType = fileInfo.mimeType,
                     totalChunks = initResponse.totalChunks,
                     uploadedChunkIndex = -1,
                     createdAt = System.currentTimeMillis(),

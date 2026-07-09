@@ -35,6 +35,23 @@ data class UploadRecord(
     @ColumnInfo(name = "file_modified_time")
     val fileModifiedTime: Long,
 
+    /**
+     * The backup folder (SAF tree URI) this file belongs to. Persisted so an
+     * interrupted upload can be fully reconstructed into a FileInfo and resumed
+     * after the process is killed (the in-memory queue is lost, but this record
+     * survives). Empty for records written before this column existed.
+     */
+    @ColumnInfo(name = "folder_uri")
+    val folderUri: String = "",
+
+    /**
+     * The file's MIME type, persisted for the same reconstruction reason as
+     * [folderUri]. Empty for pre-migration records (callers fall back to
+     * guessing from the file extension).
+     */
+    @ColumnInfo(name = "mime_type")
+    val mimeType: String = "",
+
     @ColumnInfo(name = "total_chunks")
     val totalChunks: Int,
 

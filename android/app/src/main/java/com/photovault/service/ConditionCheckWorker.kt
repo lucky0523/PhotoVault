@@ -32,15 +32,21 @@ class ConditionCheckWorker @AssistedInject constructor(
     }
 
     private fun evaluateConditions() {
-        val serviceRunning = BackupForegroundService.isRunning
+        val activelyBackingUp =
+            BackupForegroundService.isRunning && !BackupForegroundService.isPaused
 
-        if (serviceRunning) {
-            // Service is running — check if we need to pause
+        if (activelyBackingUp) {
+            // Actively uploading — pause if conditions dropped (e.g. WiFi lost).
             if (backupConditionChecker.shouldPauseBackup()) {
                 BackupForegroundService.pause(applicationContext)
             }
         } else {
-            // Service is not running — check if we can start or resume
+            // Either not running, or running-but-paused (interrupted earlier by a
+            // lost network/battery). In both cases (re)start when conditions have
+            // recovered and there is queued work. start() clears the paused flag
+            // and resumes any interrupted file from its persisted UploadRecord
+            // (断点续传). Previously the running-but-paused state was skipped, so a
+            // reconnect alone never resumed the backup.
             if (backupQueue.size() > 0 && backupConditionChecker.shouldResumeBackup()) {
                 BackupForegroundService.start(applicationContext)
             }

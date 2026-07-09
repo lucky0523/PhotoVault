@@ -25,7 +25,7 @@ import com.photovault.data.local.entity.UploadRecord
         BackupHistoryRecord::class,
         PhotoStatus::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

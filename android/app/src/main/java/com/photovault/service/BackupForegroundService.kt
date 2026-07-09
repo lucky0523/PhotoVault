@@ -153,6 +153,11 @@ class BackupForegroundService : Service() {
     }
 
     private fun startBackupProcess() {
+        // Guard against launching a second concurrent loop when start() is
+        // delivered while a backup is already actively running (e.g. a
+        // connectivity broadcast arriving during normal operation).
+        if (backupJob?.isActive == true) return
+
         totalFiles = backupQueue.size()
         completedFiles = 0
 
@@ -215,6 +220,17 @@ class BackupForegroundService : Service() {
                         }
                         updateNotificationForProgress(progress)
                     }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    // The job was cancelled mid-upload (e.g. pause() fired because
+                    // WiFi dropped). Put the file back on the queue so it resumes
+                    // from its persisted chunk progress (断点续传) once conditions
+                    // recover, then let the cancellation propagate to end the loop.
+                    backupQueue.enqueue(listOf(fileInfo))
+                    android.util.Log.i(
+                        "PhotoVaultBackup",
+                        "Upload of ${fileInfo.fileName} cancelled; re-queued for resume"
+                    )
+                    throw ce
                 } catch (e: Exception) {
                     android.util.Log.e(
                         "PhotoVaultBackup",
@@ -257,6 +273,22 @@ class BackupForegroundService : Service() {
                         }
                     }
                     is UploadResult.Failed -> {
+                        // Distinguish a transient interruption (network/battery
+                        // lost while uploading, chunk retries exhausted) from a
+                        // genuine, non-retryable file error. On a transient
+                        // interruption, keep the file queued and pause so the
+                        // condition-recovery path resumes it later (断点续传)
+                        // instead of burning it as a permanent failure.
+                        if (result.shouldRetry && backupConditionChecker.shouldPauseBackup()) {
+                            backupQueue.enqueue(listOf(fileInfo))
+                            isPaused = true
+                            android.util.Log.i(
+                                "PhotoVaultBackup",
+                                "Upload of ${fileInfo.fileName} interrupted by conditions; re-queued for resume"
+                            )
+                            updateNotification("备份已暂停", "等待条件恢复...")
+                            break
+                        }
                         android.util.Log.w(
                             "PhotoVaultBackup",
                             "Failed ${fileInfo.fileName}: ${result.error}"

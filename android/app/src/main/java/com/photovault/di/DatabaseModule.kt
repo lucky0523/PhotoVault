@@ -93,6 +93,17 @@ object DatabaseModule {
         }
     }
 
+    // Exposed (internal) so the 6→7 migration can be unit-tested directly.
+    internal val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Persist folder + MIME on upload_records so an interrupted upload can
+            // be rebuilt into a FileInfo and resumed after the process is killed
+            // (the in-memory backup queue is lost, but these records survive).
+            db.execSQL("ALTER TABLE upload_records ADD COLUMN folder_uri TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE upload_records ADD COLUMN mime_type TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -101,7 +112,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photovault_db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
             .build()
     }
 

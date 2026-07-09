@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import com.photovault.data.local.CredentialManager
 import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.PhotoStatusDao
+import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.PhotoStatusValue
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -40,7 +41,8 @@ class BackgroundScanWorker @AssistedInject constructor(
     private val backupQueue: BackupQueue,
     private val photoStatusDao: PhotoStatusDao,
     private val statusSyncManager: StatusSyncManager,
-    private val credentialManager: CredentialManager
+    private val credentialManager: CredentialManager,
+    private val uploadRecordDao: UploadRecordDao
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -203,7 +205,18 @@ class BackgroundScanWorker @AssistedInject constructor(
                 android.util.Log.i("PhotoVaultScan", "Status sync result: $synced records updated")
             }
 
+            // Rebuild the queue for uploads that were interrupted by a process
+            // kill: their persisted UploadRecord survives, but the in-memory
+            // queue does not, so nothing would otherwise resume them.
+            requeueResumableUploads()
+
             scanAllFolders(forceFullScan)
+
+            // After scanning + requeue, make sure queued work (including the
+            // resumed uploads above) actually starts when conditions allow and
+            // the service isn't already running.
+            maybeStartBackupForQueuedWork()
+
             android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
             Result.success()
         } catch (e: Exception) {
@@ -247,6 +260,78 @@ class BackgroundScanWorker @AssistedInject constructor(
         } else {
             androidx.work.ForegroundInfo(notificationId, notification)
         }
+    }
+
+    /**
+     * Re-enqueues files that have a persisted, still-valid [com.photovault.data.local.entity.UploadRecord]
+     * but are missing from the in-memory [BackupQueue] — the typical aftermath of
+     * the process being killed mid-upload. Their chunk progress is persisted both
+     * locally and server-side, so [ChunkUploader.uploadFile] resumes them from the
+     * last received chunk (断点续传) rather than restarting from zero.
+     *
+     * Expired sessions (older than 7 days) are skipped here; they'll be
+     * rediscovered as ordinary new files by a full scan and re-uploaded fresh.
+     */
+    private suspend fun requeueResumableUploads() {
+        val records = try {
+            uploadRecordDao.getAll()
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultScan", "Failed to load upload records for resume: ${e.message}", e)
+            return
+        }
+        if (records.isEmpty()) return
+
+        val queuedUris = backupQueue.getAll().map { it.uri }.toSet()
+        val now = System.currentTimeMillis()
+        val sessionExpireMs = 7L * 24 * 60 * 60 * 1000
+
+        val resumable = records
+            .filter { now - it.createdAt <= sessionExpireMs }
+            .filter { it.fileUri !in queuedUris }
+            .map { record ->
+                FileInfo(
+                    uri = record.fileUri,
+                    fileName = record.fileName,
+                    fileSize = record.fileSize,
+                    // fileModifiedTime was stored from the original FileInfo.createdTime.
+                    createdTime = record.fileModifiedTime,
+                    mimeType = record.mimeType.ifBlank { guessMimeFromName(record.fileName) },
+                    folderUri = record.folderUri
+                )
+            }
+
+        if (resumable.isNotEmpty()) {
+            backupQueue.enqueue(resumable)
+            android.util.Log.i(
+                "PhotoVaultScan",
+                "Re-queued ${resumable.size} interrupted upload(s) for resume"
+            )
+        }
+    }
+
+    /**
+     * Starts the backup service if there is queued work (new or resumed) and
+     * conditions allow, but the service isn't already running. [start] is
+     * idempotent — a redundant call while running is a no-op.
+     */
+    private fun maybeStartBackupForQueuedWork() {
+        if (backupQueue.size() > 0 &&
+            !BackupForegroundService.isRunning &&
+            backupConditionChecker.shouldStartBackup()
+        ) {
+            android.util.Log.i("PhotoVaultScan", "Starting backup service for ${backupQueue.size()} queued file(s)")
+            BackupForegroundService.start(applicationContext)
+        }
+    }
+
+    /**
+     * Best-effort MIME guess from a file name, used when rebuilding a FileInfo
+     * from a pre-migration UploadRecord that has no stored mime_type.
+     */
+    private fun guessMimeFromName(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: if (ext in VIDEO_EXTENSIONS) "video/*" else "image/*"
     }
 
     /**
