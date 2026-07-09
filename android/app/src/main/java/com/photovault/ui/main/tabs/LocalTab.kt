@@ -59,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
@@ -316,35 +317,47 @@ private fun BoxScope.PullRefreshCloudIndicator(
 
     val appear = (pos / restingPx).coerceIn(0f, 1f)
 
-    Surface(
+    // Padding around the shadowed circle. `alpha` in the graphicsLayer below
+    // forces this node into an offscreen buffer clipped to its own bounds; the
+    // padding gives the elevation shadow room to render inside those bounds
+    // instead of being cut off at the circle edge (which looked like a hard
+    // ring/abnormal shadow while pulling).
+    val shadowPadding = 10.dp
+    val shadowPaddingPx = with(density) { shadowPadding.toPx() }
+
+    Box(
         modifier = Modifier
             .align(Alignment.TopCenter)
-            .size(indicatorSize)
             .graphicsLayer {
-                translationY = pos - indicatorSizePx
+                translationY = pos - indicatorSizePx - shadowPaddingPx
                 alpha = appear
                 val s = 0.7f + 0.3f * appear
                 scaleX = s
                 scaleY = s
-            },
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 6.dp
+            }
+            .padding(shadowPadding)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (isRefreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 2.5.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.CloudUpload,
-                    contentDescription = "下拉备份",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(26.dp)
-                )
+        Surface(
+            modifier = Modifier.size(indicatorSize),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                if (isRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.5.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.CloudUpload,
+                        contentDescription = "下拉备份",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
             }
         }
     }
@@ -382,98 +395,109 @@ internal fun FolderRow(
     }
 
     Box {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = { showMenu = true }
                 )
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                // Folder name and the compact stats subtitle share one line to
-                // save vertical space: the name shrinks/ellipsizes as needed while
-                // the subtitle stays fully visible on the trailing edge.
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = folder.folderName,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = buildString {
-                            append("${folder.totalImages} 项")
-                            if (notBackedUp > 0) {
-                                append(" · 待备份 ")
-                                append(notBackedUp)
-                            }
-                            append(" · ")
-                            append(relativeTime(folder.lastScanTime))
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    // Folder name and the compact stats subtitle share one line to
+                    // save vertical space: the name shrinks/ellipsizes as needed while
+                    // the subtitle stays fully visible on the trailing edge.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = folder.folderName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = buildString {
+                                append("${folder.totalImages} 项")
+                                if (notBackedUp > 0) {
+                                    append(" · 待备份 ")
+                                    append(notBackedUp)
+                                }
+                                append(" · ")
+                                append(relativeTime(folder.lastScanTime))
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    // Local files' cloud status chips: 已备份 (green) / 未备份 (blue) /
+                    // 回收站 (orange) / 已删除 (red). Reflects where each local file
+                    // currently stands on the server. All four share one row; each chip
+                    // takes an equal weight so they shrink uniformly instead of the
+                    // last one getting squeezed / wrapped on narrow widths.
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatusChip(
+                            label = "已备份",
+                            count = localCounts.backedUp,
+                            color = CloudStatusColors.BackedUp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusChip(
+                            label = "未备份",
+                            count = localCounts.pending,
+                            color = CloudStatusColors.Pending,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusChip(
+                            label = "回收站",
+                            count = localCounts.trashed,
+                            color = CloudStatusColors.Trashed,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusChip(
+                            label = "已删除",
+                            count = localCounts.purged,
+                            color = CloudStatusColors.Purged,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
-                Spacer(modifier = Modifier.height(6.dp))
-                // Local files' cloud status chips: 已备份 (green) / 未备份 (blue) /
-                // 回收站 (orange) / 已删除 (red). Reflects where each local file
-                // currently stands on the server. All four share one row; each chip
-                // takes an equal weight so they shrink uniformly instead of the
-                // last one getting squeezed / wrapped on narrow widths.
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    StatusChip(
-                        label = "已备份",
-                        count = localCounts.backedUp,
-                        color = CloudStatusColors.BackedUp,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatusChip(
-                        label = "未备份",
-                        count = localCounts.pending,
-                        color = CloudStatusColors.Pending,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatusChip(
-                        label = "回收站",
-                        count = localCounts.trashed,
-                        color = CloudStatusColors.Trashed,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatusChip(
-                        label = "已删除",
-                        count = localCounts.purged,
-                        color = CloudStatusColors.Purged,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(CircleShape),
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Fixed-width status label so the chips column above keeps a
+                // constant width and stays aligned across rows regardless of the
+                // label text ("空" / "完成" / "100%"). Kept compact so the chips
+                // row gets as much width as possible.
+                Text(
+                    text = if (folder.totalImages == 0) "空" else if (done) "完成" else "$percent%",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = statusColor,
-                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    modifier = Modifier.width(40.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Text(
-                text = if (folder.totalImages == 0) "空" else if (done) "完成" else "$percent%",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = statusColor
+            Spacer(modifier = Modifier.height(6.dp))
+            // Progress bar spans the full row width (below both the chips and the
+            // fixed-width status label).
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(CircleShape),
+                color = statusColor,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             )
         }
 

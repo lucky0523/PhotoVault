@@ -1,6 +1,7 @@
 package com.photovault.ui.main.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,8 +17,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * 可复用的备份状态标签：一个彩色圆点加「标签 数量」文本，背景为对应颜色的低透明度填充。
@@ -40,20 +43,23 @@ fun StatusChip(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(color.copy(alpha = 0.15f))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(6.dp)
+                .size(5.dp)
                 .clip(CircleShape)
                 .background(color)
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(4.dp))
         Text(
             text = "$label $count",
             style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
             color = color,
+            textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
