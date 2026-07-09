@@ -29,6 +29,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -47,6 +48,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.photovault.data.network.ConnectionState
 import com.photovault.data.network.ConnectionType
@@ -223,6 +225,18 @@ fun MainScreen(
                 }
                 launchSingleTop = true
                 restoreState = true
+            }
+        }
+
+        // Keep the highlight in sync with the actual NavHost destination so a
+        // system back (which pops the route without going through onTabSelected)
+        // also moves the highlight. This only updates the index — it never
+        // navigates — so there is no feedback loop with onTabSelected.
+        val navEntry by tabNavController.currentBackStackEntryAsState()
+        LaunchedEffect(navEntry?.destination?.route) {
+            val idx = tabs.indexOfFirst { it.route == navEntry?.destination?.route }
+            if (idx >= 0 && idx != selectedIndex) {
+                selectedIndex = idx
             }
         }
 
