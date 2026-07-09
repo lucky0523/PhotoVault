@@ -159,15 +159,15 @@ onMounted(() => {
 }
 
 .status-backed-up {
-  background: #67c23a;
+  background: #34c759;
 }
 
 .status-trashed {
-  background: #e6a23c;
+  background: #ff9500;
 }
 
 .status-purged {
-  background: #909399;
+  background: #ff3b30;
 }
 
 .status-label {

@@ -2,6 +2,7 @@
   <el-container class="main-layout">
     <el-aside width="200px">
       <div class="logo">
+        <img src="/icon.png" alt="PhotoVault" class="logo-icon" />
         <h2>PhotoVault</h2>
       </div>
       <el-menu
@@ -88,8 +89,18 @@ function handleLogout() {
 
 .logo {
   padding: 16px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border-bottom: 1px solid #e6e6e6;
+}
+
+.logo-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
 }
 
 .logo h2 {
