@@ -41,7 +41,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,6 +52,7 @@ import com.photovault.data.network.ConnectionType
 import com.photovault.ui.main.components.StoragePolicySheet
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.ui.theme.liquid.LiquidSlider
 import com.photovault.ui.theme.liquid.LiquidToggle
 
@@ -365,9 +365,9 @@ private fun AccountInfoGroup(
 @Composable
 private fun ConnectionStatusItem(connectionState: ConnectionState) {
     val dotColor = when (connectionState) {
-        is ConnectionState.Connected -> Color(0xFF4CAF50)
-        is ConnectionState.Connecting -> Color(0xFFFF9800)
-        is ConnectionState.Disconnected -> Color(0xFF9E9E9E)
+        is ConnectionState.Connected -> PhotoVaultColors.SyncGreen
+        is ConnectionState.Connecting -> PhotoVaultColors.ArchiveAmber
+        is ConnectionState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Row(
@@ -650,7 +650,7 @@ private fun SettingsGroupCard(
 }
 
 /**
- * 退出登录按钮 - Red destructive-style text button for logging out.
+ * 退出登录按钮 - theme error styled destructive text button.
  */
 @Composable
 private fun LogoutButton(onClick: () -> Unit) {
@@ -660,7 +660,7 @@ private fun LogoutButton(onClick: () -> Unit) {
     ) {
         Text(
             text = "退出登录",
-            color = Color.Red,
+            color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodyLarge
         )
     }
@@ -687,7 +687,7 @@ private fun LogoutConfirmationDialog(
             TextButton(onClick = onConfirm) {
                 Text(
                     text = "确定",
-                    color = Color.Red
+                    color = MaterialTheme.colorScheme.error
                 )
             }
         },

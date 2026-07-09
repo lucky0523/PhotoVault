@@ -703,7 +703,7 @@ onMounted(() => {
 }
 
 .year-item.active {
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
   color: var(--el-color-primary);
 }
 
@@ -751,7 +751,7 @@ onMounted(() => {
 }
 
 .month-item.active {
-  background: #ecf5ff;
+  background: var(--el-color-primary-light-9);
   color: var(--el-color-primary);
 }
 
@@ -1085,11 +1085,11 @@ onMounted(() => {
 }
 
 .context-menu-item.danger {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .context-menu-item.danger:hover {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
 }
 </style>
 

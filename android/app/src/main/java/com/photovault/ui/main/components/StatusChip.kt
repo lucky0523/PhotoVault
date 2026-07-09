@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.photovault.ui.theme.PhotoVaultColors
 
 /**
  * 可复用的备份状态标签：一个彩色圆点加「标签 数量」文本，背景为对应颜色的低透明度填充。
@@ -75,8 +76,8 @@ fun StatusChip(
  * - [Purged] 已删除：红色
  */
 object CloudStatusColors {
-    val BackedUp = Color(0xFF34C759) // 绿色
-    val Pending = Color(0xFF007AFF)  // 蓝色
-    val Trashed = Color(0xFFFF9500)  // 橙色
-    val Purged = Color(0xFFFF3B30)   // 红色
+    val BackedUp = PhotoVaultColors.SyncGreen
+    val Pending = PhotoVaultColors.VaultBlue
+    val Trashed = PhotoVaultColors.ArchiveAmber
+    val Purged = PhotoVaultColors.DeleteRose
 }

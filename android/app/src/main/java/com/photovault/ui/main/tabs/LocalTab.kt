@@ -68,6 +68,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.ui.main.components.StatusChip
 import com.photovault.ui.main.components.StoragePolicySheet
 import com.photovault.ui.theme.LocalBottomBarPadding
@@ -389,9 +390,9 @@ internal fun FolderRow(
     val done = folder.totalImages > 0 && notBackedUp == 0
     val statusColor = when {
         folder.totalImages == 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-        done -> Color(0xFF34C759)
+        done -> PhotoVaultColors.SyncGreen
         handled > 0 -> MaterialTheme.colorScheme.primary
-        else -> Color(0xFFFF9F0A)
+        else -> PhotoVaultColors.ArchiveAmber
     }
 
     Box {

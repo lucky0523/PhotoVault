@@ -58,6 +58,7 @@ import com.photovault.ui.main.tabs.TasksTab
 import com.photovault.ui.theme.GlassBar
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.ui.theme.appBackgroundBrush
 import com.photovault.ui.theme.liquid.LiquidBottomTab
 import com.photovault.ui.theme.liquid.LiquidBottomTabs
@@ -309,11 +310,11 @@ private fun GlassHeader(connectionState: ConnectionState, heartbeatCountdown: In
 private fun ConnectionPill(connectionState: ConnectionState, heartbeatCountdown: Int) {
     val (dotColor, baseText) = when (connectionState) {
         is ConnectionState.Connected -> when (connectionState.type) {
-            ConnectionType.LAN -> Color(0xFF34C759) to "局域网"
-            ConnectionType.WAN -> Color(0xFF34C759) to "公网"
+            ConnectionType.LAN -> PhotoVaultColors.SyncGreen to "局域网"
+            ConnectionType.WAN -> PhotoVaultColors.SyncGreen to "公网"
         }
-        is ConnectionState.Connecting -> Color(0xFFFF9F0A) to "连接中"
-        is ConnectionState.Disconnected -> Color(0xFF8E8E93) to "未连接"
+        is ConnectionState.Connecting -> PhotoVaultColors.ArchiveAmber to "连接中"
+        is ConnectionState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant to "未连接"
     }
     // Debug: append the countdown whenever the heartbeat/reconnect loop is
     // active (countdown >= 0), regardless of connection state, so we can see
@@ -347,4 +348,3 @@ private fun ConnectionPill(connectionState: ConnectionState, heartbeatCountdown:
         }
     }
 }
-

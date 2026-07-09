@@ -120,7 +120,7 @@
                 @click="navigateTo(dir.path)"
                 @contextmenu="showContextMenu($event, 'directory', undefined, dir)"
               >
-                <el-icon :size="32" color="#e6a23c"><Folder /></el-icon>
+                <el-icon :size="32" color="var(--el-color-warning)"><Folder /></el-icon>
                 <div class="directory-info">
                   <span class="directory-name">{{ dir.name }}</span>
                   <span class="directory-count">{{ dir.backed_up_count }} 个文件</span>
@@ -137,7 +137,7 @@
             >
               <el-table-column width="50">
                 <template #default>
-                  <el-icon :size="20" color="#e6a23c"><Folder /></el-icon>
+                  <el-icon :size="20" color="var(--el-color-warning)"><Folder /></el-icon>
                 </template>
               </el-table-column>
               <el-table-column prop="name" label="名称" min-width="200" />
@@ -1226,10 +1226,10 @@ onMounted(() => {
 }
 
 .context-menu-item.danger {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 
 .context-menu-item.danger:hover {
-  background: #fef0f0;
+  background: var(--el-color-danger-light-9);
 }
 </style>

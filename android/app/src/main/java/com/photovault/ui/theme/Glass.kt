@@ -53,20 +53,21 @@ object Glass {
 fun appBackgroundBrush(): Brush {
     val dark = isSystemInDarkTheme()
     return if (dark) {
-        // Neutral dark grey, with a barely-there vertical shade so glass surfaces
-        // still have some gradient to refract.
+        // Deep vault base with a brighter cyan-blue lift for glass refraction.
         Brush.verticalGradient(
             listOf(
-                Color(0xFF1B1C1E),
-                Color(0xFF141517)
+                Color(0xFF16335A),
+                PhotoVaultColors.MistDark,
+                Color(0xFF08121F)
             )
         )
     } else {
-        // Clean light grey base.
+        // Bright ice-blue surface, clean enough for photos and glass chrome.
         Brush.verticalGradient(
             listOf(
-                Color(0xFFF6F7F9),
-                Color(0xFFEDEFF2)
+                Color(0xFFFAFCFF),
+                PhotoVaultColors.Mist,
+                Color(0xFFEAF3FF)
             )
         )
     }
@@ -157,7 +158,11 @@ fun GlassBar(
 
     val dark = isSystemInDarkTheme()
     // A light frosted wash keeps text/icons legible over the refracted backdrop.
-    val surfaceTint = if (dark) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.24f)
+    val surfaceTint = if (dark) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.20f)
+    } else {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+    }
     // lens() requires a CornerBasedShape (RoundedCornerShape / CircleShape);
     // guard so an arbitrary shape can never throw at draw time.
     val cornerShaped = shape is CornerBasedShape
@@ -241,7 +246,11 @@ fun SurfaceLiquidButton(
     content: @Composable BoxScope.() -> Unit
 ) {
     val dark = isSystemInDarkTheme()
-    val surface = surfaceColor ?: if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.30f)
+    val surface = surfaceColor ?: if (dark) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+    } else {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f)
+    }
     val shape: Shape = Capsule()
 
     val surfaceModifier = if (backdrop != null) {
@@ -259,7 +268,11 @@ fun SurfaceLiquidButton(
             onDrawSurface = { drawRect(surface) }
         )
     } else {
-        val border = if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.6f)
+        val border = if (dark) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+        } else {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        }
         Modifier
             .then(if (showShadow) Modifier.shadow(6.dp, shape, clip = false) else Modifier)
             .clip(shape)

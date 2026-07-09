@@ -54,7 +54,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,6 +61,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.BackupStatus
 import com.photovault.ui.theme.LocalBottomBarPadding
+import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.service.FileInfo
 
 /**
@@ -654,7 +654,7 @@ private fun HistoryRecordItem(
 @Composable
 private fun StatusIcon(status: BackupStatus) {
     val (icon, tint) = when (status) {
-        BackupStatus.SUCCESS -> Icons.Filled.CheckCircle to Color(0xFF4CAF50)
+        BackupStatus.SUCCESS -> Icons.Filled.CheckCircle to PhotoVaultColors.SyncGreen
         BackupStatus.FAILED -> Icons.Filled.Error to MaterialTheme.colorScheme.error
         BackupStatus.SKIPPED -> Icons.Filled.SkipNext to MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -673,7 +673,7 @@ private fun StatusIcon(status: BackupStatus) {
 @Composable
 private fun StatusLabel(status: BackupStatus) {
     val (text, color) = when (status) {
-        BackupStatus.SUCCESS -> "成功" to Color(0xFF4CAF50)
+        BackupStatus.SUCCESS -> "成功" to PhotoVaultColors.SyncGreen
         BackupStatus.FAILED -> "失败" to MaterialTheme.colorScheme.error
         BackupStatus.SKIPPED -> "跳过" to MaterialTheme.colorScheme.onSurfaceVariant
     }

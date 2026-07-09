@@ -116,7 +116,7 @@ onMounted(() => {
 }
 
 .device-icon {
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 
 .device-name {
@@ -159,15 +159,15 @@ onMounted(() => {
 }
 
 .status-backed-up {
-  background: #34c759;
+  background: var(--el-color-success);
 }
 
 .status-trashed {
-  background: #ff9500;
+  background: var(--el-color-warning);
 }
 
 .status-purged {
-  background: #ff3b30;
+  background: var(--el-color-danger);
 }
 
 .status-label {

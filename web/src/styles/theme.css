@@ -1,0 +1,80 @@
+/**
+ * PhotoVault 主题色 —— 与 Android/iOS 端 PhotoVaultColors 保持一致的色彩语言。
+ *
+ * 色彩语言：
+ * - Vault Blue  #2F6BFF  主色：主操作、当前导航、可点击强调、链接
+ * - Sync Green  #00D066  成功：已备份、设备连接、成功提示
+ * - Archive Amber #FFA91F 警告：回收站、扫描中、待处理、文件夹
+ * - Delete Rose #FF5C72  危险：删除、失败、不可逆风险
+ * - Soft Slate  #58677E  中性：次要信息、禁用态
+ *
+ * 通过覆盖 Element Plus 的 CSS 变量，让所有 Element 控件（按钮、开关、
+ * 标签、单选、复选、滑块、进度条等）统一使用品牌主题色。
+ * light-3/5/7/8/9 为与白色混合的浅色梯度，dark-2 为与黑色混合的深色。
+ */
+:root {
+  /* ---------- 主色 Vault Blue ---------- */
+  --el-color-primary: #2f6bff;
+  --el-color-primary-light-3: #6a95ff;
+  --el-color-primary-light-5: #97b5ff;
+  --el-color-primary-light-7: #c3d5ff;
+  --el-color-primary-light-8: #dae5ff;
+  --el-color-primary-light-9: #edf2ff;
+  --el-color-primary-dark-2: #2556cc;
+
+  /* ---------- 成功 Sync Green ---------- */
+  --el-color-success: #00d066;
+  --el-color-success-light-3: #4ddb8f;
+  --el-color-success-light-5: #80e8af;
+  --el-color-success-light-7: #b3f2cf;
+  --el-color-success-light-8: #ccf7df;
+  --el-color-success-light-9: #e6fbef;
+  --el-color-success-dark-2: #00a652;
+
+  /* ---------- 警告 Archive Amber ---------- */
+  --el-color-warning: #ffa91f;
+  --el-color-warning-light-3: #ffc25c;
+  --el-color-warning-light-5: #ffd48c;
+  --el-color-warning-light-7: #ffe5ba;
+  --el-color-warning-light-8: #ffedd1;
+  --el-color-warning-light-9: #fff6e8;
+  --el-color-warning-dark-2: #cc8719;
+
+  /* ---------- 危险 Delete Rose ---------- */
+  --el-color-danger: #ff5c72;
+  --el-color-danger-light-3: #ff8d9c;
+  --el-color-danger-light-5: #ffb3bd;
+  --el-color-danger-light-7: #ffd6dc;
+  --el-color-danger-light-8: #ffe6ea;
+  --el-color-danger-light-9: #fff2f4;
+  --el-color-danger-dark-2: #cc4a5b;
+
+  /* error 与 danger 同义，Element 部分组件读取 error */
+  --el-color-error: #ff5c72;
+  --el-color-error-light-3: #ff8d9c;
+  --el-color-error-light-5: #ffb3bd;
+  --el-color-error-light-7: #ffd6dc;
+  --el-color-error-light-8: #ffe6ea;
+  --el-color-error-light-9: #fff2f4;
+  --el-color-error-dark-2: #cc4a5b;
+
+  /* ---------- 中性 Soft Slate ---------- */
+  --el-color-info: #58677e;
+  --el-color-info-light-3: #8c96a8;
+  --el-color-info-light-5: #aeb6c3;
+  --el-color-info-light-7: #cfd3da;
+  --el-color-info-light-8: #dfe2e6;
+  --el-color-info-light-9: #eff0f2;
+  --el-color-info-dark-2: #465265;
+
+  /* ---------- 链接跟随主色 ---------- */
+  --el-link-hover-text-color: var(--el-color-primary-light-3);
+
+  /* ---------- PhotoVault 品牌语义变量（供自定义样式引用） ---------- */
+  --pv-vault-blue: #2f6bff;
+  --pv-sync-green: #00d066;
+  --pv-archive-amber: #ffa91f;
+  --pv-delete-rose: #ff5c72;
+  --pv-soft-slate: #58677e;
+  --pv-mist: #f7faff;
+}
