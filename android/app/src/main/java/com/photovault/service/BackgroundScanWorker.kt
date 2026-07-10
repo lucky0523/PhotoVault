@@ -314,9 +314,22 @@ class BackgroundScanWorker @AssistedInject constructor(
         val now = System.currentTimeMillis()
         val sessionExpireMs = 7L * 24 * 60 * 60 * 1000
 
+        // Fallback guard: never resume an upload whose backup folder has been
+        // removed. Records are normally deleted when the folder is removed
+        // (LocalTabViewModel.removeFolder), but this also covers legacy records
+        // and any encoding mismatch, keeping "removed folder stops backing up"
+        // true even across a process restart.
+        val existingFolderKeys = backupFolderDao.getAllOnce()
+            .map { canonicalFolderKey(it.folderUri) }
+            .toSet()
+
         val resumable = records
             .filter { now - it.createdAt <= sessionExpireMs }
             .filter { it.fileUri !in queuedUris }
+            // Blank folderUri = pre-migration record with no folder attribution;
+            // leave its resume behavior unchanged. Only skip records whose folder
+            // is known AND no longer registered.
+            .filter { it.folderUri.isBlank() || canonicalFolderKey(it.folderUri) in existingFolderKeys }
             .map { record ->
                 FileInfo(
                     uri = record.fileUri,

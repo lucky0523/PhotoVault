@@ -5,10 +5,13 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photovault.data.local.CredentialManager
+import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.repository.AuthRepository
 import com.photovault.data.repository.BackupFolderRepository
 import com.photovault.service.BackupConditionChecker
+import com.photovault.service.BackupForegroundService
+import com.photovault.service.BackupQueue
 import com.photovault.service.BackgroundScanWorker
 import com.photovault.service.StatusSyncManager
 import com.photovault.service.canonicalFolderKey
@@ -34,6 +37,8 @@ class LocalTabViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val credentialManager: CredentialManager,
     private val statusSyncManager: StatusSyncManager,
+    private val backupQueue: BackupQueue,
+    private val uploadRecordDao: UploadRecordDao,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -130,10 +135,38 @@ class LocalTabViewModel @Inject constructor(
 
     /**
      * Remove a backup folder from the list.
+     *
+     * Removing a folder must also tear down any backup work that folder had
+     * already scheduled, otherwise the device keeps backing it up:
+     * - the in-memory [BackupQueue] still holds its scanned-but-not-uploaded
+     *   files, and
+     * - the persisted [UploadRecord]s for interrupted uploads would be
+     *   re-queued on the next scan / after a process kill
+     *   (BackgroundScanWorker.requeueResumableUploads).
+     *
+     * We resolve the folder first (to get its URI), delete the row, then purge
+     * both the queue and the resume records for that folder. If nothing remains
+     * to back up, the foreground service is stopped so it doesn't linger.
      */
     fun removeFolder(folderId: Long) {
         viewModelScope.launch {
+            val folder = backupFolderRepository.getFolderById(folderId)
             backupFolderRepository.removeFolder(folderId)
+
+            if (folder != null) {
+                val removed = backupQueue.removeByFolder(folder.folderUri)
+                uploadRecordDao.deleteByFolderUri(folder.folderUri)
+                android.util.Log.i(
+                    "PhotoVaultBackup",
+                    "Removed folder '${folder.folderName}': purged $removed queued file(s) and its resume records"
+                )
+            }
+
+            // Nothing left to upload — stop the running backup service instead of
+            // letting it idle (or, in the edge case above, keep draining).
+            if (backupQueue.isEmpty() && BackupForegroundService.isRunning) {
+                BackupForegroundService.stop(context)
+            }
         }
     }
 

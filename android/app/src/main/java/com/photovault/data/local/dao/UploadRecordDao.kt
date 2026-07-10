@@ -25,6 +25,14 @@ interface UploadRecordDao {
     @Query("DELETE FROM upload_records WHERE file_uri = :fileUri")
     suspend fun deleteByFileUri(fileUri: String)
 
+    /**
+     * Deletes all resume records belonging to a backup folder. Called when the
+     * folder is removed so interrupted uploads are not resumed / re-queued on
+     * the next scan or after a process kill.
+     */
+    @Query("DELETE FROM upload_records WHERE folder_uri = :folderUri")
+    suspend fun deleteByFolderUri(folderUri: String)
+
     @Query("UPDATE upload_records SET uploaded_chunk_index = :chunkIndex, updated_at = :updatedAt WHERE file_uri = :fileUri")
     suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long = System.currentTimeMillis())
 

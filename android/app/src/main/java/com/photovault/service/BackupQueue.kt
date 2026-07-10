@@ -88,6 +88,23 @@ class BackupQueue @Inject constructor() {
     }
 
     /**
+     * Removes all queued files that belong to [folderUri], matched by canonical
+     * key (tolerant of URL-encoding differences, see [canonicalFolderKey]).
+     *
+     * Called when a backup folder is removed so its not-yet-uploaded files stop
+     * being backed up instead of draining through the upload loop.
+     *
+     * @return the number of files removed from the queue.
+     */
+    @Synchronized
+    fun removeByFolder(folderUri: String): Int {
+        val key = canonicalFolderKey(folderUri)
+        val before = queue.size
+        queue.removeAll { canonicalFolderKey(it.folderUri) == key }
+        return before - queue.size
+    }
+
+    /**
      * Returns a snapshot of all files currently in the queue, sorted by creation time.
      */
     @Synchronized

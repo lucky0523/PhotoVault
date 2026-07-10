@@ -173,6 +173,21 @@ class BackupForegroundService : Service() {
                 val fileInfo = backupQueue.dequeue() ?: break
                 currentFileName = fileInfo.fileName
 
+                // Fallback guard: if this file's backup folder has been removed,
+                // drop it instead of uploading. The queue is normally purged when
+                // a folder is removed (LocalTabViewModel.removeFolder); this covers
+                // any file already dequeued/in-flight at that moment so a removed
+                // folder never keeps backing up. A null folder here means "no
+                // longer registered" (findFolder already tolerates URL-encoding).
+                val folder = findFolder(fileInfo.folderUri)
+                if (folder == null) {
+                    android.util.Log.i(
+                        "PhotoVaultBackup",
+                        "Skipping ${fileInfo.fileName}: its backup folder was removed"
+                    )
+                    continue
+                }
+
                 // Capture the file's status BEFORE uploading (the uploader flips it
                 // to `active` via StatusSyncManager.markActive on success). A
                 // re-backup of a trashed/purged file must move it out of that
@@ -188,14 +203,13 @@ class BackupForegroundService : Service() {
                     content = "进度: ${completedFiles + 1}/$totalFiles"
                 )
 
-                // Look up the folder's storage policy for this file. Matched by
-                // canonical key so a re-backup's URL-decoded folderUri still
-                // resolves to the stored (percent-encoded) folder row.
-                val folder = findFolder(fileInfo.folderUri)
+                // Storage policy for this file, from the folder resolved above.
+                // (Matched by canonical key so a re-backup's URL-decoded
+                // folderUri still resolves to the stored folder row.)
                 val storagePolicy = StoragePolicyConfig(
-                    useCustomPath = folder?.useCustomPath ?: false,
-                    customPath = folder?.customPath,
-                    useYearMonthLayer = folder?.useYearMonthLayer ?: false
+                    useCustomPath = folder.useCustomPath,
+                    customPath = folder.customPath,
+                    useYearMonthLayer = folder.useYearMonthLayer
                 )
 
                 // Track speed across progress callbacks
