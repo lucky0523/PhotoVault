@@ -63,7 +63,7 @@ struct LoginView: View {
         VStack(spacing: 8) {
             Image(systemName: "icloud.fill")
                 .font(.system(size: 56))
-                .foregroundColor(.blue)
+                .foregroundColor(PVColors.vaultBlue)
 
             Text("PhotoVault")
                 .font(.title)
@@ -161,7 +161,7 @@ struct LoginView: View {
                     }
                     Button(action: { showPassword.toggle() }) {
                         Image(systemName: showPassword ? "eye.slash.fill" : "eye.fill")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(PVColors.softSlate)
                     }
                 }
                 .padding(8)
@@ -249,7 +249,7 @@ struct CheckboxToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack {
             Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
-                .foregroundColor(configuration.isOn ? .blue : .secondary)
+                .foregroundColor(configuration.isOn ? PVColors.vaultBlue : .secondary)
                 .font(.system(size: 20))
                 .onTapGesture {
                     configuration.isOn.toggle()
