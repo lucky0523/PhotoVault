@@ -13,6 +13,11 @@ import com.photovault.service.FileInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,10 +25,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
@@ -80,6 +89,9 @@ class FolderDetailViewModel @Inject constructor(
     /** Remembered folder so [reloadStatuses] can rescan MediaStore if needed. */
     private var lastFolderUri: String? = null
 
+    /** In-flight motion-photo detection job, cancelled/replaced on each rescan. */
+    private var motionDetectJob: Job? = null
+
     /**
      * URIs of photos with an in-flight manual re-backup. Added by [rebackup];
      * surfaced as [FolderImage.isUploading] via the combine below (only while the
@@ -91,8 +103,35 @@ class FolderDetailViewModel @Inject constructor(
         merge(photoStatusDao.observeAll(), _manualStatuses)
 
     /**
+     * `statusUpdates` scoped to the currently displayed folder.
+     *
+     * `photo_status` is keyed by the MediaStore content URI, which carries no
+     * folder path, so the observed query can't be scoped in SQL — `observeAll()`
+     * emits the whole table and re-emits on ANY folder's change. On a large
+     * library this would re-run the O(n) association over this folder's images
+     * on every unrelated upload. So we scope it in memory instead:
+     *
+     * 1. [debounce] coalesces bursts of upserts (e.g. many uploads completing in
+     *    quick succession during a backup) into a single downstream emission.
+     * 2. The [combine] keeps only the statuses whose `file_uri` belongs to this
+     *    folder's images.
+     * 3. [distinctUntilChanged] drops emissions that leave this folder's subset
+     *    unchanged — so changes to OTHER folders never re-run the association.
+     */
+    @OptIn(FlowPreview::class)
+    private val folderStatuses: Flow<List<PhotoStatus>> =
+        combine(_rawImages, statusUpdates.debounce(200)) { rawImages, statuses ->
+            if (rawImages.isEmpty()) {
+                emptyList()
+            } else {
+                val folderUris = rawImages.mapTo(HashSet(rawImages.size)) { it.uri.toString() }
+                statuses.filter { it.fileUri in folderUris }
+            }
+        }.distinctUntilChanged()
+
+    /**
      * Reactive merge of the cached MediaStore images ([_rawImages]) and the
-     * authoritative `photo_status` table ([statusUpdates]).
+     * folder-scoped `photo_status` subset ([folderStatuses]).
      *
      * On every emission from either source, performs a single O(n)
      * `associateBy { fileUri }` association producing the displayed
@@ -107,7 +146,7 @@ class FolderDetailViewModel @Inject constructor(
      * backgrounding); [reloadStatuses] handles longer background gaps.
      */
     val images: StateFlow<List<FolderImage>> =
-        combine(_rawImages, statusUpdates, _uploadingUris) { rawImages, statuses, uploading ->
+        combine(_rawImages, folderStatuses, _uploadingUris) { rawImages, statuses, uploading ->
             associateStatuses(rawImages, statuses, uploading)
         }.stateIn(
             scope = viewModelScope,
@@ -129,12 +168,56 @@ class FolderDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _loading.value = true
             try {
+                // Only the (fast) MediaStore cursor query runs on the critical
+                // path so the grid can render as soon as the file list is known.
                 val raw = withContext(Dispatchers.IO) {
-                    loadRawFolderImages(context, folderUri)
+                    queryMediaStoreImages(context, folderUri)
                 }
                 _rawImages.value = raw
             } finally {
                 _loading.value = false
+            }
+            // Motion-photo detection reads the head of every JPEG, so it is far
+            // too slow to block first render on large folders. Run it in the
+            // background and patch the "LIVE" badges in once ready.
+            detectMotionPhotos()
+        }
+    }
+
+    /**
+     * Off-critical-path motion-photo detection. Scans the head of each JPEG
+     * candidate in [_rawImages] with bounded parallelism, then patches the
+     * `isMotionPhoto` flag in with a single state update (drives the "LIVE"
+     * badge). Cancels any previous run so a rescan doesn't stack up work.
+     */
+    private fun detectMotionPhotos() {
+        motionDetectJob?.cancel()
+        motionDetectJob = viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = _rawImages.value
+            val candidates = snapshot.filter {
+                it.mimeType == "image/jpeg" || it.mimeType == "image/jpg"
+            }
+            if (candidates.isEmpty()) return@launch
+
+            // Cap concurrent file reads so we don't thrash disk I/O.
+            val semaphore = Semaphore(4)
+            val motionUris = coroutineScope {
+                candidates.map { img ->
+                    async {
+                        semaphore.withPermit {
+                            if (MotionPhotoDetector.isMotionPhoto(context, img.uri, img.mimeType)) {
+                                img.uri.toString()
+                            } else null
+                        }
+                    }
+                }.awaitAll()
+            }.filterNotNull().toSet()
+
+            if (motionUris.isEmpty()) return@launch
+            _rawImages.update { list ->
+                list.map { img ->
+                    if (img.uri.toString() in motionUris) img.copy(isMotionPhoto = true) else img
+                }
             }
         }
     }
@@ -231,24 +314,6 @@ class FolderDetailViewModel @Inject constructor(
                 // active — success then flips it to the "已备份" badge instead.
                 isUploading = uploadingUris.contains(key) &&
                     status?.status != PhotoStatusValue.ACTIVE
-            )
-        }
-    }
-
-    /**
-     * Runs the heavy MediaStore scan and enriches each image with motion-photo
-     * detection, WITHOUT associating `status` (that is done reactively in
-     * [images]). This keeps the association step a pure mapping.
-     */
-    private fun loadRawFolderImages(
-        context: Context,
-        folderUri: String
-    ): List<FolderImage> {
-        val rawImages = queryMediaStoreImages(context, folderUri)
-        if (rawImages.isEmpty()) return emptyList()
-        return rawImages.map { img ->
-            img.copy(
-                isMotionPhoto = MotionPhotoDetector.isMotionPhoto(context, img.uri, img.mimeType)
             )
         }
     }

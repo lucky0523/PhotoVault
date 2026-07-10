@@ -22,8 +22,13 @@ import android.net.Uri
  */
 object MotionPhotoDetector {
 
-    /** How many bytes from the head of the file to scan for the XMP packet. */
-    private const val HEAD_SCAN_BYTES = 256 * 1024
+    /**
+     * How many bytes from the head of the file to scan for the XMP packet.
+     * The XMP APP1 segment sits right after SOI at the very start of the JPEG,
+     * so 64KB is more than enough to catch it while keeping the per-file read
+     * cheap (important when scanning thousands of files).
+     */
+    private const val HEAD_SCAN_BYTES = 64 * 1024
 
     // ASCII markers written into the JPEG XMP by motion-photo capable cameras.
     private val MARKERS = listOf(

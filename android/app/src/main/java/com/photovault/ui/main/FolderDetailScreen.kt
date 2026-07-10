@@ -252,7 +252,20 @@ fun FolderDetailScreen(
                         .systemGestureExclusion()
                         .layerBackdrop(contentBackdrop)
                 ) {
-                if (filteredImages.isEmpty() && !loading) {
+                if (loading && filteredImages.isEmpty()) {
+                    // Show a spinner during the initial MediaStore scan instead
+                    // of a blank white screen while the folder loads.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                } else if (filteredImages.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -284,7 +297,14 @@ fun FolderDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(filteredImages) { image ->
+                        items(
+                            items = filteredImages,
+                            // Stable per-photo key (the unique MediaStore URI) so
+                            // filtering and status updates diff by photo identity,
+                            // not list position — keeps thumbnails from flickering /
+                            // rebinding and preserves scroll position on large grids.
+                            key = { it.uri.toString() }
+                        ) { image ->
                             ImageThumbnailItem(
                                 image = image,
                                 onLongPress = { img ->

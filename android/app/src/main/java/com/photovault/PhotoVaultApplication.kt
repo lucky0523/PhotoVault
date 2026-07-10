@@ -6,6 +6,8 @@ import androidx.work.Configuration
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.photovault.data.local.SettingsPreferences
 import com.photovault.service.BackgroundScanWorker
 import com.photovault.service.ConditionBroadcastReceiver
@@ -40,6 +42,20 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
                 // Enable decoding a poster frame from local video URIs so
                 // video thumbnails render in the folder detail grid.
                 add(VideoFrameDecoder.Factory())
+            }
+            // Generous in-memory + on-disk thumbnail caches so scrolling a large
+            // folder grid (thousands of items) and re-entering a folder reuse
+            // already-decoded thumbnails instead of re-decoding from disk/video.
+            .memoryCache {
+                MemoryCache.Builder(this)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(256L * 1024 * 1024)
+                    .build()
             }
             .crossfade(true)
             .build()
