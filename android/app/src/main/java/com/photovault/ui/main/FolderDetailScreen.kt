@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -307,6 +308,7 @@ fun FolderDetailScreen(
                         ) { image ->
                             ImageThumbnailItem(
                                 image = image,
+                                detectMotion = viewModel::isMotionPhoto,
                                 onLongPress = { img ->
                                     if (img.isTrashed || img.isPurged) {
                                         rebackupTarget = img
@@ -359,9 +361,18 @@ fun FolderDetailScreen(
 @Composable
 private fun ImageThumbnailItem(
     image: FolderImage,
+    detectMotion: suspend (FolderImage) -> Boolean,
     onLongPress: (FolderImage) -> Unit
 ) {
     val alpha = if (image.isTrashed || image.isPurged) 0.4f else 1f
+
+    // Motion-photo detection runs lazily only for thumbnails that become
+    // visible, keyed by the stable URI so a status update (new FolderImage with
+    // the same URI) doesn't re-trigger the file read. The result is cached in
+    // the ViewModel, so re-scrolling reuses it instantly.
+    val isMotionPhoto by produceState(initialValue = false, image.uri) {
+        value = if (image.isVideo) false else detectMotion(image)
+    }
 
     Box(
         modifier = Modifier
@@ -398,7 +409,7 @@ private fun ImageThumbnailItem(
         }
 
         // Motion photo "LIVE" badge (top-right corner), mirroring the web style
-        if (!image.isVideo && image.isMotionPhoto) {
+        if (!image.isVideo && isMotionPhoto) {
             MotionPhotoBadge(
                 modifier = Modifier.align(Alignment.TopEnd)
             )

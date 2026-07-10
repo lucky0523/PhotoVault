@@ -15,9 +15,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,7 +47,6 @@ data class FolderImage(
     val createdTime: Long,
     val mimeType: String,
     val status: PhotoStatus? = null,
-    val isMotionPhoto: Boolean = false,
     /**
      * True while a manual re-backup of this photo is in flight (queued/uploading)
      * and it has not yet converged to `active`. Drives the uploading spinner in
@@ -71,10 +69,10 @@ class FolderDetailViewModel @Inject constructor(
 ) : ViewModel() {
 
     /**
-     * Cached result of the heavy MediaStore scan (`queryMediaStoreImages` +
-     * `MotionPhotoDetector`) WITHOUT any `status`. MediaStore is only scanned on
-     * first load and on an explicit fallback refresh, so `photo_status` changes
-     * never re-run the scan — the association step below is a pure O(n) mapping.
+     * The folder's media, streamed in from MediaStore by [loadImages] WITHOUT any
+     * `status`. MediaStore is only queried on first load and on an explicit
+     * fallback refresh, so `photo_status` changes never re-run the query — the
+     * association step below is a pure O(n) mapping.
      */
     private val _rawImages = MutableStateFlow<List<FolderImage>>(emptyList())
 
@@ -89,8 +87,17 @@ class FolderDetailViewModel @Inject constructor(
     /** Remembered folder so [reloadStatuses] can rescan MediaStore if needed. */
     private var lastFolderUri: String? = null
 
-    /** In-flight motion-photo detection job, cancelled/replaced on each rescan. */
-    private var motionDetectJob: Job? = null
+    /** In-flight folder load job, cancelled/replaced on each (re)load. */
+    private var loadJob: Job? = null
+
+    /**
+     * Per-URI motion-photo detection cache, filled lazily by [isMotionPhoto] as
+     * thumbnails scroll into view. Avoids ever reading every file up-front.
+     */
+    private val motionPhotoCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /** Bounds concurrent motion-photo head reads so scrolling doesn't thrash I/O. */
+    private val motionDetectSemaphore = Semaphore(4)
 
     /**
      * URIs of photos with an in-flight manual re-backup. Added by [rebackup];
@@ -136,7 +143,7 @@ class FolderDetailViewModel @Inject constructor(
      * On every emission from either source, performs a single O(n)
      * `associateBy { fileUri }` association producing the displayed
      * [FolderImage] list with the latest `status`. This is a pure mapping — it
-     * NEVER re-runs `queryMediaStoreImages` or [MotionPhotoDetector]. Because the
+     * NEVER re-runs the MediaStore query or [MotionPhotoDetector]. Because the
      * DAO's `observeAll()` re-emits whenever the table changes (e.g. after
      * `StatusSyncManager.markActive` on a successful upload), the displayed
      * status converges to the table without a manual re-query.
@@ -158,68 +165,62 @@ class FolderDetailViewModel @Inject constructor(
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
     /**
-     * First-load entry point. Runs ONLY the heavy MediaStore scan
-     * (`queryMediaStoreImages` + `MotionPhotoDetector`, without `status`) and
-     * writes the result into [_rawImages]. The reactive [images] combine then
-     * associates it with the `photo_status` table.
+     * First-load entry point. Streams the MediaStore results in date-ordered
+     * pages into [_rawImages]: the first (small) page publishes almost
+     * immediately so the grid paints fast, then the remaining pages append in
+     * the background. No motion-photo detection happens here — that is done
+     * lazily per visible thumbnail via [isMotionPhoto]. The reactive [images]
+     * combine then associates the list with the `photo_status` table.
      */
     fun loadImages(folderUri: String) {
         lastFolderUri = folderUri
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _loading.value = true
             try {
-                // Only the (fast) MediaStore cursor query runs on the critical
-                // path so the grid can render as soon as the file list is known.
-                val raw = withContext(Dispatchers.IO) {
-                    queryMediaStoreImages(context, folderUri)
+                val accumulated = ArrayList<FolderImage>()
+                withContext(Dispatchers.IO) {
+                    loadFolderImagesPaged(
+                        context = context,
+                        folderUri = folderUri,
+                        firstPageSize = FIRST_PAGE_SIZE,
+                        pageSize = PAGE_SIZE
+                    ) { batch ->
+                        accumulated.addAll(batch)
+                        // Publish a snapshot so the grid fills progressively. The
+                        // first batch replaces any previous folder's list.
+                        _rawImages.value = ArrayList(accumulated)
+                    }
                 }
-                _rawImages.value = raw
+                // Publish an empty list for a media-free folder so the "暂无图片"
+                // empty state shows instead of leaving a stale/loading grid.
+                if (accumulated.isEmpty()) _rawImages.value = emptyList()
             } finally {
                 _loading.value = false
             }
-            // Motion-photo detection reads the head of every JPEG, so it is far
-            // too slow to block first render on large folders. Run it in the
-            // background and patch the "LIVE" badges in once ready.
-            detectMotionPhotos()
         }
     }
 
     /**
-     * Off-critical-path motion-photo detection. Scans the head of each JPEG
-     * candidate in [_rawImages] with bounded parallelism, then patches the
-     * `isMotionPhoto` flag in with a single state update (drives the "LIVE"
-     * badge). Cancels any previous run so a rescan doesn't stack up work.
+     * Lazily detects whether [image] is a motion photo, caching the result per
+     * URI. Called from the grid (via `produceState`) as thumbnails scroll into
+     * view, so only the JPEGs that actually become visible are ever read —
+     * never the whole folder up-front. Reads are bounded by
+     * [motionDetectSemaphore] to keep disk I/O calm during fast scrolling.
      */
-    private fun detectMotionPhotos() {
-        motionDetectJob?.cancel()
-        motionDetectJob = viewModelScope.launch(Dispatchers.IO) {
-            val snapshot = _rawImages.value
-            val candidates = snapshot.filter {
-                it.mimeType == "image/jpeg" || it.mimeType == "image/jpg"
-            }
-            if (candidates.isEmpty()) return@launch
-
-            // Cap concurrent file reads so we don't thrash disk I/O.
-            val semaphore = Semaphore(4)
-            val motionUris = coroutineScope {
-                candidates.map { img ->
-                    async {
-                        semaphore.withPermit {
-                            if (MotionPhotoDetector.isMotionPhoto(context, img.uri, img.mimeType)) {
-                                img.uri.toString()
-                            } else null
-                        }
-                    }
-                }.awaitAll()
-            }.filterNotNull().toSet()
-
-            if (motionUris.isEmpty()) return@launch
-            _rawImages.update { list ->
-                list.map { img ->
-                    if (img.uri.toString() in motionUris) img.copy(isMotionPhoto = true) else img
-                }
+    suspend fun isMotionPhoto(image: FolderImage): Boolean {
+        if (image.mimeType != "image/jpeg" && image.mimeType != "image/jpg") return false
+        val key = image.uri.toString()
+        motionPhotoCache[key]?.let { return it }
+        val result = withContext(Dispatchers.IO) {
+            motionDetectSemaphore.withPermit {
+                // Re-check under the permit in case a concurrent caller filled it.
+                motionPhotoCache[key]
+                    ?: MotionPhotoDetector.isMotionPhoto(context, image.uri, image.mimeType)
             }
         }
+        motionPhotoCache[key] = result
+        return result
     }
 
     /**
@@ -318,46 +319,96 @@ class FolderDetailViewModel @Inject constructor(
         }
     }
 
-    private fun queryMediaStoreImages(
+    /**
+     * Streams the folder's images+videos to [onBatch] in `DATE_MODIFIED`-desc
+     * order, in pages. Each MediaStore collection is queried exactly once (both
+     * already sorted desc) and 2-way merged so the combined order is correct even
+     * though the rows come from two separate cursors. The first page uses
+     * [firstPageSize] (kept small so the grid paints quickly); the rest use
+     * [pageSize].
+     *
+     * Note: this is progressive *emission* paging, not SQL `LIMIT`/`OFFSET`.
+     * A global date order across the two collections can't be expressed as
+     * aligned per-collection SQL pages, so we merge the two date-sorted cursors
+     * and hand out pages as we go.
+     *
+     * Cooperatively cancellable: [ensureActive] between rows lets a folder switch
+     * abandon a partial load promptly.
+     */
+    private suspend fun loadFolderImagesPaged(
         context: Context,
-        folderUri: String
-    ): List<FolderImage> {
+        folderUri: String,
+        firstPageSize: Int,
+        pageSize: Int,
+        onBatch: (List<FolderImage>) -> Unit
+    ) {
         val relativeDir = try {
             val treeUri = Uri.parse(folderUri)
-            val path = treeUri.path ?: return emptyList()
-            val docIdPart = path.removePrefix("/tree/")
-            docIdPart.substringAfter(':').trim('/')
+            val path = treeUri.path ?: return
+            path.removePrefix("/tree/").substringAfter(':').trim('/')
         } catch (e: Exception) {
-            return emptyList()
+            return
         }
 
-        // Query both images and videos, then sort the combined result by date desc.
-        val combined = queryCollection(
+        val imagesReader = openMediaReader(
             context,
             android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             relativeDir,
             defaultMime = "image/*"
-        ) + queryCollection(
+        )
+        val videoReader = openMediaReader(
             context,
             android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             relativeDir,
             defaultMime = "video/*"
         )
-        return combined.sortedByDescending { it.createdTime }
+
+        try {
+            imagesReader?.advance()
+            videoReader?.advance()
+
+            val buffer = ArrayList<FolderImage>(pageSize)
+            var target = firstPageSize.coerceAtLeast(1)
+
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val img = imagesReader?.current
+                val vid = videoReader?.current
+                // Pick the newer of the two cursor heads (desc order), advancing
+                // whichever we consumed.
+                val next = when {
+                    img == null && vid == null -> break
+                    img == null -> { videoReader?.advance(); vid!! }
+                    vid == null -> { imagesReader?.advance(); img }
+                    img.createdTime >= vid.createdTime -> { imagesReader?.advance(); img }
+                    else -> { videoReader?.advance(); vid }
+                }
+                buffer.add(next)
+                if (buffer.size >= target) {
+                    onBatch(ArrayList(buffer))
+                    buffer.clear()
+                    target = pageSize
+                }
+            }
+            if (buffer.isNotEmpty()) onBatch(ArrayList(buffer))
+        } finally {
+            imagesReader?.close()
+            videoReader?.close()
+        }
     }
 
     /**
-     * Queries a single MediaStore [collection] (Images or Video) for media under
-     * [relativeDir]. Uses the generic [android.provider.MediaStore.MediaColumns],
-     * which are shared by both collections.
+     * Opens a query cursor over a single MediaStore [collection] (Images or
+     * Video) for media under [relativeDir], wrapped in a [MediaReader] that reads
+     * one [FolderImage] per row on demand. Returns null when the query fails or
+     * the provider returns no cursor.
      */
-    private fun queryCollection(
+    private fun openMediaReader(
         context: Context,
         collection: Uri,
         relativeDir: String,
         defaultMime: String
-    ): List<FolderImage> {
-        val result = mutableListOf<FolderImage>()
+    ): MediaReader? {
         val projection = arrayOf(
             android.provider.MediaStore.MediaColumns._ID,
             android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
@@ -380,36 +431,65 @@ class FolderDetailViewModel @Inject constructor(
 
         val sortOrder = "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} DESC"
 
-        try {
-            context.contentResolver.query(collection, projection, selection, args, sortOrder)
-                ?.use { cursor ->
-                    val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
-                    val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
-                    val sizeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.SIZE)
-                    val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
-                    val mimeCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
-
-                    while (cursor.moveToNext()) {
-                        val id = cursor.getLong(idCol)
-                        val name = cursor.getString(nameCol) ?: "unknown"
-                        val size = cursor.getLong(sizeCol)
-                        val dateModifiedMs = cursor.getLong(dateCol) * 1000L
-                        val mime = cursor.getString(mimeCol) ?: defaultMime
-                        val contentUri = android.content.ContentUris.withAppendedId(collection, id)
-                        result.add(
-                            FolderImage(
-                                uri = contentUri,
-                                name = name,
-                                fileSize = size,
-                                createdTime = dateModifiedMs,
-                                mimeType = mime
-                            )
-                        )
-                    }
-                }
+        return try {
+            val cursor = context.contentResolver.query(
+                collection, projection, selection, args, sortOrder
+            ) ?: return null
+            MediaReader(cursor, collection, defaultMime)
         } catch (e: Exception) {
-            return emptyList()
+            null
         }
-        return result
+    }
+
+    /**
+     * Reads one [FolderImage] per row from a MediaStore cursor on demand, exposing
+     * the row at the current position via [current] so two readers can be 2-way
+     * merged without materialising either collection in full.
+     */
+    private class MediaReader(
+        private val cursor: android.database.Cursor,
+        private val collection: Uri,
+        private val defaultMime: String
+    ) {
+        private val idCol =
+            cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
+        private val nameCol =
+            cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
+        private val sizeCol =
+            cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.SIZE)
+        private val dateCol =
+            cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
+        private val mimeCol =
+            cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.MIME_TYPE)
+
+        /** The row at the current cursor position, or null once exhausted. */
+        var current: FolderImage? = null
+            private set
+
+        /** Advances to the next row, updating [current] (null when exhausted). */
+        fun advance() {
+            current = if (cursor.moveToNext()) {
+                val id = cursor.getLong(idCol)
+                FolderImage(
+                    uri = android.content.ContentUris.withAppendedId(collection, id),
+                    name = cursor.getString(nameCol) ?: "unknown",
+                    fileSize = cursor.getLong(sizeCol),
+                    createdTime = cursor.getLong(dateCol) * 1000L,
+                    mimeType = cursor.getString(mimeCol) ?: defaultMime
+                )
+            } else {
+                null
+            }
+        }
+
+        fun close() = cursor.close()
+    }
+
+    private companion object {
+        /** Small first page so the grid paints almost immediately. */
+        private const val FIRST_PAGE_SIZE = 300
+
+        /** Subsequent page size while the rest of the folder streams in. */
+        private const val PAGE_SIZE = 800
     }
 }
