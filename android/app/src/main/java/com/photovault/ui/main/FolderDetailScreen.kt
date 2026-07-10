@@ -4,8 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -184,24 +184,24 @@ fun FolderDetailScreen(
                     )
                 },
                 floatingActionButton = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         // Filter pills. When expanded all four show; when
                         // collapsed only the active (non-ALL) filter stays
                         // visible so the current filter state is always shown.
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(horizontalAlignment = Alignment.End) {
                             PhotoFilter.entries.forEach { filter ->
                                 val selected = filter == selectedFilter
                                 val chipVisible = filterExpanded ||
                                     (selected && filter != PhotoFilter.ALL)
                                 AnimatedVisibility(
                                     visible = chipVisible,
-                                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
-                                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
+                                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+                                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
                                 ) {
-                                    Box(modifier = Modifier.padding(end = 8.dp)) {
+                                    Box(modifier = Modifier.padding(bottom = 8.dp)) {
                                         SurfaceLiquidButton(
                                             onClick = { selectedFilter = filter },
                                             // Selected: tint the surface with the
