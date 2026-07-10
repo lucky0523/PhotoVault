@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.WifiOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -60,6 +59,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.BackupStatus
+import com.photovault.ui.theme.LiquidDialogButton
+import com.photovault.ui.theme.LiquidDialogButtonStyle
+import com.photovault.ui.theme.LiquidGlassDialog
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.service.FileInfo
@@ -468,20 +470,25 @@ private fun HistoryView(
     }
 
     if (showClearDialog) {
-        AlertDialog(
+        LiquidGlassDialog(
             onDismissRequest = { showClearDialog = false },
-            title = { Text("清空历史记录") },
-            text = { Text("确定要清空所有备份历史记录吗？此操作不可恢复，但不会影响已备份的文件。") },
-            confirmButton = {
-                TextButton(onClick = {
+            title = "清空历史记录",
+            text = "确定要清空所有备份历史记录吗？此操作不可恢复，但不会影响已备份的文件。"
+        ) {
+            LiquidDialogButton(
+                text = "取消",
+                onClick = { showClearDialog = false },
+                style = LiquidDialogButtonStyle.Neutral
+            )
+            LiquidDialogButton(
+                text = "清空",
+                onClick = {
                     showClearDialog = false
                     onClearHistory()
-                }) { Text("清空") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) { Text("取消") }
-            }
-        )
+                },
+                style = LiquidDialogButtonStyle.Destructive
+            )
+        }
     }
 }
 

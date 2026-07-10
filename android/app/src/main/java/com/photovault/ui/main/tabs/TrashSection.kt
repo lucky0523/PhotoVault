@@ -22,14 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +47,9 @@ import coil.request.ImageRequest
 import com.photovault.data.api.model.FileBrowseInfo
 import com.photovault.data.api.model.TrashItemInfo
 import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.theme.LiquidDialogButton
+import com.photovault.ui.theme.LiquidDialogButtonStyle
+import com.photovault.ui.theme.LiquidGlassDialog
 import com.photovault.ui.theme.LocalBottomBarPadding
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -145,44 +146,39 @@ fun TrashView(
     }
 
     actionTarget?.let { target ->
-        AlertDialog(
+        val remaining = formatRemainingTime(target.expiresAt)
+        // Three actions: 取消 / 还原 / 永久删除, laid out as equal-width capsules.
+        LiquidGlassDialog(
             onDismissRequest = { actionTarget = null },
-            title = { Text(target.fileName) },
-            text = {
-                val remaining = formatRemainingTime(target.expiresAt)
-                Text(
-                    if (remaining != null) {
-                        "该文件将于 $remaining 后自动永久删除。你可以将其还原到原位置，或立即永久删除。"
-                    } else {
-                        "你可以将该文件还原到原位置，或立即永久删除。"
-                    }
-                )
-            },
-            // Three actions: 永久删除 / 还原 / 取消. AlertDialog lays the
-            // confirm/dismiss slots out in a trailing flow row, so grouping the
-            // two positive-ish actions in confirmButton keeps 取消 visually apart.
-            confirmButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        onPurge(target)
-                        actionTarget = null
-                    }) {
-                        Text("永久删除", color = MaterialTheme.colorScheme.error)
-                    }
-                    TextButton(onClick = {
-                        onRestore(target)
-                        actionTarget = null
-                    }) {
-                        Text("还原")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { actionTarget = null }) {
-                    Text("取消")
-                }
+            title = target.fileName,
+            text = if (remaining != null) {
+                "该文件将于 $remaining 后自动永久删除。你可以将其还原到原位置，或立即永久删除。"
+            } else {
+                "你可以将该文件还原到原位置，或立即永久删除。"
             }
-        )
+        ) {
+            LiquidDialogButton(
+                text = "取消",
+                onClick = { actionTarget = null },
+                style = LiquidDialogButtonStyle.Neutral
+            )
+            LiquidDialogButton(
+                text = "还原",
+                onClick = {
+                    onRestore(target)
+                    actionTarget = null
+                },
+                style = LiquidDialogButtonStyle.Accent
+            )
+            LiquidDialogButton(
+                text = "永久删除",
+                onClick = {
+                    onPurge(target)
+                    actionTarget = null
+                },
+                style = LiquidDialogButtonStyle.Destructive
+            )
+        }
     }
 
     // Full-screen preview when a trash item is tapped. Reuse the browser's

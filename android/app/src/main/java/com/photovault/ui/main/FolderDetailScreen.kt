@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -42,7 +41,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -71,6 +69,9 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.theme.LiquidDialogButton
+import com.photovault.ui.theme.LiquidDialogButtonStyle
+import com.photovault.ui.theme.LiquidGlassDialog
 import com.photovault.ui.theme.LocalGlassBackdrop
 import com.photovault.ui.theme.SurfaceLiquidButton
 import com.photovault.ui.theme.appBackgroundBrush
@@ -302,32 +303,29 @@ fun FolderDetailScreen(
 
     // Re-upload confirmation dialog for trashed/purged photos
     rebackupTarget?.let { target ->
-        AlertDialog(
+        LiquidGlassDialog(
             onDismissRequest = { rebackupTarget = null },
-            title = { Text("重新备份") },
-            text = {
-                Text(
-                    if (target.isTrashed) {
-                        "该照片在回收站中，重新备份将从服务器恢复记录。"
-                    } else {
-                        "该照片已从服务器删除，重新备份将创建新的备份记录。"
-                    }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
+            title = "重新备份",
+            text = if (target.isTrashed) {
+                "该照片在回收站中，重新备份将从服务器恢复记录。"
+            } else {
+                "该照片已从服务器删除，重新备份将创建新的备份记录。"
+            }
+        ) {
+            LiquidDialogButton(
+                text = "取消",
+                onClick = { rebackupTarget = null },
+                style = LiquidDialogButtonStyle.Neutral
+            )
+            LiquidDialogButton(
+                text = "重新备份",
+                onClick = {
                     viewModel.rebackup(target, folderUri)
                     rebackupTarget = null
-                }) {
-                    Text("重新备份")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { rebackupTarget = null }) {
-                    Text("取消")
-                }
-            }
-        )
+                },
+                style = LiquidDialogButtonStyle.Accent
+            )
+        }
     }
 }
 

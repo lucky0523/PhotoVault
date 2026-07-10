@@ -24,7 +24,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -53,6 +52,9 @@ import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.network.ConnectionState
 import com.photovault.data.network.ConnectionType
 import com.photovault.ui.main.components.StoragePolicySheet
+import com.photovault.ui.theme.LiquidDialogButton
+import com.photovault.ui.theme.LiquidDialogButtonStyle
+import com.photovault.ui.theme.LiquidGlassDialog
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.LocalGlassBackdrop
 import com.photovault.ui.theme.PhotoVaultColors
@@ -757,26 +759,20 @@ private fun LogoutConfirmationDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
+    LiquidGlassDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(text = "退出登录")
-        },
-        text = {
-            Text(text = "确定要退出登录吗？")
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(
-                    text = "确定",
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = "取消")
-            }
-        }
-    )
+        title = "退出登录",
+        text = "确定要退出登录吗？"
+    ) {
+        LiquidDialogButton(
+            text = "取消",
+            onClick = onDismiss,
+            style = LiquidDialogButtonStyle.Neutral
+        )
+        LiquidDialogButton(
+            text = "确定",
+            onClick = onConfirm,
+            style = LiquidDialogButtonStyle.Destructive
+        )
+    }
 }
