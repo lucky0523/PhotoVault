@@ -35,6 +35,7 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
+    val autoBackupEnabled: StateFlow<Boolean> = settingsPreferences.autoBackupEnabled
     val wifiOnly: StateFlow<Boolean> = settingsPreferences.wifiOnly
     val minBatteryLevel: StateFlow<Int> = settingsPreferences.minBatteryLevel
     val scanIntervalMinutes: StateFlow<Int> = settingsPreferences.scanIntervalMinutes
@@ -73,6 +74,16 @@ class SettingsViewModel @Inject constructor(
      */
     fun setMinBatteryLevel(level: Int) {
         settingsPreferences.setMinBatteryLevel(level)
+    }
+
+    /**
+     * Toggle automatic (background) backup. When turned off, backup only runs
+     * when the user taps the Local tab "立即备份" FAB; all automatic triggers
+     * (periodic scan, MediaStore observer, condition recovery, resume-after-kill)
+     * stop uploading on their own.
+     */
+    fun setAutoBackupEnabled(enabled: Boolean) {
+        settingsPreferences.setAutoBackupEnabled(enabled)
     }
 
     /**

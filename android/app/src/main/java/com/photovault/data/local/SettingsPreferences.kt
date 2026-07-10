@@ -23,11 +23,13 @@ class SettingsPreferences @Inject constructor(
 ) {
     companion object {
         private const val PREFS_NAME = "photovault_settings"
+        private const val KEY_AUTO_BACKUP_ENABLED = "auto_backup_enabled"
         private const val KEY_WIFI_ONLY = "wifi_only"
         private const val KEY_MIN_BATTERY_LEVEL = "min_battery_level"
         private const val KEY_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
         private const val KEY_MEDIA_BACKFILL_VERSION = "media_backfill_version"
 
+        const val DEFAULT_AUTO_BACKUP_ENABLED = true
         const val DEFAULT_WIFI_ONLY = true
         const val DEFAULT_MIN_BATTERY_LEVEL = 50
         const val DEFAULT_SCAN_INTERVAL_MINUTES = 15
@@ -51,6 +53,9 @@ class SettingsPreferences @Inject constructor(
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    private val _autoBackupEnabled = MutableStateFlow(DEFAULT_AUTO_BACKUP_ENABLED)
+    val autoBackupEnabled: StateFlow<Boolean> = _autoBackupEnabled.asStateFlow()
+
     private val _wifiOnly = MutableStateFlow(DEFAULT_WIFI_ONLY)
     val wifiOnly: StateFlow<Boolean> = _wifiOnly.asStateFlow()
 
@@ -62,9 +67,32 @@ class SettingsPreferences @Inject constructor(
 
     init {
         // Load saved values
+        _autoBackupEnabled.value = prefs.getBoolean(KEY_AUTO_BACKUP_ENABLED, DEFAULT_AUTO_BACKUP_ENABLED)
         _wifiOnly.value = prefs.getBoolean(KEY_WIFI_ONLY, DEFAULT_WIFI_ONLY)
         _minBatteryLevel.value = prefs.getInt(KEY_MIN_BATTERY_LEVEL, DEFAULT_MIN_BATTERY_LEVEL)
         _scanIntervalMinutes.value = prefs.getInt(KEY_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES)
+    }
+
+    /**
+     * Whether automatic (background) backup is enabled.
+     *
+     * When true, all automatic triggers may back up: the periodic scan worker,
+     * the MediaStore observer, boot re-scheduling, the one-time media back-fill,
+     * and condition-recovery / resume-after-kill paths.
+     *
+     * When false, backup is exclusively user-initiated via the Local tab "立即备份"
+     * FAB (which passes an explicit manual flag); every automatic trigger still
+     * scans folders for status/count updates but never enqueues files or starts
+     * the backup service on its own.
+     */
+    fun getAutoBackupEnabled(): Boolean = _autoBackupEnabled.value
+
+    /**
+     * Set whether automatic (background) backup is enabled.
+     */
+    fun setAutoBackupEnabled(enabled: Boolean) {
+        _autoBackupEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_AUTO_BACKUP_ENABLED, enabled).apply()
     }
 
     /**

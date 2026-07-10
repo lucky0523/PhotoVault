@@ -58,6 +58,11 @@
 5. IF 设备电量降至 50% 或以下，THEN THE Mobile_Client SHALL 暂停当前 Backup_Task，记录已完成的进度，并在电量恢复至 55% 以上时从中断点继续上传
 6. IF 网络从 WiFi 切换到蜂窝网络或网络完全断开，THEN THE Mobile_Client SHALL 暂停当前 Backup_Task，记录已完成的进度，并在 WiFi 重新连接后从中断点继续上传
 7. IF 单个文件上传失败，THEN THE Mobile_Client SHALL 最多重试 3 次（每次间隔 30 秒），若仍失败则跳过该文件继续处理队列中的下一个文件，并将失败文件标记为待重试
+8. THE Mobile_Client SHALL 在"设置 → 备份条件"中提供一个"自动备份"开关，默认开启，其状态持久化保存
+9. WHILE "自动备份"开关处于开启状态时，THE Mobile_Client SHALL 允许所有自动触发方式（周期扫描、媒体库变化监听、开机重调度、升级后全量回扫、条件恢复续传、进程被杀后的队列重建）在满足 Backup_Condition 时发起 Backup_Task
+10. WHILE "自动备份"开关处于关闭状态时，THE Mobile_Client SHALL 仅在用户点击本地 Tab 的"立即备份"FAB 时发起 Backup_Task；所有自动触发方式 SHALL NOT 入队新文件或启动备份服务（但仍可扫描以刷新各文件夹的状态/计数）
+11. WHILE "自动备份"开关处于关闭状态时，THE Mobile_Client SHALL 在自动扫描时冻结各文件夹的 lastScanTime，以便开关重新开启后增量扫描仍能发现关闭期间新增的文件
+12. WHEN 用户点击"立即备份"FAB 时，THE Mobile_Client SHALL 无视"自动备份"开关状态执行一次全量扫描与备份（仍需满足网络/电量/服务端连通等前置条件）
 
 ### 需求 4：多用户支持
 

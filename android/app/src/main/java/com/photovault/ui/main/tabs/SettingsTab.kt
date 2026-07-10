@@ -79,6 +79,7 @@ fun SettingsTab(
     onLogout: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    val autoBackupEnabled by viewModel.autoBackupEnabled.collectAsState()
     val wifiOnly by viewModel.wifiOnly.collectAsState()
     val minBatteryLevel by viewModel.minBatteryLevel.collectAsState()
     val scanIntervalMinutes by viewModel.scanIntervalMinutes.collectAsState()
@@ -95,7 +96,9 @@ fun SettingsTab(
     // doesn't also pan the whole settings list.
     var isBatterySliderDragging by remember { mutableStateOf(false) }
     var isWifiToggleInteracting by remember { mutableStateOf(false) }
-    val blockPageScroll = isBatterySliderDragging || isWifiToggleInteracting
+    var isAutoBackupToggleInteracting by remember { mutableStateOf(false) }
+    val blockPageScroll =
+        isBatterySliderDragging || isWifiToggleInteracting || isAutoBackupToggleInteracting
 
     Column(
         modifier = Modifier
@@ -130,14 +133,17 @@ fun SettingsTab(
 
         // 备份条件 group
         BackupConditionsGroup(
+            autoBackupEnabled = autoBackupEnabled,
             wifiOnly = wifiOnly,
             minBatteryLevel = minBatteryLevel,
             scanIntervalMinutes = scanIntervalMinutes,
+            onAutoBackupChanged = { viewModel.setAutoBackupEnabled(it) },
             onWifiOnlyChanged = { viewModel.setWifiOnly(it) },
             onBatteryLevelChanged = { viewModel.setMinBatteryLevel(it) },
             onScanIntervalChanged = { viewModel.setScanInterval(it) },
             onBatterySliderDraggingChange = { isBatterySliderDragging = it },
-            onWifiToggleInteractingChange = { isWifiToggleInteracting = it }
+            onWifiToggleInteractingChange = { isWifiToggleInteracting = it },
+            onAutoBackupToggleInteractingChange = { isAutoBackupToggleInteracting = it }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -188,16 +194,28 @@ fun SettingsTab(
  */
 @Composable
 private fun BackupConditionsGroup(
+    autoBackupEnabled: Boolean,
     wifiOnly: Boolean,
     minBatteryLevel: Int,
     scanIntervalMinutes: Int,
+    onAutoBackupChanged: (Boolean) -> Unit,
     onWifiOnlyChanged: (Boolean) -> Unit,
     onBatteryLevelChanged: (Int) -> Unit,
     onScanIntervalChanged: (Int) -> Unit,
     onBatterySliderDraggingChange: (Boolean) -> Unit,
-    onWifiToggleInteractingChange: (Boolean) -> Unit
+    onWifiToggleInteractingChange: (Boolean) -> Unit,
+    onAutoBackupToggleInteractingChange: (Boolean) -> Unit
 ) {
     SettingsGroupCard(title = "备份条件") {
+        // 自动备份开关
+        AutoBackupSetting(
+            enabled = autoBackupEnabled,
+            onEnabledChange = onAutoBackupChanged,
+            onInteractingChange = onAutoBackupToggleInteractingChange
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // WiFi 开关
         WifiOnlySetting(
             enabled = wifiOnly,
@@ -457,6 +475,73 @@ private fun ConnectionState.toDisplayString(): String {
         }
         is ConnectionState.Connecting -> "连接中..."
         is ConnectionState.Disconnected -> "未连接"
+    }
+}
+
+/**
+ * Automatic backup setting. When ON, backup runs automatically via the
+ * background scan worker, MediaStore observer, and condition-recovery paths.
+ * When OFF, backup only happens when the user taps the Local tab "立即备份" FAB;
+ * all automatic triggers stop uploading on their own.
+ */
+@Composable
+private fun AutoBackupSetting(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onInteractingChange: (Boolean) -> Unit = {}
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "自动备份",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = if (enabled) {
+                    "满足条件时自动在后台备份新照片"
+                } else {
+                    "已关闭，仅在本地页点击「立即备份」时备份"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Reserve two lines so toggling the copy doesn't shift the layout.
+                minLines = 2
+            )
+        }
+        val glassBackdrop = LocalGlassBackdrop.current
+        if (glassBackdrop != null) {
+            LiquidToggle(
+                selected = { enabled },
+                onSelect = onEnabledChange,
+                backdrop = glassBackdrop,
+                onDragStateChange = onInteractingChange
+            )
+        } else {
+            val interactionSource = remember { MutableInteractionSource() }
+            LaunchedEffect(interactionSource) {
+                var active = 0
+                interactionSource.interactions.collect { interaction ->
+                    when (interaction) {
+                        is PressInteraction.Press -> active++
+                        is PressInteraction.Release -> active--
+                        is PressInteraction.Cancel -> active--
+                        is DragInteraction.Start -> active++
+                        is DragInteraction.Stop -> active--
+                        is DragInteraction.Cancel -> active--
+                    }
+                    onInteractingChange(active > 0)
+                }
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+                interactionSource = interactionSource
+            )
+        }
     }
 }
 

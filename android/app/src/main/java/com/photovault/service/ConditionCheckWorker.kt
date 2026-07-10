@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.photovault.data.local.SettingsPreferences
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
@@ -19,7 +20,8 @@ class ConditionCheckWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val backupConditionChecker: BackupConditionChecker,
-    private val backupQueue: BackupQueue
+    private val backupQueue: BackupQueue,
+    private val settingsPreferences: SettingsPreferences
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -47,7 +49,14 @@ class ConditionCheckWorker @AssistedInject constructor(
             // and resumes any interrupted file from its persisted UploadRecord
             // (断点续传). Previously the running-but-paused state was skipped, so a
             // reconnect alone never resumed the backup.
-            if (backupQueue.size() > 0 && backupConditionChecker.shouldResumeBackup()) {
+            //
+            // Gated by the auto-backup toggle: when it's off, backup is only ever
+            // started by the user via the Local tab FAB, so condition-recovery must
+            // not auto-(re)start it. (R-AUTO-BACKUP)
+            if (settingsPreferences.getAutoBackupEnabled() &&
+                backupQueue.size() > 0 &&
+                backupConditionChecker.shouldResumeBackup()
+            ) {
                 BackupForegroundService.start(applicationContext)
             }
         }

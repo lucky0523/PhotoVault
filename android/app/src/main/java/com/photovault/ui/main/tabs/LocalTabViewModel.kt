@@ -177,7 +177,8 @@ class LocalTabViewModel @Inject constructor(
             }
         }
 
-        BackgroundScanWorker.runNow(context)
+        // Explicit user action: back up even when automatic backup is disabled.
+        BackgroundScanWorker.runNow(context, manual = true)
         return null
     }
 

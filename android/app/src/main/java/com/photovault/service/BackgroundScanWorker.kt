@@ -11,6 +11,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.photovault.data.local.CredentialManager
+import com.photovault.data.local.SettingsPreferences
 import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.dao.UploadRecordDao
@@ -42,7 +43,8 @@ class BackgroundScanWorker @AssistedInject constructor(
     private val photoStatusDao: PhotoStatusDao,
     private val statusSyncManager: StatusSyncManager,
     private val credentialManager: CredentialManager,
-    private val uploadRecordDao: UploadRecordDao
+    private val uploadRecordDao: UploadRecordDao,
+    private val settingsPreferences: SettingsPreferences
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -55,6 +57,14 @@ class BackgroundScanWorker @AssistedInject constructor(
          * The server dedups by hash, so already-backed-up files are skipped cheaply.
          */
         const val KEY_FORCE_FULL_SCAN = "force_full_scan"
+
+        /**
+         * Input-data key. When true, this run was explicitly requested by the
+         * user (the Local tab "立即备份" FAB) and therefore backs up even when
+         * automatic backup is disabled in settings. Automatic triggers leave
+         * this false so they honor the auto-backup toggle.
+         */
+        const val KEY_MANUAL_BACKUP = "manual_backup"
 
         private val IMAGE_MIME_TYPES = setOf(
             "image/jpeg",
@@ -149,8 +159,12 @@ class BackgroundScanWorker @AssistedInject constructor(
          * Uses a dedicated unique work name ([FULL_SCAN_WORK_NAME]) so an
          * incremental [runOnce] (e.g. triggered by the MediaStore observer) can't
          * replace/cancel a pending full scan.
+         *
+         * Pass [manual] = true for user-initiated backups (the "立即备份" FAB) so
+         * they proceed even when automatic backup is disabled in settings. The
+         * one-time media back-fill leaves it false so it honors the toggle.
          */
-        fun runNow(context: Context) {
+        fun runNow(context: Context, manual: Boolean = false) {
             val workRequest = androidx.work.OneTimeWorkRequestBuilder<BackgroundScanWorker>()
                 .setExpedited(
                     androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST
@@ -158,6 +172,7 @@ class BackgroundScanWorker @AssistedInject constructor(
                 .setInputData(
                     androidx.work.Data.Builder()
                         .putBoolean(KEY_FORCE_FULL_SCAN, true)
+                        .putBoolean(KEY_MANUAL_BACKUP, manual)
                         .build()
                 )
                 .build()
@@ -195,7 +210,16 @@ class BackgroundScanWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         return try {
             val forceFullScan = inputData.getBoolean(KEY_FORCE_FULL_SCAN, false)
-            android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker started (forceFullScan=$forceFullScan)")
+            val manual = inputData.getBoolean(KEY_MANUAL_BACKUP, false)
+            // Backup (enqueue + start) only proceeds for an explicit manual run,
+            // or when automatic backup is enabled. When auto-backup is off, an
+            // automatic trigger still scans (for status/count refresh) but never
+            // uploads on its own. (R-AUTO-BACKUP)
+            val allowBackup = manual || settingsPreferences.getAutoBackupEnabled()
+            android.util.Log.i(
+                "PhotoVaultScan",
+                "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, allowBackup=$allowBackup)"
+            )
 
             // Sync photo status from server before scanning, so trashed/purged
             // files (deleted via web UI) are skipped. Only attempt sync when
@@ -207,15 +231,20 @@ class BackgroundScanWorker @AssistedInject constructor(
 
             // Rebuild the queue for uploads that were interrupted by a process
             // kill: their persisted UploadRecord survives, but the in-memory
-            // queue does not, so nothing would otherwise resume them.
-            requeueResumableUploads()
+            // queue does not, so nothing would otherwise resume them. Gated by
+            // allowBackup so a disabled auto-backup doesn't silently resume.
+            if (allowBackup) {
+                requeueResumableUploads()
+            }
 
-            scanAllFolders(forceFullScan)
+            scanAllFolders(forceFullScan, allowBackup)
 
             // After scanning + requeue, make sure queued work (including the
             // resumed uploads above) actually starts when conditions allow and
             // the service isn't already running.
-            maybeStartBackupForQueuedWork()
+            if (allowBackup) {
+                maybeStartBackupForQueuedWork()
+            }
 
             android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
             Result.success()
@@ -343,7 +372,7 @@ class BackgroundScanWorker @AssistedInject constructor(
      * These files can only be re-uploaded via the per-photo "重新备份"
      * action in FolderDetailScreen.
      */
-    private suspend fun scanAllFolders(forceFullScan: Boolean = false) {
+    private suspend fun scanAllFolders(forceFullScan: Boolean = false, allowBackup: Boolean = true) {
         val folders = backupFolderDao.getAllOnce()
         android.util.Log.i("PhotoVaultScan", "Scanning ${folders.size} folder(s) (forceFullScan=$forceFullScan)")
         val currentTime = System.currentTimeMillis()
@@ -421,7 +450,18 @@ class BackgroundScanWorker @AssistedInject constructor(
 
             // Roll back lastScanTime past the earliest skipped file so it isn't missed
             // next scan; preserves currentTime when nothing was skipped (R1.2/R1.3).
-            val nextScanTime = QuietPeriodLogic.computeNextScanTime(currentTime, skippedModifiedTimes)
+            //
+            // When backup isn't allowed this run (auto-backup off, non-manual),
+            // freeze lastScanTime instead of advancing it. Otherwise files that
+            // appeared while auto-backup was off would fall behind lastScanTime and
+            // never be picked up by an incremental scan once it's re-enabled; the
+            // frozen timestamp lets the next allowed scan still discover them. Counts
+            // are always refreshed so the UI stays accurate.
+            val nextScanTime = if (allowBackup) {
+                QuietPeriodLogic.computeNextScanTime(currentTime, skippedModifiedTimes)
+            } else {
+                folder.lastScanTime
+            }
 
             backupFolderDao.update(
                 folder.copy(
@@ -435,6 +475,17 @@ class BackgroundScanWorker @AssistedInject constructor(
         }
 
         android.util.Log.i("PhotoVaultScan", "Total new files to backup: ${newFiles.size}")
+
+        // When backup isn't allowed this run (auto-backup off, non-manual), stop
+        // here: folder counts/status were refreshed above, but new files are not
+        // enqueued and the backup service is not started. (R-AUTO-BACKUP)
+        if (!allowBackup) {
+            android.util.Log.i(
+                "PhotoVaultScan",
+                "Auto-backup disabled; scanned ${newFiles.size} new file(s) without enqueuing"
+            )
+            return
+        }
 
         // Enqueue new files for backup if conditions are met
         if (newFiles.isNotEmpty()) {

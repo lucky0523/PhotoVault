@@ -435,6 +435,7 @@ graph TD
 **布局结构：**
 - 分组列表形式：
   - **备份条件**组：
+    - 自动备份开关（默认开启 — 关闭后仅"立即备份"FAB 可触发备份，所有自动触发方式不再上传）
     - WiFi 开关（默认开启，不可关闭 — 仅 WiFi 下备份）
     - 最低电量滑块（默认 50%，范围 20%-80%）
     - 扫描间隔（默认 15 分钟，可选 5/15/30/60 分钟）
@@ -607,6 +608,44 @@ interface BackgroundScanService {
 - `MediaStoreObserver` 同时监听图片与视频集合的变化，媒体库新增时触发一次增量扫描
 - 权限：清单声明 `READ_MEDIA_IMAGES` + `READ_MEDIA_VIDEO`（Android 13+），启动时一并申请
 - **能力版本回扫**：`SettingsPreferences.CURRENT_MEDIA_BACKFILL_VERSION` 记录已回扫的扫描能力版本；升级后若落后则触发一次强制全量扫描（`runNow`，独立的 WorkManager 唯一任务名，避免被增量扫描替换），补备历史视频/动态照片，每个版本仅执行一次
+
+**备份触发方式与"自动备份"开关：**
+
+备份的完整链路为：*扫描发现新文件 → 入队 `BackupQueue` → 满足条件时启动 `BackupForegroundService` 上传*。触发这条链路的入口分为两类：
+
+- 自动触发（受"自动备份"开关约束）：
+  - 周期扫描：`BackgroundScanWorker` 每 15 分钟（可配）一次
+  - 媒体库变化监听：`MediaStoreObserver` 防抖后触发 `runOnce` 增量扫描
+  - 电量/网络条件恢复：`ConditionCheckWorker` 恢复/续传已暂停的备份
+  - 开机重调度：`BootCompletedReceiver`
+  - 升级后全量回扫：能力版本回扫（`runNow`，非手动）
+  - 新增文件夹后的即时扫描：`runOnce`
+  - 进程被杀后的队列重建：`requeueResumableUploads` 从持久化的 `UploadRecord` 重建待续传队列
+- 手动触发（无视开关）：本地 Tab 的"立即备份"FAB → `runNow(manual = true)`
+
+`SettingsPreferences.autoBackupEnabled`（默认 `true`，持久化）控制上述自动触发：
+
+- 开启：所有自动触发在满足 `Backup_Condition` 时正常入队并上传
+- 关闭：`BackgroundScanWorker.doWork` 计算 `allowBackup = manual || autoBackupEnabled`；`allowBackup=false` 时仍执行状态同步与文件夹计数刷新，但**不入队新文件、不重建续传队列、不启动备份服务**，并**冻结各文件夹的 `lastScanTime`**（避免关闭期间新增文件落后于扫描时间戳而在重新开启后被增量扫描漏掉）；`ConditionCheckWorker` 的自动启动/续传分支同样被开关门控（仍允许在条件恶化时暂停正在进行的手动备份）
+- 手动"立即备份"通过 `KEY_MANUAL_BACKUP` 标记 `manual=true`，无视开关执行全量扫描与备份（仍需通过网络/电量/服务端连通预检）
+- 注：单张"重新备份"与备份任务页的"重试"属于显式的逐项用户操作，不受"自动备份"开关约束
+
+**备份方式总结表：**
+
+| 触发方式 | 入口 / 代码 | 类型 | 扫描范围 | 受"自动备份"开关约束 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| 周期扫描 | `BackgroundScanWorker.schedule`（默认 15 分钟） | 自动 | 增量 | 是 | 兜底：应对进程被杀、事件丢失；国产 ROM 上尤为重要 |
+| 媒体库变化监听 | `MediaStoreObserver` → `runOnce`（2s 防抖） | 自动 | 增量 | 是 | 低延迟：拍照/新增媒体后尽快备份 |
+| 电量/网络条件恢复 | `ConditionBroadcastReceiver` → `ConditionCheckWorker` | 自动 | 不扫描（处理已入队） | 是 | 充电/连 WiFi 后自动启动或续传；断网/低电量则暂停 |
+| 开机重调度 | `BootCompletedReceiver` → `schedule` | 自动 | 增量 | 是 | 重启后重新注册周期扫描 |
+| 升级后全量回扫 | 能力版本回扫 → `runNow(manual=false)` | 自动 | 全量 | 是 | 新增媒体类型支持后补备历史文件，每版本一次 |
+| 新增文件夹即时扫描 | `LocalTabViewModel.saveNewFolder` → `runOnce` | 自动 | 增量 | 是 | 添加文件夹后无需等待下个周期 |
+| 进程被杀后队列重建 | `BackgroundScanWorker.requeueResumableUploads` | 自动 | 由持久化 `UploadRecord` 重建 | 是 | 内存队列丢失后，从磁盘记录恢复断点续传 |
+| 立即备份（FAB） | `LocalTabViewModel.doBackupNow` → `runNow(manual=true)` | 手动 | 全量 | 否 | 无视开关；仍需网络/电量/服务端连通预检 |
+| 单张"重新备份" | `FolderDetailViewModel` → `enqueue` + `BackupForegroundService.start` | 手动 | 单文件 | 否 | 对回收站/已删除照片强制重传（`forceReupload`） |
+| 任务页"重试" | `TasksTabViewModel` → `enqueue` + `BackupForegroundService.start` | 手动 | 单文件 | 否 | 重传失败任务 |
+
+> 关闭"自动备份"后，所有"自动"行仅扫描以刷新状态/计数，不入队、不启动上传，并冻结各文件夹的 `lastScanTime`；所有"手动"行不受影响。所有方式都会跳过本地 `photo_status` 标记为 trashed/purged 的文件（仅"单张重新备份"可强制重传）。
 
 **上传字节一致性（ChunkUploader）：**
 - 先用 URI 计算哈希做去重预检查（命中则跳过，不落盘）
