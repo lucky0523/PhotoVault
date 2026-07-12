@@ -2,11 +2,14 @@ package com.photovault.ui.main.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -24,9 +27,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.photovault.data.local.entity.BackupFolder
+import com.photovault.ui.theme.LocalGlassBackdrop
+import com.photovault.ui.theme.liquid.LiquidToggle
 
 /**
  * Bottom sheet for configuring storage policy of a backup folder.
@@ -86,7 +92,7 @@ fun StoragePolicySheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Switch(
+                PolicyToggle(
                     checked = useCustomPath,
                     onCheckedChange = { useCustomPath = it }
                 )
@@ -134,7 +140,7 @@ fun StoragePolicySheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Switch(
+                PolicyToggle(
                     checked = useYearMonthLayer,
                     onCheckedChange = { useYearMonthLayer = it }
                 )
@@ -163,7 +169,8 @@ fun StoragePolicySheet(
                         MaterialTheme.colorScheme.surfaceVariant,
                         RoundedCornerShape(8.dp)
                     )
-                    .padding(12.dp),
+                    .padding(12.dp)
+                    .heightIn(min = 56.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
@@ -185,6 +192,41 @@ fun StoragePolicySheet(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * Storage-policy toggle. Uses the liquid-glass [LiquidToggle] when a glass
+ * backdrop is available, falling back to the Material [Switch] otherwise
+ * (mirrors the pattern used in SettingsTab's backup-condition toggles).
+ *
+ * The toggle is wrapped in a [Box] with [detectDragGestures] that consumes
+ * vertical drag events the toggle itself doesn't handle, preventing the
+ * parent [ModalBottomSheet] from intercepting them and dismissing the sheet.
+ */
+@Composable
+private fun PolicyToggle(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val glassBackdrop = LocalGlassBackdrop.current
+    Box(
+        modifier = Modifier.pointerInput(Unit) {
+            detectDragGestures { _, _ -> }
+        }
+    ) {
+        if (glassBackdrop != null) {
+            LiquidToggle(
+                selected = { checked },
+                onSelect = onCheckedChange,
+                backdrop = glassBackdrop
+            )
+        } else {
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
         }
     }
 }
