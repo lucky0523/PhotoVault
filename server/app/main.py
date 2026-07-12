@@ -318,12 +318,14 @@ def _register_routes(application: FastAPI) -> None:
     from app.api.admin import router as admin_router
     from app.api.backup import router as backup_router
     from app.api.files import router as files_router
+    from app.api.server import router as server_router
 
     application.include_router(setup_router, prefix="/api/v1", tags=["setup"])
     application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
     application.include_router(admin_router, prefix="/api/v1", tags=["admin"])
     application.include_router(backup_router, prefix="/api/v1", tags=["backup"])
     application.include_router(files_router, prefix="/api/v1", tags=["files"])
+    application.include_router(server_router, prefix="/api/v1", tags=["server"])
 
     # Catch-all route for SPA routing
     # This handles direct access to Vue Router routes like /photos, /timeline, etc.
