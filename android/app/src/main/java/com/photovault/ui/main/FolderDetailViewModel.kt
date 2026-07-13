@@ -10,6 +10,7 @@ import com.photovault.data.local.entity.PhotoStatusValue
 import com.photovault.service.BackupForegroundService
 import com.photovault.service.BackupQueue
 import com.photovault.service.FileInfo
+import com.photovault.util.MotionPhotoDetector
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers

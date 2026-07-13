@@ -1,4 +1,4 @@
-package com.photovault.ui.main
+package com.photovault.util
 
 import android.content.Context
 import android.net.Uri
