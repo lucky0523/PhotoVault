@@ -159,6 +159,9 @@ dependencies {
     // EXIF metadata reading (capture time extraction)
     implementation("androidx.exifinterface:exifinterface:1.4.2")
 
+    // ZXing embedded - QR code scanning (login server address quick-fill)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     // Startup - for disabling default WorkManager initializer
     implementation("androidx.startup:startup-runtime:1.1.1")
 
