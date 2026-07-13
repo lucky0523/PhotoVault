@@ -60,9 +60,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -75,7 +78,8 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.photovault.ui.main.components.CloudStatusColors
-import com.photovault.ui.main.tabs.ImagePreviewDialog
+import com.photovault.ui.main.tabs.MediaPagerPreview
+import com.photovault.ui.main.tabs.PreviewMedia
 import com.photovault.ui.theme.LiquidDialogButton
 import com.photovault.ui.theme.LiquidDialogButtonStyle
 import com.photovault.ui.theme.LiquidGlassDialog
@@ -123,7 +127,12 @@ fun FolderDetailScreen(
     val loading by viewModel.loading.collectAsState()
 
     var rebackupTarget by remember { mutableStateOf<FolderImage?>(null) }
-    var previewTarget by remember { mutableStateOf<FolderImage?>(null) }
+    // Index (into filteredImages) of the photo/video shown full-screen, or null.
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
+    // On-screen bounds (root coordinates) of each visible thumbnail, keyed by
+    // photo URI. Used by the preview to animate the image back onto its
+    // thumbnail when dismissed. A plain map: read on demand, no recomposition.
+    val thumbnailBounds = remember { mutableMapOf<String, Rect>() }
     var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
     var filterExpanded by remember { mutableStateOf(false) }
 
@@ -323,7 +332,14 @@ fun FolderDetailScreen(
                             ImageThumbnailItem(
                                 image = image,
                                 detectMotion = viewModel::isMotionPhoto,
-                                onClick = { img -> previewTarget = img },
+                                onBoundsChanged = { rect ->
+                                    thumbnailBounds[image.uri.toString()] = rect
+                                },
+                                onClick = { img ->
+                                    previewIndex = filteredImages
+                                        .indexOfFirst { it.uri == img.uri }
+                                        .takeIf { it >= 0 }
+                                },
                                 onLongPress = { img ->
                                     if (img.isTrashed || img.isPurged) {
                                         rebackupTarget = img
@@ -363,6 +379,30 @@ fun FolderDetailScreen(
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
+
+        // Full-screen, swipeable preview overlay. Rendered as the last child of
+        // this edge-to-edge root Box (not a Dialog) so its black backdrop fills
+        // the entire screen — including the status bar and navigation bar areas —
+        // and draws on top of the grid, FAB and header. Loads local MediaStore
+        // URIs directly (images: pinch-to-zoom + pan; videos: ExoPlayer). Swiping
+        // left/right moves to the previous/next item in the filtered list.
+        previewIndex?.let { index ->
+            val previewItems = remember(filteredImages) {
+                filteredImages.map { PreviewMedia(it.name, it.uri, it.isVideo) }
+            }
+            if (index in previewItems.indices) {
+                MediaPagerPreview(
+                    items = previewItems,
+                    initialIndex = index,
+                    originBoundsFor = { page ->
+                        filteredImages.getOrNull(page)
+                            ?.uri?.toString()
+                            ?.let { thumbnailBounds[it] }
+                    },
+                    onDismiss = { previewIndex = null }
+                )
+            }
+        }
     }
 
     // Re-upload confirmation dialog for trashed/purged photos
@@ -392,16 +432,6 @@ fun FolderDetailScreen(
         }
     }
 
-    // Full-screen preview when a photo is tapped. Loads the local MediaStore
-    // URI directly (pinch-to-zoom + pan), mirroring the recycle-bin preview.
-    previewTarget?.let { target ->
-        ImagePreviewDialog(
-            fileName = target.name,
-            model = target.uri,
-            isVideo = target.isVideo,
-            onDismiss = { previewTarget = null }
-        )
-    }
 }
 
 /**
@@ -415,6 +445,7 @@ fun FolderDetailScreen(
 private fun ImageThumbnailItem(
     image: FolderImage,
     detectMotion: suspend (FolderImage) -> Boolean,
+    onBoundsChanged: (androidx.compose.ui.geometry.Rect) -> Unit,
     onClick: (FolderImage) -> Unit,
     onLongPress: (FolderImage) -> Unit
 ) {
@@ -432,6 +463,7 @@ private fun ImageThumbnailItem(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(MaterialTheme.shapes.small)
+            .onGloballyPositioned { onBoundsChanged(it.boundsInRoot()) }
             .combinedClickable(
                 onClick = { onClick(image) },
                 onLongClick = { onLongPress(image) }
