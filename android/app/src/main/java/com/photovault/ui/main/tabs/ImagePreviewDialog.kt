@@ -20,6 +20,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,8 +36,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
@@ -45,15 +53,47 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Full-screen image preview dialog.
- * Displays the original image with pinch-to-zoom and pan support.
+ * Full-screen image preview dialog for a remote (server) file. Adapts the
+ * [FileBrowseInfo] + [downloadUrl] into the generic overload below.
  */
 @Composable
 fun ImagePreviewDialog(
     file: FileBrowseInfo,
     downloadUrl: String,
     onDismiss: () -> Unit
+) = ImagePreviewDialog(
+    fileName = file.fileName,
+    model = downloadUrl,
+    isVideo = file.mimeType?.startsWith("video/") == true,
+    onDismiss = onDismiss
+)
+
+/**
+ * Full-screen media preview dialog.
+ *
+ * For images: displays the original with pinch-to-zoom and pan support.
+ * For videos ([isVideo] = true): plays the media with an ExoPlayer, showing
+ * the standard playback controls.
+ *
+ * [model] is any value Coil / ExoPlayer can load — a remote URL string, a
+ * local MediaStore [android.net.Uri], a file path, etc.
+ */
+@Composable
+fun ImagePreviewDialog(
+    fileName: String,
+    model: Any?,
+    isVideo: Boolean = false,
+    onDismiss: () -> Unit
 ) {
+    if (isVideo) {
+        VideoPreviewDialog(
+            fileName = fileName,
+            model = model,
+            onDismiss = onDismiss
+        )
+        return
+    }
+
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     val scope = rememberCoroutineScope()
@@ -79,10 +119,10 @@ fun ImagePreviewDialog(
             // Zoomable image
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
-                    .data(downloadUrl)
+                    .data(model)
                     .crossfade(true)
                     .build(),
-                contentDescription = file.fileName,
+                contentDescription = fileName,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
@@ -172,7 +212,7 @@ fun ImagePreviewDialog(
 
             // File name at the bottom
             Text(
-                text = file.fileName,
+                text = fileName,
                 color = Color.White,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
@@ -184,6 +224,92 @@ fun ImagePreviewDialog(
                     )
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             )
+        }
+    }
+}
+
+/**
+ * Full-screen video preview dialog backed by an ExoPlayer.
+ *
+ * The player is created for the given [model] (a remote URL string or a local
+ * [android.net.Uri]) and released when the dialog leaves the composition. It
+ * auto-plays on open and pauses/resumes with the app lifecycle.
+ */
+@OptIn(UnstableApi::class)
+@Composable
+private fun VideoPreviewDialog(
+    fileName: String,
+    model: Any?,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+
+    val exoPlayer = remember(model) {
+        ExoPlayer.Builder(context).build().apply {
+            val mediaItem = when (model) {
+                is android.net.Uri -> MediaItem.fromUri(model)
+                is String -> MediaItem.fromUri(model)
+                null -> null
+                else -> MediaItem.fromUri(model.toString())
+            }
+            if (mediaItem != null) {
+                setMediaItem(mediaItem)
+                prepare()
+                playWhenReady = true
+            }
+        }
+    }
+
+    // Pause when the app is backgrounded; the player is released on dispose.
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+        exoPlayer.pause()
+    }
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer.release() }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = true
+                        setShowNextButton(false)
+                        setShowPreviousButton(false)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Close button
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.5f),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "关闭预览",
+                    modifier = Modifier.size(28.dp)
+                )
+            }
         }
     }
 }

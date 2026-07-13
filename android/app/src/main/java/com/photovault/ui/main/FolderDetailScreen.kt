@@ -70,6 +70,7 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.main.tabs.ImagePreviewDialog
 import com.photovault.ui.theme.LiquidDialogButton
 import com.photovault.ui.theme.LiquidDialogButtonStyle
 import com.photovault.ui.theme.LiquidGlassDialog
@@ -117,6 +118,7 @@ fun FolderDetailScreen(
     val loading by viewModel.loading.collectAsState()
 
     var rebackupTarget by remember { mutableStateOf<FolderImage?>(null) }
+    var previewTarget by remember { mutableStateOf<FolderImage?>(null) }
     var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
     var filterExpanded by remember { mutableStateOf(false) }
 
@@ -309,6 +311,7 @@ fun FolderDetailScreen(
                             ImageThumbnailItem(
                                 image = image,
                                 detectMotion = viewModel::isMotionPhoto,
+                                onClick = { img -> previewTarget = img },
                                 onLongPress = { img ->
                                     if (img.isTrashed || img.isPurged) {
                                         rebackupTarget = img
@@ -349,6 +352,17 @@ fun FolderDetailScreen(
             )
         }
     }
+
+    // Full-screen preview when a photo is tapped. Loads the local MediaStore
+    // URI directly (pinch-to-zoom + pan), mirroring the recycle-bin preview.
+    previewTarget?.let { target ->
+        ImagePreviewDialog(
+            fileName = target.name,
+            model = target.uri,
+            isVideo = target.isVideo,
+            onDismiss = { previewTarget = null }
+        )
+    }
 }
 
 /**
@@ -362,6 +376,7 @@ fun FolderDetailScreen(
 private fun ImageThumbnailItem(
     image: FolderImage,
     detectMotion: suspend (FolderImage) -> Boolean,
+    onClick: (FolderImage) -> Unit,
     onLongPress: (FolderImage) -> Unit
 ) {
     val alpha = if (image.isTrashed || image.isPurged) 0.4f else 1f
@@ -379,7 +394,7 @@ private fun ImageThumbnailItem(
             .aspectRatio(1f)
             .clip(MaterialTheme.shapes.small)
             .combinedClickable(
-                onClick = {},
+                onClick = { onClick(image) },
                 onLongClick = { onLongPress(image) }
             )
     ) {

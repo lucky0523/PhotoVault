@@ -140,6 +140,10 @@ dependencies {
     // Coil video frame decoding (for video thumbnails)
     implementation("io.coil-kt:coil-video:2.7.0")
 
+    // Media3 (ExoPlayer) - video playback in the full-screen preview
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-ui:1.5.1")
+
     // DocumentFile - SAF support
     implementation("androidx.documentfile:documentfile:1.1.0")
 
