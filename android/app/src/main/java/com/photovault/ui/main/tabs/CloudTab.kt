@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,7 +36,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,6 +88,16 @@ fun CloudTab(
         viewModel.exitTrash()
     }
 
+    // Inside a subdirectory, the system back gesture climbs one level up
+    // (to the parent breadcrumb) instead of exiting the app. At the root the
+    // handler stays disabled so back propagates normally.
+    BackHandler(
+        enabled = uiState.viewMode == CloudViewMode.Browse && uiState.breadcrumbs.size > 1
+    ) {
+        val parent = uiState.breadcrumbs[uiState.breadcrumbs.lastIndex - 1]
+        viewModel.navigateToBreadcrumb(parent)
+    }
+
     when (uiState.viewMode) {
         CloudViewMode.Trash -> {
             TrashView(
@@ -99,13 +112,18 @@ fun CloudTab(
         }
 
         CloudViewMode.Browse -> Column(modifier = Modifier.fillMaxSize()) {
-            // Breadcrumb navigation
-            BreadcrumbNavigation(
-                breadcrumbs = uiState.breadcrumbs,
-                onBreadcrumbClick = { viewModel.navigateToBreadcrumb(it) }
-            )
-
-            HorizontalDivider()
+            // Breadcrumb navigation — only shown once we've navigated into a
+            // subdirectory. At the root the path is just "/", so the bar would
+            // waste vertical space without adding any wayfinding value.
+            if (uiState.breadcrumbs.size > 1) {
+                BreadcrumbNavigation(
+                    breadcrumbs = uiState.breadcrumbs,
+                    onBreadcrumbClick = { viewModel.navigateToBreadcrumb(it) }
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                )
+            }
 
             // Content area
             Box(
@@ -272,39 +290,66 @@ private fun BreadcrumbNavigation(
     breadcrumbs: List<BreadcrumbItem>,
     onBreadcrumbClick: (BreadcrumbItem) -> Unit
 ) {
+    val listState = rememberLazyListState()
+    // Keep the current (deepest) segment in view when navigating into deep
+    // paths, so the user always sees where they are without manual scrolling.
+    LaunchedEffect(breadcrumbs.size) {
+        if (breadcrumbs.isNotEmpty()) {
+            listState.animateScrollToItem(breadcrumbs.lastIndex)
+        }
+    }
+
     LazyRow(
+        state = listState,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         contentPadding = PaddingValues(end = 8.dp)
     ) {
         itemsIndexed(breadcrumbs) { index, breadcrumb ->
-            // Breadcrumb segment
-            TextButton(
-                onClick = { onBreadcrumbClick(breadcrumb) },
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-            ) {
+            val isLast = index == breadcrumbs.lastIndex
+            val segmentColor = if (isLast) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+
+            // Root is rendered as a compact home glyph; deeper segments as
+            // lightweight clickable text (no TextButton, so no 40dp min-height).
+            if (index == 0) {
+                Icon(
+                    imageVector = Icons.Filled.Home,
+                    contentDescription = "根目录",
+                    tint = segmentColor,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onBreadcrumbClick(breadcrumb) }
+                        .padding(4.dp)
+                        .size(18.dp)
+                )
+            } else {
                 Text(
                     text = breadcrumb.label,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (index == breadcrumbs.lastIndex) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    color = segmentColor,
+                    fontWeight = if (isLast) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onBreadcrumbClick(breadcrumb) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
                 )
             }
 
             // Separator (except after last item)
-            if (index < breadcrumbs.lastIndex) {
+            if (!isLast) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.NavigateNext,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
         }
