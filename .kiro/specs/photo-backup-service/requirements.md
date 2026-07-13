@@ -291,7 +291,7 @@
 2. THE Mobile_Client SHALL 在清单中声明并在运行时申请视频读取权限（Android 13+ 的 `READ_MEDIA_VIDEO`；更低版本使用 `READ_EXTERNAL_STORAGE`）
 3. WHEN Mobile_Client 计算 Media_File 的 File_Hash 与用于分块上传的文件大小时，THE Mobile_Client SHALL 先将文件快照到应用私有缓存，并从同一份快照计算哈希和读取分块，确保上传的字节与哈希对应的字节完全一致（避免刚录制的视频在媒体库尺寸未刷新时导致完整性校验失败）
 4. WHEN Mobile_Client 升级到首次支持视频/动态照片扫描的版本后，THE Mobile_Client SHALL 自动执行一次全量回扫（忽略各文件夹的上次扫描时间），以补备此前未被支持的历史视频文件，且该回扫每个能力版本仅执行一次
-5. WHEN Backup_Server 完成一次上传（合并后哈希校验通过并成功注册文件记录）时，THE Backup_Server SHALL 在完成响应中返回 `success=true` 与 `integrity_valid=true`；THE Mobile_Client SHALL 依据 `success` 判定备份成功，不因缺失的 `integrity_valid` 字段而误报"完整性校验失败"
+5. WHEN Backup_Server 完成一次上传（合并后哈希校验通过并成功注册文件记录）时，THE Backup_Server SHALL 在完成响应中返回 `success=true`；IF 合并后哈希校验失败，THEN THE Backup_Server SHALL 丢弃该文件并返回 HTTP 422 错误（不返回完成响应体）；THE Mobile_Client SHALL 依据 HTTP 状态码与 `success` 字段判定备份是否成功
 
 ### 需求 21：动态照片（Motion Photo）识别与预览
 

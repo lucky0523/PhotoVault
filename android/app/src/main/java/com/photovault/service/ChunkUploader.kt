@@ -574,20 +574,20 @@ class ChunkUploader @Inject constructor(
 
             if (response.isSuccessful) {
                 val body = response.body()!!
-                // The server only returns success=true AFTER it has verified the
-                // merged file's SHA-256 against the expected hash, so success
-                // implies integrity is valid. (Older/again-parsed responses may
-                // omit integrity_valid; don't fail a genuine success on that.)
+                // The server only returns a 2xx with success=true AFTER it has
+                // verified the merged file's SHA-256 against the expected hash.
+                // On integrity failure it responds with HTTP 422 (handled by the
+                // !isSuccessful branch below), so a successful body is authoritative.
                 if (body.success) {
                     UploadResult.Success(
                         fileId = body.fileId,
                         storedPath = body.storedPath
                     )
                 } else {
-                    // Integrity check failed — server will discard the file
-                    UploadResult.Failed("File integrity verification failed", shouldRetry = true)
+                    UploadResult.Failed("Failed to complete upload", shouldRetry = true)
                 }
             } else {
+                // Non-2xx (e.g. HTTP 422 integrity verification failed) — retryable
                 null
             }
         } catch (e: Exception) {

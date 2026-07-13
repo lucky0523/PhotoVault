@@ -249,6 +249,25 @@ class ChunkManager:
 
         return str(merged_path)
 
+    @staticmethod
+    def compute_file_hash(file_path: str) -> str:
+        """Compute the SHA-256 hex digest of a file.
+
+        Args:
+            file_path: Path to the file.
+
+        Returns:
+            The SHA-256 hex digest.
+        """
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
     def verify_integrity(self, file_path: str, expected_hash: str) -> bool:
         """Compare SHA-256 of merged file with expected hash.
 
@@ -259,14 +278,7 @@ class ChunkManager:
         Returns:
             True if the file's SHA-256 matches the expected hash.
         """
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(8192)
-                if not chunk:
-                    break
-                sha256.update(chunk)
-        return sha256.hexdigest() == expected_hash
+        return self.compute_file_hash(file_path) == expected_hash
 
     async def cleanup_session(self, session_id: str) -> None:
         """Delete temp chunk files and session record from database.

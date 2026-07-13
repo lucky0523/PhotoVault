@@ -66,7 +66,6 @@ data class CompleteUploadRequest(
 data class CompleteUploadResponse(
     @SerializedName("success") val success: Boolean,
     @SerializedName("file_id") val fileId: String,
-    @SerializedName("integrity_valid") val integrityValid: Boolean = true,
     @SerializedName("stored_path") val storedPath: String
 )
 

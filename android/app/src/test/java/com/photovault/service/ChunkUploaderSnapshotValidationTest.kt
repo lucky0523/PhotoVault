@@ -241,7 +241,6 @@ class ChunkUploaderSnapshotValidationTest {
                 CompleteUploadResponse(
                     success = true,
                     fileId = "file-1",
-                    integrityValid = true,
                     storedPath = "/stored/photo.jpg"
                 )
             )

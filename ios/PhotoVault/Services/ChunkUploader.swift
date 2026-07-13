@@ -139,13 +139,11 @@ struct CompleteUploadRequest: Codable {
 struct CompleteUploadResponse: Codable {
     let success: Bool
     let fileId: String
-    let integrityValid: Bool
     let storedPath: String
 
     enum CodingKeys: String, CodingKey {
         case success
         case fileId = "file_id"
-        case integrityValid = "integrity_valid"
         case storedPath = "stored_path"
     }
 }
@@ -695,10 +693,13 @@ class ChunkUploader: ObservableObject {
                 body: completeRequest
             )
 
-            if response.success && response.integrityValid {
+            // The server returns a 2xx with success=true only after verifying the
+            // merged file's SHA-256; integrity failure surfaces as an HTTP 422,
+            // which APIClient throws and we handle in the catch below.
+            if response.success {
                 return .success(fileId: response.fileId, storedPath: response.storedPath)
             } else {
-                return .failed(message: "文件完整性验证失败", shouldRetry: true)
+                return .failed(message: "完成上传失败", shouldRetry: true)
             }
         } catch {
             return .failed(message: "完成上传请求失败: \(error.localizedDescription)", shouldRetry: true)

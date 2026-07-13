@@ -258,7 +258,6 @@ class CompleteUploadResponse(BaseModel):
     success: bool
     file_id: Optional[int] = None
     stored_path: str = ""
-    integrity_valid: bool = True
 
 
 class ResumeInfoResponse(BaseModel):
@@ -434,7 +433,6 @@ async def complete_upload(
         success=True,
         file_id=result.file_id,
         stored_path=result.stored_path,
-        integrity_valid=True,
     )
 
 

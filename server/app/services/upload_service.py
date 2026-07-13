@@ -11,7 +11,6 @@ Provides:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import mimetypes
@@ -280,7 +279,7 @@ class UploadService:
             )
 
         # Step 3: Verify integrity
-        computed_hash = self._compute_file_hash(merged_path)
+        computed_hash = self._chunk_manager.compute_file_hash(merged_path)
         merged_size = Path(merged_path).stat().st_size
         if computed_hash != session["file_hash"]:
             logger.warning(
@@ -311,7 +310,7 @@ class UploadService:
 
         if final_path.exists():
             # Check if content is the same
-            existing_hash = self._compute_file_hash(str(final_path))
+            existing_hash = self._chunk_manager.compute_file_hash(str(final_path))
             if existing_hash == session["file_hash"]:
                 # Same content — skip storage, just register as reference
                 logger.info(
@@ -476,25 +475,6 @@ class UploadService:
             if not new_path.exists():
                 return new_path
             counter += 1
-
-    @staticmethod
-    def _compute_file_hash(file_path: str) -> str:
-        """Compute SHA-256 hash of a file.
-
-        Args:
-            file_path: Path to the file.
-
-        Returns:
-            Hex digest of the SHA-256 hash.
-        """
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(8192)
-                if not chunk:
-                    break
-                sha256.update(chunk)
-        return sha256.hexdigest()
 
     @staticmethod
     def _resolve_mime_type(session: dict) -> Optional[str]:

@@ -850,10 +850,11 @@ class ChunkUploadResponse(BaseModel):
     checksum_valid: bool
 
 # 完成上传
+# 完整性校验失败时服务端返回 HTTP 422（不走该响应体）；
+# 成功时返回 success=true。客户端依据 HTTP 状态 + success 判定。
 class CompleteUploadResponse(BaseModel):
     success: bool
     file_id: str
-    integrity_valid: bool
     stored_path: str
 
 # 续传信息
