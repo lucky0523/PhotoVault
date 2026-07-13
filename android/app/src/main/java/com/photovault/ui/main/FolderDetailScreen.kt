@@ -15,15 +15,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,8 +48,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -122,6 +127,9 @@ fun FolderDetailScreen(
     var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
     var filterExpanded by remember { mutableStateOf(false) }
 
+    // The grid scrolls edge-to-edge beneath the transparent overlay top bar.
+    val gridState = rememberLazyGridState()
+
     // Handle system back gesture explicitly so it always navigates back cleanly.
     BackHandler { onNavigateBack() }
 
@@ -158,6 +166,12 @@ fun FolderDetailScreen(
         }
     )
 
+    // Insets used to lay the full-screen grid out edge-to-edge: the first row
+    // starts below the status bar + top bar, and the last row clears the nav bar.
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val topBarHeight = 64.dp
+
     Box(modifier = Modifier.fillMaxSize()) {
         // On-screen gradient painted behind the transparent Scaffold.
         Box(
@@ -169,24 +183,15 @@ fun FolderDetailScreen(
         CompositionLocalProvider(LocalGlassBackdrop provides contentBackdrop) {
             Scaffold(
                 containerColor = Color.Transparent,
-                topBar = {
-                    TopAppBar(
-                        title = { Text(folderName) },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent
-                        ),
-                        navigationIcon = {
-                            IconButton(onClick = onNavigateBack) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "返回"
-                                )
-                            }
-                        }
-                    )
-                },
+                // Full-screen content: the grid draws edge-to-edge (under the
+                // status bar and the overlaid top bar) for the immersive effect.
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 floatingActionButton = {
                     Column(
+                        // Scaffold no longer insets the FAB (contentWindowInsets
+                        // is zeroed for the edge-to-edge grid), so add the nav-bar
+                        // inset here to keep the buttons above it.
+                        modifier = Modifier.navigationBarsPadding(),
                         horizontalAlignment = Alignment.End,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -292,11 +297,18 @@ fun FolderDetailScreen(
                     }
                 } else {
                     LazyVerticalGrid(
+                        state = gridState,
                         columns = GridCells.Fixed(3),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(paddingValues),
-                        contentPadding = PaddingValues(4.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        // Top inset keeps the first row below the status bar +
+                        // top bar; content scrolls up beneath the bar as the user
+                        // browses. Bottom inset clears the navigation bar.
+                        contentPadding = PaddingValues(
+                            start = 4.dp,
+                            end = 4.dp,
+                            top = statusBarTop + topBarHeight + 4.dp,
+                            bottom = navBarBottom + 4.dp
+                        ),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -323,6 +335,33 @@ fun FolderDetailScreen(
                 }
                 }
             }
+        }
+
+        // Immersive overlay header. Drawn above the grid with no background of
+        // its own, so photos show through. Unlike a Material TopAppBar (whose
+        // Surface swallows all touches across its width), this is a plain Row:
+        // only the back button consumes clicks, so taps and scrolls elsewhere in
+        // the header strip pass straight through to the photos beneath.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(topBarHeight)
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onNavigateBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "返回"
+                )
+            }
+            Text(
+                text = folderName,
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 8.dp)
+            )
         }
     }
 

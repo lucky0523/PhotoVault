@@ -9,8 +9,10 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,10 +37,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import androidx.media3.common.MediaItem
@@ -109,6 +114,8 @@ fun ImagePreviewDialog(
             dismissOnClickOutside = false
         )
     ) {
+        FullScreenDialogEffect()
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -197,6 +204,7 @@ fun ImagePreviewDialog(
                 onClick = onDismiss,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
+                    .statusBarsPadding()
                     .padding(16.dp),
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Black.copy(alpha = 0.5f),
@@ -217,6 +225,7 @@ fun ImagePreviewDialog(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
                     .padding(16.dp)
                     .background(
                         color = Color.Black.copy(alpha = 0.5f),
@@ -276,6 +285,8 @@ private fun VideoPreviewDialog(
             dismissOnClickOutside = false
         )
     ) {
+        FullScreenDialogEffect()
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -298,6 +309,7 @@ private fun VideoPreviewDialog(
                 onClick = onDismiss,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
+                    .statusBarsPadding()
                     .padding(16.dp),
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Black.copy(alpha = 0.5f),
@@ -311,5 +323,31 @@ private fun VideoPreviewDialog(
                 )
             }
         }
+    }
+}
+
+/**
+ * Makes the enclosing [Dialog]'s window draw edge-to-edge so a full-screen
+ * background (e.g. the black preview backdrop) extends behind the status and
+ * navigation bars instead of stopping at their insets. Also makes the system
+ * bars transparent for a clean immersive look.
+ *
+ * Must be called from inside a `Dialog { ... }` content block.
+ */
+@Composable
+private fun FullScreenDialogEffect() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.parent as? DialogWindowProvider)?.window
+        if (window != null) {
+            window.setLayout(
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                android.view.WindowManager.LayoutParams.MATCH_PARENT
+            )
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
+        onDispose {}
     }
 }
