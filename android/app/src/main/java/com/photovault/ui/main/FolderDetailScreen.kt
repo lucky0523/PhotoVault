@@ -78,6 +78,7 @@ import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.photovault.ui.main.components.CloudStatusColors
+import com.photovault.ui.main.components.GlassScrollbar
 import com.photovault.ui.main.tabs.MediaPagerPreview
 import com.photovault.ui.main.tabs.PreviewMedia
 import com.photovault.ui.theme.LiquidDialogButton
@@ -263,6 +264,7 @@ fun FolderDetailScreen(
                 // whole screen) so the left-edge back gesture is blocked here,
                 // preventing accidental navigation while browsing photos. The
                 // top-bar area still allows the back gesture.
+                Box(modifier = Modifier.fillMaxSize()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -349,6 +351,22 @@ fun FolderDetailScreen(
                         }
                     }
                 }
+                }
+                    // Liquid-glass, auto-hiding scrollbar on the right edge.
+                    // Sibling of (and drawn on top of) the captured grid so it
+                    // refracts the photos beneath without feeding back on itself.
+                    if (filteredImages.isNotEmpty()) {
+                        GlassScrollbar(
+                            state = gridState,
+                            columns = 3,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(
+                                    top = statusBarTop + topBarHeight,
+                                    bottom = navBarBottom
+                                )
+                        )
+                    }
                 }
             }
         }
