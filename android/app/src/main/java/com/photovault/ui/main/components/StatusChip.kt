@@ -3,6 +3,8 @@ package com.photovault.ui.main.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -17,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,25 +43,44 @@ fun StatusChip(
     color: Color,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(color.copy(alpha = 0.15f))
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(
-            modifier = Modifier
-                .size(5.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Spacer(Modifier.width(4.dp))
+        // Top line: colored dot + label. Kept on its own line so the chip only
+        // needs to be as wide as the (short) label text, not "label + count".
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                color = color,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        // Count on its own line, emphasized. Shown exactly (to the unit digit);
+        // the dedicated line gives it plenty of room even for large numbers.
         Text(
-            text = "$label $count",
+            text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
             color = color,
             textAlign = TextAlign.Center,
             maxLines = 1,
