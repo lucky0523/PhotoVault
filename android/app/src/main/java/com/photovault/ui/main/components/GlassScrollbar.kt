@@ -82,10 +82,21 @@ fun GlassScrollbar(
     val spacingPx = with(density) { 4.dp.toPx() }
     val minThumbPx = with(density) { minThumbHeight.toPx() }
 
-    // Scroll geometry derived from the lazy layout, recomputed only when the
-    // relevant layout info changes.
-    val metrics by remember(state, columns) {
-        derivedStateOf { computeMetrics(state, columns, spacingPx, minThumbPx) }
+    // The geometry is split into two derived states with very different update
+    // rates, which is the key to smooth scrolling:
+    //  - `structure` (thumb size + canScroll) changes only when the item count,
+    //    viewport or row height changes. derivedStateOf compares the result, so
+    //    it does NOT notify while scrolling — safe to read during composition.
+    //  - `scrollFraction` changes on EVERY scroll frame. It is read ONLY inside
+    //    layout-phase lambdas below (offset {} / the drag handler), never in the
+    //    composable body, so a scroll re-places the thumb (cheap) instead of
+    //    recomposing the whole scrollbar — and rebuilding the glass modifier —
+    //    every frame.
+    val structure by remember(state, columns) {
+        derivedStateOf { computeStructure(state, columns, spacingPx) }
+    }
+    val scrollFraction = remember(state, columns) {
+        derivedStateOf { computeScrollFraction(state, columns, spacingPx) }
     }
 
     var dragging by remember { mutableStateOf(false) }
@@ -97,7 +108,7 @@ fun GlassScrollbar(
         onChange = { visible = it }
     )
     val alpha by animateFloatAsState(
-        targetValue = if (visible && metrics.canScroll) 1f else 0f,
+        targetValue = if (visible && structure.canScroll) 1f else 0f,
         label = "scrollbarAlpha"
     )
 
@@ -107,25 +118,30 @@ fun GlassScrollbar(
     val dark = isSystemInDarkTheme()
     val backdrop = LocalGlassBackdrop.current
     val surface = if (dark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.55f)
-    val shape = Capsule()
 
-    val thumbGlass = if (backdrop != null) {
-        Modifier.drawBackdrop(
-            backdrop = backdrop,
-            shape = { shape },
-            effects = {
-                vibrancy()
-                blur(1f.dp.toPx())
-                lens(6f.dp.toPx(), 12f.dp.toPx())
-            },
-            onDrawSurface = { drawRect(surface) }
-        )
-    } else {
-        val border = if (dark) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.7f)
-        Modifier
-            .clip(shape)
-            .background(surface)
-            .border(BorderStroke(1.dp, border), shape)
+    // Built once per (backdrop/theme) rather than on every recomposition. The
+    // glass effect lambdas resolve `.dp.toPx()` in the draw scope, so caching the
+    // Modifier here is safe.
+    val thumbGlass = remember(backdrop, dark, surface) {
+        val shape = Capsule()
+        if (backdrop != null) {
+            Modifier.drawBackdrop(
+                backdrop = backdrop,
+                shape = { shape },
+                effects = {
+                    vibrancy()
+                    blur(1f.dp.toPx())
+                    lens(6f.dp.toPx(), 12f.dp.toPx())
+                },
+                onDrawSurface = { drawRect(surface) }
+            )
+        } else {
+            val border = if (dark) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.7f)
+            Modifier
+                .clip(shape)
+                .background(surface)
+                .border(BorderStroke(1.dp, border), shape)
+        }
     }
 
     Box(
@@ -134,10 +150,11 @@ fun GlassScrollbar(
             .width(touchWidth)
             .onSizeChanged { trackHeightPx = it.height.toFloat() }
     ) {
-        val thumbPx = (trackHeightPx * metrics.thumbFraction)
+        // Thumb size depends only on the (rarely changing) structure, so reading
+        // it here doesn't cause per-frame recomposition.
+        val thumbPx = (trackHeightPx * structure.thumbFraction)
             .coerceIn(minThumbPx, trackHeightPx.coerceAtLeast(minThumbPx))
         val travel = (trackHeightPx - thumbPx).coerceAtLeast(0f)
-        val thumbTopPx = travel * metrics.scrollFraction
 
         val draggableState = rememberDraggableState { delta ->
             if (travel <= 0f) return@rememberDraggableState
@@ -158,7 +175,9 @@ fun GlassScrollbar(
             val totalContentPx = totalRows * rowPitch - spacingPx
             val maxScrollPx = (totalContentPx - viewportPx).coerceAtLeast(1f)
 
-            val newTop = (thumbTopPx + delta).coerceIn(0f, travel)
+            // Live thumb top from the current scroll fraction, read at gesture time.
+            val currentTop = travel * scrollFraction.value
+            val newTop = (currentTop + delta).coerceIn(0f, travel)
             val targetScrollPx = (newTop / travel) * maxScrollPx
             val targetRow = (targetScrollPx / rowPitch).toInt().coerceAtLeast(0)
             val rowOffset = (targetScrollPx - targetRow * rowPitch)
@@ -172,13 +191,15 @@ fun GlassScrollbar(
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .offset { IntOffset(0, thumbTopPx.roundToInt()) }
+                // scrollFraction is read inside this layout-phase lambda, so a
+                // scroll only re-places the thumb instead of recomposing.
+                .offset { IntOffset(0, (travel * scrollFraction.value).roundToInt()) }
                 .width(touchWidth)
                 .height(with(density) { thumbPx.toDp() })
                 .draggable(
                     state = draggableState,
                     orientation = Orientation.Vertical,
-                    enabled = metrics.canScroll,
+                    enabled = structure.canScroll,
                     onDragStarted = { dragging = true },
                     onDragStopped = { dragging = false }
                 ),
@@ -213,27 +234,27 @@ fun GlassScrollbar(
     }
 }
 
-private data class ScrollbarMetrics(
+private data class ScrollbarStructure(
     val thumbFraction: Float,
-    val scrollFraction: Float,
     val canScroll: Boolean
 )
 
 /**
- * Estimates the thumb size (as a fraction of the track) and the scroll position
- * (0..1) from the grid's [layoutInfo][LazyGridState.layoutInfo], assuming a
- * uniform row height (true for a fixed-column grid of square cells).
+ * Structural geometry: thumb size (as a fraction of the track) and whether the
+ * content is scrollable at all. These change only when the item count, viewport
+ * or row height changes — NOT while scrolling — so `derivedStateOf` won't notify
+ * (and won't recompose the scrollbar) during a scroll. Assumes a uniform row
+ * height (true for a fixed-column grid of square cells).
  */
-private fun computeMetrics(
+private fun computeStructure(
     state: LazyGridState,
     columns: Int,
-    spacingPx: Float,
-    minThumbPx: Float
-): ScrollbarMetrics {
+    spacingPx: Float
+): ScrollbarStructure {
     val info = state.layoutInfo
     val total = info.totalItemsCount
     val visible = info.visibleItemsInfo
-    if (total == 0 || visible.isEmpty()) return ScrollbarMetrics(1f, 0f, false)
+    if (total == 0 || visible.isEmpty()) return ScrollbarStructure(1f, false)
 
     val rowHeight = visible.first().size.height.coerceAtLeast(1)
     val rowPitch = rowHeight + spacingPx
@@ -243,15 +264,42 @@ private fun computeMetrics(
     val viewportPx = (info.viewportSize.height - info.beforeContentPadding - info.afterContentPadding)
         .coerceAtLeast(1)
 
-    if (totalContentPx <= viewportPx) return ScrollbarMetrics(1f, 0f, false)
+    if (totalContentPx <= viewportPx) return ScrollbarStructure(1f, false)
+
+    val thumbFraction = (viewportPx / totalContentPx).coerceIn(0.06f, 1f)
+    return ScrollbarStructure(thumbFraction, true)
+}
+
+/**
+ * Scroll position (0..1). This changes on every scroll frame and is intended to
+ * be read ONLY from layout/draw lambdas so scrolling stays off the recomposition
+ * path.
+ */
+private fun computeScrollFraction(
+    state: LazyGridState,
+    columns: Int,
+    spacingPx: Float
+): Float {
+    val info = state.layoutInfo
+    val total = info.totalItemsCount
+    val visible = info.visibleItemsInfo
+    if (total == 0 || visible.isEmpty()) return 0f
+
+    val rowHeight = visible.first().size.height.coerceAtLeast(1)
+    val rowPitch = rowHeight + spacingPx
+    val totalRows = ceil(total / columns.toFloat()).toInt()
+    val totalContentPx = totalRows * rowPitch - spacingPx
+
+    val viewportPx = (info.viewportSize.height - info.beforeContentPadding - info.afterContentPadding)
+        .coerceAtLeast(1)
+
+    if (totalContentPx <= viewportPx) return 0f
 
     val firstRow = state.firstVisibleItemIndex / columns
     val scrolledPx = firstRow * rowPitch + state.firstVisibleItemScrollOffset
     val maxScrollPx = (totalContentPx - viewportPx).coerceAtLeast(1f)
 
-    val scrollFraction = (scrolledPx / maxScrollPx).coerceIn(0f, 1f)
-    val thumbFraction = (viewportPx / totalContentPx).coerceIn(0.06f, 1f)
-    return ScrollbarMetrics(thumbFraction, scrollFraction, true)
+    return (scrolledPx / maxScrollPx).coerceIn(0f, 1f)
 }
 
 /**
