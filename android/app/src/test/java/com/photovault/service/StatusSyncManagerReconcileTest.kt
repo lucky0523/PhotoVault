@@ -262,6 +262,12 @@ class StatusSyncManagerReconcileTest {
             throw NotImplementedError()
         override suspend fun downloadFile(fileId: Int): Response<okhttp3.ResponseBody> =
             throw NotImplementedError()
+        override suspend fun listTrash(page: Int, pageSize: Int): Response<com.photovault.data.api.model.TrashListResponse> =
+            throw NotImplementedError()
+        override suspend fun restoreTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
+        override suspend fun purgeTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
     }
 
     private class FakeBackupApi(

@@ -262,6 +262,12 @@ class ChunkUploaderSnapshotValidationTest {
             throw NotImplementedError()
         override suspend fun downloadFile(fileId: Int): Response<okhttp3.ResponseBody> =
             throw NotImplementedError()
+        override suspend fun listTrash(page: Int, pageSize: Int): Response<com.photovault.data.api.model.TrashListResponse> =
+            throw NotImplementedError()
+        override suspend fun restoreTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
+        override suspend fun purgeTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
     }
 
     /** In-memory [UploadRecordDao] — no existing record → always a new session. */
@@ -272,6 +278,7 @@ class ChunkUploaderSnapshotValidationTest {
         override suspend fun deleteByFileUri(fileUri: String) {}
         override suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long) {}
         override suspend fun deleteExpired(expiryTime: Long) {}
+        override suspend fun deleteByFolderUri(folderUri: String) {}
         override suspend fun getAll(): List<UploadRecord> = emptyList()
     }
 

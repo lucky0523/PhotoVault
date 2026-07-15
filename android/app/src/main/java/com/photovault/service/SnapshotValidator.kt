@@ -140,10 +140,61 @@ object SnapshotValidator {
         }
     }
 
-    /** JPEG (jpg/jpeg): a complete file ends with the EOI marker `FF D9`. (R3.3) */
+    /**
+     * JPEG (jpg/jpeg): a complete image ends with the EOI marker `FF D9`. (R3.3)
+     *
+     * A well-formed JPEG usually ends *exactly* on `FF D9` (fast path). However, phone cameras
+     * frequently append data after the primary image's EOI — Ultra HDR gain maps, MPF
+     * multi-picture payloads, or trailing XMP/MakerNote/OEM index (e.g. OnePlus `jxrs`) — so a
+     * complete file may not end on `FF D9`. In that case we scan backward from EOF within
+     * [BackupTuning.JPEG_EOI_SEARCH_WINDOW] for the last `FF D9`: finding it means the embedded
+     * image completed and only a small trailer follows (intact); not finding it within the
+     * window means the stream was cut before any EOI (truncated). The size-equality and
+     * trailing-zero checks above already catch the common still-being-written cases.
+     */
     private fun checkJpeg(snapshot: File): Boolean? {
+        // Fast path: a normal JPEG ends exactly on the EOI marker.
         val tail = readBytes(snapshot, offsetFromEnd = 2, length = 2) ?: return null
-        return (tail[0].toInt() and 0xFF) == 0xFF && (tail[1].toInt() and 0xFF) == 0xD9
+        if ((tail[0].toInt() and 0xFF) == 0xFF && (tail[1].toInt() and 0xFF) == 0xD9) return true
+        // Otherwise the file may carry a post-EOI trailer (Ultra HDR / MPF / metadata). Look for
+        // the last EOI within a bounded tail window.
+        return jpegHasEoiInTailWindow(snapshot)
+    }
+
+    /**
+     * Scan backward from EOF for the `FF D9` EOI marker, reading at most
+     * [BackupTuning.JPEG_EOI_SEARCH_WINDOW] bytes. Returns true if an EOI is found (complete
+     * image with trailing data), false if none is found within the window (truncated), or null
+     * if the file cannot be read (insufficient evidence → conservative pass-through, R4.3).
+     */
+    private fun jpegHasEoiInTailWindow(snapshot: File): Boolean? {
+        return try {
+            RandomAccessFile(snapshot, "r").use { raf ->
+                val length = raf.length()
+                if (length < 2L) return null
+                val window = minOf(length, BackupTuning.JPEG_EOI_SEARCH_WINDOW.toLong())
+                val start = length - window
+                val buffer = ByteArray(window.toInt())
+                raf.seek(start)
+                raf.readFully(buffer)
+                // Search backward for the FF D9 byte pair.
+                var i = buffer.size - 2
+                while (i >= 0) {
+                    if ((buffer[i].toInt() and 0xFF) == 0xFF &&
+                        (buffer[i + 1].toInt() and 0xFF) == 0xD9
+                    ) {
+                        return true
+                    }
+                    i--
+                }
+                // No EOI within the window. If the window covers the whole file, the image never
+                // completed → truncated. If the window is only a slice of a larger file, an EOI
+                // could exist further back; treat as insufficient evidence rather than reject.
+                if (window == length) false else null
+            }
+        } catch (e: IOException) {
+            null
+        }
     }
 
     /** PNG: a complete file ends with the IEND chunk + CRC `49 45 4E 44 AE 42 60 82`. (R3.3) */

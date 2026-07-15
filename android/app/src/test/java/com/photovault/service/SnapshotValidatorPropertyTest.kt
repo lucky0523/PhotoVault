@@ -238,6 +238,47 @@ class SnapshotValidatorPropertyTest {
         }
     }
 
+    // --- Property 4b: JPEG with post-EOI trailer is accepted -----------------
+
+    /**
+     * Feature: skip-incomplete-media-backup, Property 4b - JPEG carrying data after its EOI is valid.
+     *
+     * Phone cameras (e.g. OnePlus/OPPO Ultra HDR, MPF multi-picture, trailing XMP/MakerNote)
+     * append bytes after the primary image's `FF D9`, so a complete file does not end on the EOI
+     * marker. A valid JPEG followed by an arbitrary non-zero, non-EOI-terminated trailer must
+     * still be accepted (the last `FF D9` is found within the tail window). This is the exact
+     * shape that previously failed as a false TRUNCATED_STRUCTURE.
+     *
+     * Validates: Requirements 3.3, 3.6
+     */
+    @Test
+    fun `Feature skip-incomplete-media-backup, Property 4b - JPEG with post-EOI trailer is accepted`() {
+        runBlocking {
+            // Trailer bytes constrained to 0x01..0x2E: non-zero (no trailing-zero run) and never
+            // 0xFF/0xD9, so the file does not end on an EOI marker and exercises the tail search.
+            val trailerArb = Arb.byteArray(Arb.int(1, 4096), safeByte)
+            checkAll(iterations, payloadArb, trailerArb) { payload, trailer ->
+                val bytes = buildJpeg(payload) + trailer
+                val file = writeTemp(bytes)
+                try {
+                    val result = SnapshotValidator.validate(
+                        snapshot = file,
+                        snapshotSize = bytes.size.toLong(),
+                        expectedSize = bytes.size.toLong(),
+                        fileName = "photo.jpg",
+                        mimeType = "image/jpeg"
+                    )
+                    assertTrue(
+                        "expected Valid for JPEG with post-EOI trailer (size=${bytes.size}) but got $result",
+                        result is SnapshotValidation.Valid
+                    )
+                } finally {
+                    file.delete()
+                }
+            }
+        }
+    }
+
     // --- Property 5: conservative pass-through -------------------------------
 
     /**

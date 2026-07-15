@@ -254,6 +254,12 @@ class ChunkUploaderCheckDuplicateTest {
             throw NotImplementedError()
         override suspend fun downloadFile(fileId: Int): Response<okhttp3.ResponseBody> =
             throw NotImplementedError()
+        override suspend fun listTrash(page: Int, pageSize: Int): Response<com.photovault.data.api.model.TrashListResponse> =
+            throw NotImplementedError()
+        override suspend fun restoreTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
+        override suspend fun purgeTrashFile(fileId: Int): Response<com.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
     }
 
     /** [UploadRecordDao] stub — not used by checkDuplicate. */
@@ -264,6 +270,7 @@ class ChunkUploaderCheckDuplicateTest {
         override suspend fun deleteByFileUri(fileUri: String) = throw NotImplementedError()
         override suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long) = throw NotImplementedError()
         override suspend fun deleteExpired(expiryTime: Long) = throw NotImplementedError()
+        override suspend fun deleteByFolderUri(folderUri: String) = throw NotImplementedError()
         override suspend fun getAll(): List<UploadRecord> = throw NotImplementedError()
     }
 }
