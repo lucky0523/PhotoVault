@@ -43,11 +43,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.photovault.data.local.SettingsPreferences
+import com.photovault.util.BatteryOptimizationHelper
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.network.ConnectionState
 import com.photovault.data.network.ConnectionType
@@ -148,6 +152,11 @@ fun SettingsTab(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // 后台运行 group（电池优化白名单）
+        BackgroundRunGroup()
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // 退出登录按钮（红色文字）
         LogoutButton(onClick = { showLogoutDialog = true })
     }
@@ -239,6 +248,82 @@ private fun BackupConditionsGroup(
             currentInterval = scanIntervalMinutes,
             onIntervalChanged = onScanIntervalChanged
         )
+    }
+}
+
+/**
+ * 后台运行 (Background execution) settings group.
+ *
+ * Surfaces the battery-optimization (Doze) whitelist status. Aggressive OEM ROMs
+ * (ColorOS/OxygenOS/MIUI) defer or kill background scans, the MediaStore observer, and
+ * condition-recovery unless the app is exempt from battery optimization, which stalls
+ * automatic backup. This row lets the user grant the exemption in one tap and reflects the
+ * current state, re-checking whenever the screen returns to the foreground.
+ */
+@Composable
+private fun BackgroundRunGroup() {
+    val context = LocalContext.current
+    var ignoringOptimizations by remember {
+        mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context))
+    }
+    // The user grants the exemption in a system screen, so re-check on return.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        ignoringOptimizations = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+    }
+
+    SettingsGroupCard(title = "后台运行") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (ignoringOptimizations) Modifier
+                    else Modifier.clickable {
+                        // Fall back to the generic list if the direct request dialog
+                        // isn't available on this ROM.
+                        if (!BatteryOptimizationHelper.requestIgnoreBatteryOptimizations(context)) {
+                            BatteryOptimizationHelper.openBatteryOptimizationSettings(context)
+                        }
+                    }
+                )
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "允许后台运行",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = if (ignoringOptimizations) {
+                        "已允许，后台可稳定扫描并备份新照片"
+                    } else {
+                        "受限，系统可能会推迟或停止后台备份，点击前往关闭电池优化"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    minLines = 2
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            if (ignoringOptimizations) {
+                Text(
+                    text = "已允许",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = PhotoVaultColors.SyncGreen
+                )
+            } else {
+                Text(
+                    text = "去设置",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
