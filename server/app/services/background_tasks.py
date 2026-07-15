@@ -389,6 +389,47 @@ async def cleanup_expired_trash_task(
         await asyncio.sleep(interval_seconds)
 
 
+# ---------------------------------------------------------------------------
+# Analysis worker task
+# ---------------------------------------------------------------------------
+
+
+async def analysis_worker_task() -> None:
+    """Consume the analysis queue and analyze each photo in order.
+
+    Runs in an infinite loop, awaiting ``(user_id, file_id)`` items from the
+    process-wide analysis queue and dispatching each to
+    :meth:`AnalysisService.analyze_file`. A single photo's failure is logged and
+    swallowed so the worker keeps draining the queue rather than crashing
+    (requirement 7.4). Cancellation (on shutdown) is propagated like the other
+    background tasks.
+    """
+    from app.services.analysis_queue import get_analysis_queue
+    from app.services.analysis_service import AnalysisService
+
+    queue = get_analysis_queue()
+    service = AnalysisService()
+
+    while True:
+        try:
+            user_id, file_id = await queue.get()
+        except asyncio.CancelledError:
+            logger.info("Analysis worker task cancelled")
+            raise
+
+        try:
+            await service.analyze_file(user_id, file_id)
+        except asyncio.CancelledError:
+            logger.info("Analysis worker task cancelled")
+            raise
+        except Exception:
+            logger.exception(
+                "Error analyzing file_id=%s user_id=%s", file_id, user_id
+            )
+        finally:
+            queue.task_done()
+
+
 async def start_background_tasks() -> list[asyncio.Task]:
     """Start all background tasks and return task references.
 
@@ -411,6 +452,10 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(
             cleanup_expired_trash_task(),
             name="cleanup_expired_trash",
+        ),
+        asyncio.create_task(
+            analysis_worker_task(),
+            name="analysis_worker",
         ),
     ]
     logger.info("Background tasks started: %s", [t.get_name() for t in tasks])

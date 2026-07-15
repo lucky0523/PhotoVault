@@ -84,10 +84,70 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
 );
 """
 
+_CREATE_PHOTO_GPS_TABLE = """
+CREATE TABLE IF NOT EXISTS photo_gps (
+    file_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    city TEXT,
+    province TEXT,
+    country TEXT,
+    geocoded_at TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES file_records(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
+_CREATE_PHOTO_SCENES_TABLE = """
+CREATE TABLE IF NOT EXISTS photo_scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    scene_label TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES file_records(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
+_CREATE_FACE_CLUSTERS_TABLE = """
+CREATE TABLE IF NOT EXISTS face_clusters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    display_name TEXT,
+    cover_face_id INTEGER,
+    centroid BLOB,
+    face_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
+_CREATE_FACES_TABLE = """
+CREATE TABLE IF NOT EXISTS faces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    cluster_id INTEGER,
+    bbox TEXT NOT NULL,
+    det_score REAL NOT NULL,
+    embedding BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES file_records(id),
+    FOREIGN KEY (cluster_id) REFERENCES face_clusters(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_file_hash ON file_records(user_id, file_hash);",
     "CREATE INDEX IF NOT EXISTS idx_upload_session_user ON upload_sessions(user_id, file_hash);",
     "CREATE INDEX IF NOT EXISTS idx_file_records_trash ON file_records(user_id, deleted_at, purged_at);",
+    "CREATE INDEX IF NOT EXISTS idx_photo_gps_user ON photo_gps(user_id, city);",
+    "CREATE INDEX IF NOT EXISTS idx_photo_scenes_user ON photo_scenes(user_id, scene_label);",
+    "CREATE INDEX IF NOT EXISTS idx_faces_user ON faces(user_id, cluster_id);",
+    "CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);",
 ]
 
 
@@ -110,6 +170,10 @@ async def init_db(db_path: str) -> None:
         await db.execute(_CREATE_USERS_TABLE)
         await db.execute(_CREATE_FILE_RECORDS_TABLE)
         await db.execute(_CREATE_UPLOAD_SESSIONS_TABLE)
+        await db.execute(_CREATE_PHOTO_GPS_TABLE)
+        await db.execute(_CREATE_PHOTO_SCENES_TABLE)
+        await db.execute(_CREATE_FACE_CLUSTERS_TABLE)
+        await db.execute(_CREATE_FACES_TABLE)
 
         # Idempotent column migration for existing databases (before indexes)
         cursor = await db.execute("PRAGMA table_info(file_records)")

@@ -33,6 +33,31 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/TimelineView.vue'),
       },
       {
+        path: 'explore',
+        name: 'Explore',
+        component: () => import('@/views/ExploreView.vue'),
+      },
+      {
+        path: 'explore/manage',
+        name: 'ExploreManage',
+        component: () => import('@/views/ExploreManageView.vue'),
+      },
+      {
+        path: 'explore/people/:id',
+        name: 'ExplorePeople',
+        component: () => import('@/views/CategoryPhotosView.vue'),
+      },
+      {
+        path: 'explore/places/:city',
+        name: 'ExplorePlaces',
+        component: () => import('@/views/CategoryPhotosView.vue'),
+      },
+      {
+        path: 'explore/scenes/:label',
+        name: 'ExploreScenes',
+        component: () => import('@/views/CategoryPhotosView.vue'),
+      },
+      {
         path: 'devices',
         name: 'Devices',
         component: () => import('@/views/DevicesView.vue'),

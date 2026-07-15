@@ -1,0 +1,18 @@
+# Optional dependencies for the「探索」analysis pipeline (people / places / scenes).
+#
+# These are NOT required for PhotoVault's core features (upload / browse / trash).
+# Install them only if you want to enable the optional analysis dimensions:
+#
+#     pip install -r requirements-analysis.txt
+#
+# - onnxruntime : runs the face (SCRFD + ArcFace) and scene (Places365, etc.)
+#                 ONNX models. Pulls in numpy, which the pipeline also uses.
+# - pillow-heif : lets Pillow decode Apple HEIC/HEIF photos so their EXIF/GPS
+#                 and pixels (for face/scene) can be analyzed. Without it, .heic
+#                 files are skipped.
+#
+# The place (GPS + offline reverse-geocoding) dimension needs none of these —
+# it only uses Pillow, which is already a core dependency.
+
+onnxruntime>=1.16
+pillow-heif>=0.13

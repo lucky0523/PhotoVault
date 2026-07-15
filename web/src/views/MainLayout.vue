@@ -17,6 +17,10 @@
           <el-icon><Timer /></el-icon>
           <span>时间线</span>
         </el-menu-item>
+        <el-menu-item index="/explore">
+          <el-icon><Compass /></el-icon>
+          <span>探索</span>
+        </el-menu-item>
         <el-menu-item index="/devices">
           <el-icon><Monitor /></el-icon>
           <span>设备管理</span>

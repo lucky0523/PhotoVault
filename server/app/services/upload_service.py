@@ -22,6 +22,7 @@ from typing import Optional
 import aiosqlite
 
 from app.models.storage import FileMetadata, StoragePolicy
+from app.services.analysis_queue import enqueue_analysis
 from app.services.chunk_manager import ChunkManager
 from app.services.deduplication_service import DeduplicationService, FileRecord
 from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
@@ -352,6 +353,10 @@ class UploadService:
                 )
                 await self._db.commit()
 
+                # Hook into the analysis pipeline (non-blocking, best-effort;
+                # never fails the upload response — requirement 7.1).
+                enqueue_analysis(record.id, user_id)
+
                 # Cleanup chunk directory
                 self._cleanup_chunk_dir(session_id)
 
@@ -399,6 +404,10 @@ class UploadService:
             (session_id,),
         )
         await self._db.commit()
+
+        # Hook into the analysis pipeline (non-blocking, best-effort; never
+        # fails the upload response — requirement 7.1).
+        enqueue_analysis(record.id, user_id)
 
         # Step 7: Cleanup chunk directory
         self._cleanup_chunk_dir(session_id)

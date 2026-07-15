@@ -277,7 +277,7 @@ class TestBackgroundTaskLifecycle:
             mock_settings.return_value.database_url = "/tmp/test.db"
 
             tasks = await start_background_tasks()
-            assert len(tasks) == 2
+            assert len(tasks) == 5
             assert all(not t.done() for t in tasks)
 
             # Stop immediately

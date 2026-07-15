@@ -499,3 +499,55 @@ class TestShutdownDb:
         """shutdown_db should complete without errors."""
         await startup_db()
         await shutdown_db()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Tests for explore-people-places-scenes tables (photo_gps, photo_scenes,
+# face_clusters, faces) and their indexes.
+# Requirements: 8.1
+# ---------------------------------------------------------------------------
+
+
+class TestExploreTablesIdempotency:
+    """Test that the explore feature tables/indexes are created idempotently.
+
+    Validates: Requirements 8.1
+    """
+
+    EXPLORE_TABLES = ("photo_gps", "photo_scenes", "face_clusters", "faces")
+    EXPLORE_INDEXES = (
+        "idx_photo_gps_user",
+        "idx_photo_scenes_user",
+        "idx_faces_user",
+        "idx_faces_file",
+    )
+
+    async def test_calling_init_db_twice_does_not_error(self, db_path):
+        """Repeated init_db calls must not raise."""
+        await init_db(db_path)
+        # Second call should be a no-op and not raise
+        await init_db(db_path)
+
+    async def test_explore_tables_exist_after_double_init(self, db_path):
+        """All four explore tables should exist after repeated init."""
+        await init_db(db_path)
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table';"
+            )
+            tables = {row[0] for row in await cursor.fetchall()}
+        for table in self.EXPLORE_TABLES:
+            assert table in tables, f"missing table: {table}"
+
+    async def test_explore_indexes_exist_after_double_init(self, db_path):
+        """All four explore indexes should exist after repeated init."""
+        await init_db(db_path)
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index';"
+            )
+            indexes = {row[0] for row in await cursor.fetchall()}
+        for index in self.EXPLORE_INDEXES:
+            assert index in indexes, f"missing index: {index}"

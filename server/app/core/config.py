@@ -15,6 +15,8 @@ Configuration priority (highest to lowest):
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -102,6 +104,23 @@ def _flatten_yaml(data: dict[str, Any]) -> dict[str, Any]:
         if "dir" in logging_cfg:
             flat["log_dir"] = logging_cfg["dir"]
 
+    analysis = data.get("analysis", {})
+    if analysis:
+        if "enable_place" in analysis:
+            flat["enable_place"] = analysis["enable_place"]
+        if "enable_scene" in analysis:
+            flat["enable_scene"] = analysis["enable_scene"]
+        if "enable_face" in analysis:
+            flat["enable_face"] = analysis["enable_face"]
+        if "models_root" in analysis:
+            flat["models_root"] = analysis["models_root"]
+        if "scene_min_confidence" in analysis:
+            flat["scene_min_confidence"] = analysis["scene_min_confidence"]
+        if "face_det_min_score" in analysis:
+            flat["face_det_min_score"] = analysis["face_det_min_score"]
+        if "face_cluster_similarity" in analysis:
+            flat["face_cluster_similarity"] = analysis["face_cluster_similarity"]
+
     # database_url at top level
     if "database_url" in data:
         flat["database_url"] = data["database_url"]
@@ -161,6 +180,15 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = ""
+
+    # Analysis (people / places / scenes)
+    enable_place: bool = True
+    enable_scene: bool = False
+    enable_face: bool = False
+    models_root: str = ""  # default: f"{storage_root}/.models"
+    scene_min_confidence: float = 0.3
+    face_det_min_score: float = 0.5
+    face_cluster_similarity: float = 0.5
 
     model_config = {
         "env_prefix": "PHOTOVAULT_",
@@ -266,7 +294,27 @@ class Settings(BaseSettings):
             self.database_url = f"{self.storage_root}/photovault.db"
         if not self.log_dir:
             self.log_dir = f"{self.storage_root}/logs"
+        if not self.models_root:
+            self.models_root = f"{self.storage_root}/.models"
+        # Runtime UI toggles (persisted to a small JSON file) win for the three
+        # analysis flags, so the manage page can enable/disable dimensions
+        # without editing config.yaml or restarting.
+        self._apply_analysis_overrides()
         return self
+
+    def _apply_analysis_overrides(self) -> None:
+        """Load persisted analysis-flag overrides (if any) over env/yaml values."""
+        path = analysis_flags_path(self.storage_root)
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                for key in ("enable_place", "enable_scene", "enable_face"):
+                    if isinstance(data.get(key), bool):
+                        object.__setattr__(self, key, data[key])
+        except Exception:  # pragma: no cover - defensive: never fail startup
+            logging.getLogger("photovault.config").warning(
+                "Could not read analysis flag overrides at %s", path, exc_info=True
+            )
 
     @property
     def chunk_size_bytes(self) -> int:
@@ -301,3 +349,51 @@ def reset_settings() -> None:
     """Reset the settings singleton (useful for testing)."""
     global _settings
     _settings = None
+
+
+# ---------------------------------------------------------------------------
+# Runtime analysis feature-flag toggles (persisted, no restart required)
+# ---------------------------------------------------------------------------
+
+
+def analysis_flags_path(storage_root: str) -> Path:
+    """Path to the JSON file persisting the analysis feature-flag overrides."""
+    return Path(storage_root) / ".analysis_flags.json"
+
+
+def get_analysis_flags() -> dict[str, bool]:
+    """Return the current analysis feature flags from the live settings."""
+    s = get_settings()
+    return {
+        "enable_place": bool(s.enable_place),
+        "enable_scene": bool(s.enable_scene),
+        "enable_face": bool(s.enable_face),
+    }
+
+
+def set_analysis_flags(
+    *,
+    enable_place: bool,
+    enable_scene: bool,
+    enable_face: bool,
+) -> dict[str, bool]:
+    """Update the analysis feature flags at runtime and persist them.
+
+    Mutates the live settings singleton (so the background worker, which holds a
+    reference to it, sees the change immediately with no restart) and writes the
+    values to ``{storage_root}/.analysis_flags.json`` so they survive restarts.
+    """
+    s = get_settings()
+    object.__setattr__(s, "enable_place", bool(enable_place))
+    object.__setattr__(s, "enable_scene", bool(enable_scene))
+    object.__setattr__(s, "enable_face", bool(enable_face))
+
+    flags = {
+        "enable_place": bool(enable_place),
+        "enable_scene": bool(enable_scene),
+        "enable_face": bool(enable_face),
+    }
+    path = analysis_flags_path(s.storage_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
+    return flags
