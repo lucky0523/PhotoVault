@@ -653,8 +653,20 @@ interface BackgroundScanService {
 - 新增 `ACTION_RESUME` 与 `@Volatile var isUserPaused` 状态；原有 `isPaused` 保留为"因任意原因暂停"的合并态，配套 `pauseReason`（`USER` / `CONDITION`）。
 - `ACTION_PAUSE`（用户点击"暂停"）：置 `isUserPaused=true`、`pauseReason=USER`，取消 `backupJob`，通知栏显示"已暂停（手动）"。
 - `ACTION_RESUME`（用户点击"开始"）：清 `isUserPaused`，若满足 `Backup_Condition` 则重新进入上传循环从断点续传。
-- `ConditionCheckWorker` 的自动续传分支在 `isUserPaused==true` 时**不得**自动恢复（用户暂停优先于条件恢复，R-24.5）；仅 `pauseReason==CONDITION` 的暂停才在条件恢复后自动续传。
+- `ConditionCheckWorker` 的自动续传分支在存在用户暂停时**不得**自动恢复（用户暂停优先于条件恢复，R-24.5）；仅 `pauseReason==CONDITION` 的暂停才在条件恢复后自动续传。
 - `TasksTab` 订阅服务运行/暂停状态（经 `BackupForegroundService.isRunning` / `isPaused` 暴露的可观察状态或 `TasksTabViewModel` 轮询/StateFlow），据此渲染"开始/暂停"按钮：进行中显示"暂停"、暂停或空闲显示"开始"；`backupQueue` 为空且无进行中任务时禁用按钮（R-24.1/24.4）。
+
+**用户手动暂停的持久化与恢复触发（R-24.5 扩展）：**
+
+原设计中用户手动暂停仅由内存 `isUserPaused` 表示，且只能由用户再次点击"开始"恢复。现扩展为：
+
+- **持久化**：`SettingsPreferences.userPausedBackup` 落盘。`ACTION_PAUSE(USER)` 置真、`ACTION_RESUME` 与 `stopBackup()`（真正停止/停完/`stopAuto`）置假；`onDestroy`（进程被杀）**不**清除，因此"暂停中被杀"重启后仍保持暂停，不被自动触发器静默续传。
+- **恢复触发（除用户点击"开始"外）新增三条，均经 `ACTION_RESUME` 清标志并从断点续传**：
+  1. **再次打开"自动备份"开关**：`SettingsViewModel.setAutoBackupEnabled(true)` 检测到 `userPausedBackup` 即 `resume`。
+  2. **点击"立即备份"FAB**：`LocalTabViewModel.backupNow` 预检通过后若 `userPausedBackup` 即 `resume`（同步先于异步扫描，故扫描 worker 见到标志已清、走常规启动）。
+  3. **自动周期扫描**（统一以 `manual==false` 为闸门）：`BackgroundScanWorker` 经纯函数 `decidePausedResumeAction(allowBackup,isManualRun,userPaused,isForeground)` 决策——App 在后台 → `resume` 静默续传；App 在前台 → `BackupResumePrompt.request()`，由 `MainScreen` 弹窗让用户确认「继续/保持暂停」。前后台由 `AppForegroundState`（`ActivityLifecycleCallbacks` 计数）判定。被"保持暂停"后，后续周期扫描会**再次弹窗**（按产品决策，允许重复提醒）。
+- `ConditionCheckWorker` 的门控读取 `isUserPaused || settingsPreferences.getUserPausedBackup()`，保证被杀后条件恢复仍不续传用户暂停。
+- `TasksTabViewModel` 在 `init` 从持久化重建队列，并在 `refreshCurrentTasks` 以 `heldByUserPause = !isRunning && getUserPausedBackup()` 让"暂停中被杀"在任务页仍显示为已暂停、"开始"按钮可用。
 
 **备份方式总结表：**
 

@@ -16,6 +16,7 @@ import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.PhotoStatusValue
+import com.photovault.util.AppForegroundState
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.util.concurrent.TimeUnit
@@ -50,6 +51,37 @@ class BackgroundScanWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME = "background_scan_worker"
         const val DEFAULT_INTERVAL_MINUTES = 15L
+
+        /**
+         * What an automatic scan should do about a backup the user manually paused.
+         * - [RESUME]: resume it silently (app in background).
+         * - [PROMPT]: ask the user to confirm before resuming (app in foreground).
+         * - [NONE]: no outstanding user pause — take the normal start path.
+         */
+        enum class PausedScanAction { RESUME, PROMPT, NONE }
+
+        /**
+         * Decides how an automatic scan handles a user-paused backup. Pure so the
+         * gating can be unit-tested without a running worker/service (mirrors
+         * [BackupForegroundService.shouldStopAutoOnDisable] / [ConditionCheckWorker.shouldAutoResume]).
+         *
+         * Returns [PausedScanAction.NONE] (defer to the normal start path) unless
+         * this is an **automatic** run ([isManualRun] == false) that [allowBackup]
+         * permits AND a user pause is outstanding ([userPaused]). Manual runs (the
+         * "立即备份" FAB) resume eagerly through their own path and never prompt.
+         * For an automatic run with an outstanding user pause, resume silently in
+         * the background or ask for confirmation in the foreground so an auto
+         * resume never surprises the user mid-use.
+         */
+        fun decidePausedResumeAction(
+            allowBackup: Boolean,
+            isManualRun: Boolean,
+            userPaused: Boolean,
+            isForeground: Boolean
+        ): PausedScanAction {
+            if (!allowBackup || isManualRun || !userPaused) return PausedScanAction.NONE
+            return if (isForeground) PausedScanAction.PROMPT else PausedScanAction.RESUME
+        }
 
         /**
          * Input-data key. When true, the worker ignores each folder's stored
@@ -205,10 +237,63 @@ class BackgroundScanWorker @AssistedInject constructor(
                 workRequest
             )
         }
+
+        // ---- Debug/test: ~10s scan cadence (SettingsPreferences.SCAN_INTERVAL_TEST_10S) ----
+
+        const val TEST_SCAN_WORK_NAME = "background_scan_worker_test"
+
+        /** Input flag marking a run scheduled by the debug 10-second test chain. */
+        const val KEY_TEST_INTERVAL_RUN = "test_interval_run"
+
+        private const val TEST_INTERVAL_SECONDS = 10L
+
+        /**
+         * Applies a chosen scan interval, switching between the normal periodic
+         * worker (real minute intervals) and the debug ~10-second self-rescheduling
+         * chain ([SettingsPreferences.SCAN_INTERVAL_TEST_10S]). Exactly one of the
+         * two mechanisms is active at a time.
+         */
+        fun applyScanInterval(context: Context, intervalValue: Int) {
+            if (intervalValue == com.photovault.data.local.SettingsPreferences.SCAN_INTERVAL_TEST_10S) {
+                // Stop the 15-min periodic worker and start the fast test chain.
+                cancel(context)
+                enqueueTestScan(context)
+            } else {
+                // Stop the test chain and (re)schedule the normal periodic worker.
+                WorkManager.getInstance(context).cancelUniqueWork(TEST_SCAN_WORK_NAME)
+                reschedule(context, intervalValue.toLong())
+            }
+        }
+
+        /**
+         * Enqueues the next debug test scan ~[TEST_INTERVAL_SECONDS] from now.
+         *
+         * WorkManager periodic work cannot run faster than every 15 minutes, so
+         * the sub-minute test cadence is built from delayed one-time work that
+         * re-enqueues itself at the end of each run (see [doWork]) as long as the
+         * test interval is still selected. Debug-only.
+         */
+        fun enqueueTestScan(context: Context) {
+            val workRequest = androidx.work.OneTimeWorkRequestBuilder<BackgroundScanWorker>()
+                .setInitialDelay(TEST_INTERVAL_SECONDS, TimeUnit.SECONDS)
+                .setInputData(
+                    androidx.work.Data.Builder()
+                        .putBoolean(KEY_TEST_INTERVAL_RUN, true)
+                        .build()
+                )
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                TEST_SCAN_WORK_NAME,
+                androidx.work.ExistingWorkPolicy.REPLACE,
+                workRequest
+            )
+        }
     }
 
     override suspend fun doWork(): Result {
-        return try {
+        val isTestRun = inputData.getBoolean(KEY_TEST_INTERVAL_RUN, false)
+        val result = try {
             val forceFullScan = inputData.getBoolean(KEY_FORCE_FULL_SCAN, false)
             val manual = inputData.getBoolean(KEY_MANUAL_BACKUP, false)
             // Backup (enqueue + start) only proceeds for an explicit manual run,
@@ -229,21 +314,43 @@ class BackgroundScanWorker @AssistedInject constructor(
                 android.util.Log.i("PhotoVaultScan", "Status sync result: $synced records updated")
             }
 
-            // Rebuild the queue for uploads that were interrupted by a process
-            // kill: their persisted UploadRecord survives, but the in-memory
-            // queue does not, so nothing would otherwise resume them. Gated by
-            // allowBackup so a disabled auto-backup doesn't silently resume.
+            // Rebuild the queue after a process kill. Two persisted sources feed
+            // it, and order matters:
+            //  1. queued_files — files that were queued but had not started
+            //     uploading (no UploadRecord). restoreFromPersistence() reloads
+            //     them into the in-memory queue.
+            //  2. upload_records — interrupted in-flight uploads, re-queued by
+            //     requeueResumableUploads() which skips URIs already in the queue
+            //     (so a file present in both is not enqueued twice).
+            // Both are gated by allowBackup so a disabled auto-backup doesn't
+            // silently resume.
             if (allowBackup) {
+                backupQueue.restoreFromPersistence()
                 requeueResumableUploads()
             }
 
             scanAllFolders(forceFullScan, allowBackup, manual)
 
-            // After scanning + requeue, make sure queued work (including the
-            // resumed uploads above) actually starts when conditions allow and
-            // the service isn't already running.
+            // After scanning + requeue, decide what to do about queued work.
+            // A user manual-pause changes this: instead of silently (re)starting,
+            // an automatic run either resumes it (app in background) or asks the
+            // user to confirm (app in foreground). See [decidePausedResumeAction].
             if (allowBackup) {
-                maybeStartBackupForQueuedWork(manual)
+                when (
+                    decidePausedResumeAction(
+                        allowBackup = true,
+                        isManualRun = manual,
+                        userPaused = settingsPreferences.getUserPausedBackup(),
+                        isForeground = AppForegroundState.isForeground
+                    )
+                ) {
+                    PausedScanAction.RESUME ->
+                        BackupForegroundService.resume(applicationContext)
+                    PausedScanAction.PROMPT ->
+                        BackupResumePrompt.request()
+                    PausedScanAction.NONE ->
+                        maybeStartBackupForQueuedWork(manual)
+                }
             }
 
             android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
@@ -252,6 +359,17 @@ class BackgroundScanWorker @AssistedInject constructor(
             android.util.Log.e("PhotoVaultScan", "BackgroundScanWorker failed: ${e.message}", e)
             Result.retry()
         }
+
+        // Debug-only: keep the ~10-second test chain going while it is still the
+        // selected interval. Switching to a real interval cancels the unique work,
+        // and this guard stops re-enqueuing so the chain terminates.
+        if (isTestRun &&
+            settingsPreferences.getScanIntervalMinutes() ==
+            com.photovault.data.local.SettingsPreferences.SCAN_INTERVAL_TEST_10S
+        ) {
+            enqueueTestScan(applicationContext)
+        }
+        return result
     }
 
     /**

@@ -8,6 +8,7 @@ import com.photovault.data.local.AppDatabase
 import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.BackupHistoryDao
 import com.photovault.data.local.dao.PhotoStatusDao
+import com.photovault.data.local.dao.QueuedFileDao
 import com.photovault.data.local.dao.UploadRecordDao
 import dagger.Module
 import dagger.Provides
@@ -116,6 +117,30 @@ object DatabaseModule {
         }
     }
 
+    // Exposed (internal) so the 8→9 migration can be unit-tested directly.
+    internal val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Persist the backup queue so the "排队中" list survives an app
+            // close/kill. Rows mirror the in-memory BackupQueue (one per FileInfo)
+            // and are rebuilt into it on process start. Column names/types must
+            // match the QueuedFile entity for Room's schema hash to validate.
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS queued_files (
+                    uri TEXT NOT NULL PRIMARY KEY,
+                    file_name TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    created_time INTEGER NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    folder_uri TEXT NOT NULL,
+                    force_reupload INTEGER NOT NULL DEFAULT 0,
+                    enqueued_at INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -124,7 +149,10 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photovault_db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+            .addMigrations(
+                MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+            )
             .build()
     }
 
@@ -150,5 +178,11 @@ object DatabaseModule {
     @Singleton
     fun providePhotoStatusDao(database: AppDatabase): PhotoStatusDao {
         return database.photoStatusDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideQueuedFileDao(database: AppDatabase): QueuedFileDao {
+        return database.queuedFileDao()
     }
 }

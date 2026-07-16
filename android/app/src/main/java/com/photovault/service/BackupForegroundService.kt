@@ -362,6 +362,9 @@ class BackupForegroundService : Service() {
     @Inject
     lateinit var credentialManager: CredentialManager
 
+    @Inject
+    lateinit var settingsPreferences: com.photovault.data.local.SettingsPreferences
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var backupJob: Job? = null
 
@@ -395,6 +398,12 @@ class BackupForegroundService : Service() {
                 isPaused = true
                 pauseReason = reason
                 isUserPaused = reason == PauseReason.USER
+                // Persist a USER pause so it survives a process kill and is not
+                // silently auto-resumed by automatic triggers; only an explicit
+                // resume trigger (switch on / FAB / periodic-scan resume) clears it.
+                if (reason == PauseReason.USER) {
+                    settingsPreferences.setUserPausedBackup(true)
+                }
                 backupJob?.cancel()
                 _uploadProgress.value = null
                 if (reason == PauseReason.USER) {
@@ -404,12 +413,21 @@ class BackupForegroundService : Service() {
                 }
             }
             ACTION_RESUME -> {
-                // User tapped "开始": clear the user pause and resume uploading the
-                // queue from persisted 断点续传 progress when conditions allow.
+                // A resume trigger fired (user tapped "开始", auto-backup switch
+                // re-enabled, "立即备份" FAB, or the periodic-scan resume/confirm
+                // flow): clear the user pause — including the persisted flag — and
+                // resume uploading the queue from persisted 断点续传 progress when
+                // conditions allow.
                 isRunning = true
                 isPaused = false
                 isUserPaused = false
                 pauseReason = null
+                settingsPreferences.setUserPausedBackup(false)
+                // Any resume (switch on / FAB / background scan / the dialog's own
+                // "恢复") clears an outstanding resume prompt so a stale dialog can't
+                // linger — e.g. a background scan silently resumed while the app was
+                // away, and the prompt would otherwise reappear on return.
+                BackupResumePrompt.consume()
                 startForeground(NOTIFICATION_ID, buildNotification())
                 startBackupProcess()
             }
@@ -444,10 +462,16 @@ class BackupForegroundService : Service() {
         // repopulates it. Prevents the UI card from showing a stale file.
         _uploadProgress.value = null
 
-        totalFiles = backupQueue.size()
         completedFiles = 0
 
         backupJob = serviceScope.launch {
+            // Rebuild the queue from persistence first, so files that were only
+            // queued (not yet started, hence no UploadRecord) survive a process
+            // kill and still get uploaded. Idempotent: files already in the
+            // in-memory queue are skipped.
+            backupQueue.restoreFromPersistence()
+            totalFiles = backupQueue.size()
+
             while (backupQueue.size() > 0 && !isPaused) {
                 // Check conditions before each file
                 if (backupConditionChecker.shouldPauseBackup()) {
@@ -678,6 +702,11 @@ class BackupForegroundService : Service() {
         isManualRun = false
         currentFileUri = null
         _uploadProgress.value = null
+        // A real stop (user "停止", queue drained to completion, folder removal, or
+        // stopAuto on switch-off) resolves any outstanding user pause, so clear the
+        // persisted flag. NOTE: onDestroy (process kill) deliberately does NOT
+        // clear it, so a kill-while-paused stays paused across the restart.
+        settingsPreferences.setUserPausedBackup(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

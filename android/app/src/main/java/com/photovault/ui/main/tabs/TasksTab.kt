@@ -174,6 +174,18 @@ private fun CurrentTasksView(
     // dialog open. null = no dialog shown (R-28.1).
     var longPressedFileUri by remember { mutableStateOf<String?>(null) }
 
+    // Show a spinner until the first load completes (queue restored + refreshed),
+    // so the queue/empty/pause content doesn't flash in from the empty default.
+    if (uiState.isCurrentTasksLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(

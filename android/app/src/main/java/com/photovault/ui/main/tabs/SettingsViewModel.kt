@@ -135,6 +135,14 @@ class SettingsViewModel @Inject constructor(
     fun setAutoBackupEnabled(enabled: Boolean) {
         settingsPreferences.setAutoBackupEnabled(enabled)
 
+        // Trigger ①: re-enabling the auto-backup switch immediately resumes a
+        // backup the user had manually paused. ACTION_RESUME clears the persisted
+        // user-pause flag and continues from the 断点续传 breakpoint when conditions
+        // allow. (Nothing to do if there is no outstanding user pause.)
+        if (enabled && settingsPreferences.getUserPausedBackup()) {
+            BackupForegroundService.resume(context)
+        }
+
         if (!enabled &&
             BackupForegroundService.shouldStopAutoOnDisable(
                 isRunning = BackupForegroundService.isRunning,
@@ -210,9 +218,10 @@ class SettingsViewModel @Inject constructor(
         val previousInterval = settingsPreferences.getScanIntervalMinutes()
         settingsPreferences.setScanIntervalMinutes(minutes)
 
-        // Reschedule WorkManager if interval changed
+        // Reschedule WorkManager if interval changed. applyScanInterval switches
+        // between the normal periodic worker and the debug ~10s test chain.
         if (previousInterval != minutes) {
-            BackgroundScanWorker.reschedule(context, minutes.toLong())
+            BackgroundScanWorker.applyScanInterval(context, minutes)
         }
     }
 

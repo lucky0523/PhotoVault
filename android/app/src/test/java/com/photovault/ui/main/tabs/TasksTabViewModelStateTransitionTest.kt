@@ -94,7 +94,8 @@ class TasksTabViewModelStateTransitionTest {
             backupQueue = backupQueue,
             backupConditionChecker = BackupConditionChecker(context, SettingsPreferences(context)),
             backupHistoryDao = FakeBackupHistoryDao(),
-            uploadRecordDao = uploadRecordDao
+            uploadRecordDao = uploadRecordDao,
+            settingsPreferences = SettingsPreferences(context)
         )
     }
 

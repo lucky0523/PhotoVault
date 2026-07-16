@@ -12,6 +12,7 @@ import com.photovault.data.local.SettingsPreferences
 import com.photovault.service.BackgroundScanWorker
 import com.photovault.service.ConditionBroadcastReceiver
 import com.photovault.service.MediaStoreObserver
+import com.photovault.util.AppForegroundState
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.OkHttpClient
 import javax.inject.Inject
@@ -64,8 +65,21 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
     override fun onCreate() {
         super.onCreate()
 
-        // Schedule periodic background scan (every 15 minutes)
-        BackgroundScanWorker.schedule(this)
+        // Track app foreground/background so background workers can decide whether
+        // to resume a user-paused backup silently (background) or ask for
+        // confirmation (foreground).
+        AppForegroundState.register(this)
+
+        // Schedule background scanning. Normally the 15-minute periodic worker;
+        // if the debug ~10-second test interval is selected, start that chain
+        // instead so the pause resume/confirm flow can be tested across restarts.
+        if (settingsPreferences.getScanIntervalMinutes() ==
+            SettingsPreferences.SCAN_INTERVAL_TEST_10S
+        ) {
+            BackgroundScanWorker.enqueueTestScan(this)
+        } else {
+            BackgroundScanWorker.schedule(this)
+        }
 
         // One-time full re-scan after an upgrade that added new media-type
         // support (e.g. videos), so files that predate the current scanner —

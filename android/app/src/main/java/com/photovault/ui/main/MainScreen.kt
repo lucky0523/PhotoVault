@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -45,6 +46,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -56,6 +59,9 @@ import com.photovault.ui.main.tabs.LocalTab
 import com.photovault.ui.main.tabs.SettingsTab
 import com.photovault.ui.main.tabs.TasksTab
 import com.photovault.ui.theme.GlassBar
+import com.photovault.ui.theme.LiquidDialogButton
+import com.photovault.ui.theme.LiquidDialogButtonStyle
+import com.photovault.ui.theme.LiquidGlassDialog
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.LocalGlassBackdrop
 import com.photovault.ui.theme.PhotoVaultColors
@@ -100,6 +106,40 @@ fun MainScreen(
     val connectionState by viewModel.connectionState.collectAsState()
     val heartbeatCountdown by viewModel.heartbeatCountdown.collectAsState()
     val tabNavController = rememberNavController()
+
+    // Trigger ③ (foreground): when a periodic scan finds a user-paused backup and
+    // the app is in the foreground, it asks for confirmation instead of resuming
+    // silently. Show that confirmation here.
+    val showResumePrompt by com.photovault.service.BackupResumePrompt.pending.collectAsState()
+    val promptContext = androidx.compose.ui.platform.LocalContext.current
+    // Only surface the confirmation while the app UI is actually visible (RESUMED).
+    // A background scan resumes silently and never requests a prompt, but this
+    // guard also covers the transition race where the request is made just as the
+    // app is being backgrounded — the dialog must never appear while off-screen.
+    var appVisible by remember { mutableStateOf(true) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { appVisible = true }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { appVisible = false }
+    if (showResumePrompt && appVisible) {
+        LiquidGlassDialog(
+            onDismissRequest = { com.photovault.service.BackupResumePrompt.consume() },
+            title = "恢复备份？",
+            text = "你之前手动暂停了自动备份。是否现在恢复未完成的备份任务？"
+        ) {
+            LiquidDialogButton(
+                text = "保持暂停",
+                onClick = { com.photovault.service.BackupResumePrompt.consume() },
+                style = LiquidDialogButtonStyle.Neutral
+            )
+            LiquidDialogButton(
+                text = "恢复",
+                onClick = {
+                    com.photovault.service.BackupForegroundService.resume(promptContext)
+                    com.photovault.service.BackupResumePrompt.consume()
+                },
+                style = LiquidDialogButtonStyle.Accent
+            )
+        }
+    }
 
     // Request media-read runtime permission (required for MediaStore image/video scanning).
     val mediaPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(

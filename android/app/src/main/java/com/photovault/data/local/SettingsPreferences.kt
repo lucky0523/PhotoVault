@@ -28,11 +28,13 @@ class SettingsPreferences @Inject constructor(
         private const val KEY_MIN_BATTERY_LEVEL = "min_battery_level"
         private const val KEY_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
         private const val KEY_MEDIA_BACKFILL_VERSION = "media_backfill_version"
+        private const val KEY_USER_PAUSED_BACKUP = "user_paused_backup"
 
         const val DEFAULT_AUTO_BACKUP_ENABLED = true
         const val DEFAULT_WIFI_ONLY = true
         const val DEFAULT_MIN_BATTERY_LEVEL = 50
         const val DEFAULT_SCAN_INTERVAL_MINUTES = 15
+        const val DEFAULT_USER_PAUSED_BACKUP = false
 
         /**
          * Current media-scan capability version. Bump this whenever the set of
@@ -46,7 +48,18 @@ class SettingsPreferences @Inject constructor(
         const val MIN_BATTERY_LEVEL_LOWER = 20
         const val MIN_BATTERY_LEVEL_UPPER = 80
 
-        val SCAN_INTERVAL_OPTIONS = listOf(5, 15, 30, 60)
+        /**
+         * Debug/test-only scan-interval sentinel: fire an automatic scan roughly
+         * every 10 seconds so the pause resume/confirm flow can be exercised
+         * without waiting for the 15-minute periodic worker. It is a NEGATIVE
+         * sentinel (not a real minute count) because WorkManager periodic work
+         * clamps any interval below 15 minutes up to 15 minutes; a sub-minute
+         * cadence is instead driven by a self-rescheduling one-time worker
+         * (see `BackgroundScanWorker.enqueueTestScan`).
+         */
+        const val SCAN_INTERVAL_TEST_10S = -10
+
+        val SCAN_INTERVAL_OPTIONS = listOf(5, 15, 30, 60, SCAN_INTERVAL_TEST_10S)
     }
 
     private val prefs: SharedPreferences by lazy {
@@ -65,12 +78,25 @@ class SettingsPreferences @Inject constructor(
     private val _scanIntervalMinutes = MutableStateFlow(DEFAULT_SCAN_INTERVAL_MINUTES)
     val scanIntervalMinutes: StateFlow<Int> = _scanIntervalMinutes.asStateFlow()
 
+    /**
+     * Whether the user has manually paused an automatic backup (tapped "暂停" on
+     * the 备份任务 Tab). Persisted so the pause survives a process kill and is NOT
+     * silently auto-resumed by automatic triggers on the next launch; it is only
+     * cleared when backup is resumed through an explicit trigger (auto-backup
+     * switch re-enabled, "立即备份" FAB, or the periodic-scan resume/confirm flow)
+     * or the backup is stopped. See `BackupForegroundService` / `ConditionCheckWorker`
+     * / `BackgroundScanWorker`.
+     */
+    private val _userPausedBackup = MutableStateFlow(DEFAULT_USER_PAUSED_BACKUP)
+    val userPausedBackup: StateFlow<Boolean> = _userPausedBackup.asStateFlow()
+
     init {
         // Load saved values
         _autoBackupEnabled.value = prefs.getBoolean(KEY_AUTO_BACKUP_ENABLED, DEFAULT_AUTO_BACKUP_ENABLED)
         _wifiOnly.value = prefs.getBoolean(KEY_WIFI_ONLY, DEFAULT_WIFI_ONLY)
         _minBatteryLevel.value = prefs.getInt(KEY_MIN_BATTERY_LEVEL, DEFAULT_MIN_BATTERY_LEVEL)
         _scanIntervalMinutes.value = prefs.getInt(KEY_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES)
+        _userPausedBackup.value = prefs.getBoolean(KEY_USER_PAUSED_BACKUP, DEFAULT_USER_PAUSED_BACKUP)
     }
 
     /**
@@ -151,5 +177,21 @@ class SettingsPreferences @Inject constructor(
      */
     fun setMediaBackfillVersion(version: Int) {
         prefs.edit().putInt(KEY_MEDIA_BACKFILL_VERSION, version).apply()
+    }
+
+    /**
+     * Whether an automatic backup is currently held paused by an explicit user
+     * "暂停". Durable across process death so automatic triggers do not silently
+     * resume it (see class-level docs on [userPausedBackup]).
+     */
+    fun getUserPausedBackup(): Boolean = _userPausedBackup.value
+
+    /**
+     * Set/clear the persisted "user manually paused" flag. Set to true when the
+     * user taps "暂停"; cleared when backup is resumed via a trigger or stopped.
+     */
+    fun setUserPausedBackup(paused: Boolean) {
+        _userPausedBackup.value = paused
+        prefs.edit().putBoolean(KEY_USER_PAUSED_BACKUP, paused).apply()
     }
 }

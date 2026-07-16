@@ -220,6 +220,17 @@ class LocalTabViewModel @Inject constructor(
         viewModelScope.launch {
             val autoBackupOn = settingsPreferences.getAutoBackupEnabled()
             val error = startScan(manual = !autoBackupOn, requireBattery = true)
+
+            // Trigger ②: tapping "立即备份" immediately resumes a backup the user had
+            // manually paused. Only when the pre-flight checks passed (error == null):
+            // ACTION_RESUME clears the persisted user-pause flag and continues from
+            // the breakpoint. Doing this synchronously here (before the async scan
+            // worker runs) also means the worker sees the flag already cleared, so it
+            // takes the normal start path instead of the resume/confirm flow.
+            if (error == null && settingsPreferences.getUserPausedBackup()) {
+                BackupForegroundService.resume(context)
+            }
+
             onResult(error)
         }
     }

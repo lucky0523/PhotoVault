@@ -6,10 +6,12 @@ import androidx.room.TypeConverters
 import com.photovault.data.local.dao.BackupFolderDao
 import com.photovault.data.local.dao.BackupHistoryDao
 import com.photovault.data.local.dao.PhotoStatusDao
+import com.photovault.data.local.dao.QueuedFileDao
 import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.PhotoStatus
+import com.photovault.data.local.entity.QueuedFile
 import com.photovault.data.local.entity.UploadRecord
 
 /**
@@ -23,9 +25,10 @@ import com.photovault.data.local.entity.UploadRecord
         BackupFolder::class,
         UploadRecord::class,
         BackupHistoryRecord::class,
-        PhotoStatus::class
+        PhotoStatus::class,
+        QueuedFile::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -34,4 +37,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun uploadRecordDao(): UploadRecordDao
     abstract fun backupHistoryDao(): BackupHistoryDao
     abstract fun photoStatusDao(): PhotoStatusDao
+    abstract fun queuedFileDao(): QueuedFileDao
 }

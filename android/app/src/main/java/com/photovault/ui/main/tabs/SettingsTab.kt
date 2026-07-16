@@ -838,6 +838,7 @@ private fun ScanIntervalSetting(
         Column(modifier = Modifier.selectableGroup()) {
             SettingsPreferences.SCAN_INTERVAL_OPTIONS.forEach { interval ->
                 val label = when (interval) {
+                    SettingsPreferences.SCAN_INTERVAL_TEST_10S -> "10 秒（测试）"
                     5 -> "5 分钟"
                     15 -> "15 分钟"
                     30 -> "30 分钟"

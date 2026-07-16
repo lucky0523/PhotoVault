@@ -55,7 +55,12 @@ class ConditionCheckWorker @AssistedInject constructor(
                     autoBackupEnabled = settingsPreferences.getAutoBackupEnabled(),
                     queueSize = backupQueue.size(),
                     conditionsRecovered = backupConditionChecker.shouldResumeBackup(),
-                    isUserPaused = BackupForegroundService.isUserPaused
+                    // Consult BOTH the in-memory flag and the persisted one: after a
+                    // process kill the in-memory flag is lost, but a user pause must
+                    // still block condition-recovery auto-resume (only the explicit
+                    // resume triggers may clear it), R-24.5.
+                    isUserPaused = BackupForegroundService.isUserPaused ||
+                        settingsPreferences.getUserPausedBackup()
                 )
             ) {
                 // Condition recovery is an automatic trigger (R-3.14 classifies it

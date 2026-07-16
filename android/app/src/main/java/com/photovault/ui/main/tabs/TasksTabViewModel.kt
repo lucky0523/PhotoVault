@@ -116,6 +116,13 @@ data class PausedTaskUi(
 data class TasksTabUiState(
     val selectedSegment: TasksSegment = TasksSegment.CURRENT_TASKS,
     // Current tasks
+    /**
+     * True until the current-tasks state has been loaded for the first time
+     * (queue restored from persistence + first refresh). The UI shows a spinner
+     * while true so the queue/empty/pause content doesn't flash in from the
+     * default empty state on the first frame.
+     */
+    val isCurrentTasksLoading: Boolean = true,
     val isUploading: Boolean = false,
     val isPaused: Boolean = false,
     val pauseReason: PauseReason? = null,
@@ -175,7 +182,8 @@ class TasksTabViewModel @Inject constructor(
     private val backupQueue: BackupQueue,
     private val backupConditionChecker: BackupConditionChecker,
     private val backupHistoryDao: BackupHistoryDao,
-    private val uploadRecordDao: UploadRecordDao
+    private val uploadRecordDao: UploadRecordDao,
+    private val settingsPreferences: com.photovault.data.local.SettingsPreferences
 ) : ViewModel() {
 
     companion object {
@@ -498,6 +506,14 @@ class TasksTabViewModel @Inject constructor(
      */
     private fun startPollingCurrentTasks() {
         viewModelScope.launch {
+            // Rebuild the in-memory queue from persistence BEFORE the first
+            // refresh so the "排队中" list and a held user-pause are already
+            // correct on the first painted frame (they survive a process restart).
+            // The isCurrentTasksLoading spinner covers this brief window so the
+            // content doesn't flash in from the default empty state.
+            backupQueue.restoreFromPersistence()
+
+            var firstLoad = true
             while (isActive) {
                 refreshCurrentTasks()
                 // Keep the AUTO_OFF paused list in sync as records are added
@@ -505,6 +521,10 @@ class TasksTabViewModel @Inject constructor(
                 // opening the page, polling, and app restart all reflect the
                 // persisted state (R-26.7/31.1/31.3).
                 loadPausedTasks()
+                if (firstLoad) {
+                    _uiState.value = _uiState.value.copy(isCurrentTasksLoading = false)
+                    firstLoad = false
+                }
                 delay(2000) // Poll every 2 seconds
             }
         }
@@ -515,8 +535,14 @@ class TasksTabViewModel @Inject constructor(
      */
     private fun refreshCurrentTasks() {
         val isRunning = BackupForegroundService.isRunning
-        val isPaused = BackupForegroundService.isPaused
+        val servicePaused = BackupForegroundService.isPaused
         val queuedFiles = backupQueue.getAll()
+
+        // A user pause is persisted, so it can outlive the service (process kill):
+        // when the service isn't running but the flag is set, the backup is still
+        // "held paused" and must render as such until an explicit resume trigger.
+        val heldByUserPause = !isRunning && settingsPreferences.getUserPausedBackup()
+        val isPaused = servicePaused || heldByUserPause
 
         // Distinguish a user-initiated pause from a condition pause (R-24.5).
         // A user pause takes priority: even if a condition also happens to be
@@ -525,14 +551,15 @@ class TasksTabViewModel @Inject constructor(
         // a user pause.
         val pauseReason = when {
             !isPaused -> null
-            BackupForegroundService.isUserPaused ||
+            heldByUserPause ||
+                BackupForegroundService.isUserPaused ||
                 BackupForegroundService.pauseReason == com.photovault.service.PauseReason.USER ->
                 PauseReason.UserPaused
             else -> determinePauseReason()
         }
 
         _uiState.value = _uiState.value.copy(
-            isUploading = isRunning && !isPaused,
+            isUploading = isRunning && !servicePaused,
             isPaused = isPaused,
             isBackupRunning = isRunning,
             isManualRun = BackupForegroundService.isManualRun,
