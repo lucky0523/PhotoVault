@@ -49,6 +49,11 @@ class CityRecord(NamedTuple):
     Coordinates are in decimal degrees. ``province`` and ``country`` are
     optional descriptive fields; only ``name`` and the coordinates are required
     for nearest-neighbour matching.
+
+    ``name`` holds the primary (romanised/English) city name and ``name_zh``
+    the Chinese form when the geocoding dataset provides one. Both are carried
+    through the pipeline so the Web端 can display either — bilingual display is
+    a reserved capability, not required for matching.
     """
 
     name: str
@@ -56,6 +61,7 @@ class CityRecord(NamedTuple):
     country: Optional[str]
     latitude: float
     longitude: float
+    name_zh: Optional[str] = None
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -205,6 +211,7 @@ def nearest_city(
 # the loader tolerant of the different schemas an offline city dataset (e.g. a
 # GeoNames export) might use, since the resource file is user-supplied.
 _NAME_COLUMNS = ("name", "city", "city_name", "asciiname", "town")
+_NAME_ZH_COLUMNS = ("name_zh", "name_cn", "zh_name", "cn_name", "local_name")
 _PROVINCE_COLUMNS = ("province", "admin1", "admin1_name", "state", "region")
 _COUNTRY_COLUMNS = ("country", "country_name", "country_code", "cc")
 _LAT_COLUMNS = ("latitude", "lat")
@@ -261,10 +268,14 @@ def _load_cities_from_db(db_path: Path) -> list[CityRecord]:
 
             province_col = _pick_column(columns, _PROVINCE_COLUMNS)
             country_col = _pick_column(columns, _COUNTRY_COLUMNS)
+            name_zh_col = _pick_column(columns, _NAME_ZH_COLUMNS)
 
             select_cols = [f'"{name_col}"', f'"{lat_col}"', f'"{lon_col}"']
             select_cols.append(f'"{province_col}"' if province_col else "NULL")
             select_cols.append(f'"{country_col}"' if country_col else "NULL")
+            # Optional Chinese-name column — NULL when the dataset lacks it, so
+            # legacy single-name databases keep working (name_zh stays None).
+            select_cols.append(f'"{name_zh_col}"' if name_zh_col else "NULL")
             query = f'SELECT {", ".join(select_cols)} FROM "{table}"'
 
             cities: list[CityRecord] = []
@@ -276,6 +287,7 @@ def _load_cities_from_db(db_path: Path) -> list[CityRecord]:
                     continue
                 province = row[3] if row[3] is not None else None
                 country = row[4] if row[4] is not None else None
+                name_zh = row[5] if row[5] is not None else None
                 cities.append(
                     CityRecord(
                         name=str(name),
@@ -283,6 +295,7 @@ def _load_cities_from_db(db_path: Path) -> list[CityRecord]:
                         country=str(country) if country is not None else None,
                         latitude=lat,
                         longitude=lon,
+                        name_zh=str(name_zh) if name_zh is not None else None,
                     )
                 )
             return cities
@@ -409,6 +422,7 @@ class PlaceAnalyzer:
         latitude, longitude = coords
 
         city: Optional[str] = None
+        city_zh: Optional[str] = None
         province: Optional[str] = None
         country: Optional[str] = None
         geocoded_at: Optional[str] = None
@@ -420,6 +434,7 @@ class PlaceAnalyzer:
             match = nearest_city(latitude, longitude, cities) if cities else None
             if match is not None:
                 city = match.name
+                city_zh = match.name_zh
                 province = match.province
                 country = match.country
                 geocoded_at = datetime.now(timezone.utc).isoformat()
@@ -430,6 +445,7 @@ class PlaceAnalyzer:
             latitude=latitude,
             longitude=longitude,
             city=city,
+            city_zh=city_zh,
             province=province,
             country=country,
             geocoded_at=geocoded_at,
@@ -443,6 +459,7 @@ class PlaceAnalyzer:
         latitude: float,
         longitude: float,
         city: Optional[str],
+        city_zh: Optional[str],
         province: Optional[str],
         country: Optional[str],
         geocoded_at: Optional[str],
@@ -451,6 +468,8 @@ class PlaceAnalyzer:
 
         Opens its own aiosqlite connection (worker-isolated) so the analyzer can
         be driven from a background task without sharing a request connection.
+        Both ``city`` (primary/romanised) and ``city_zh`` (Chinese, may be
+        ``None``) are stored so the Web端 can display either.
         """
         from app.core.database import _create_connection
 
@@ -462,8 +481,8 @@ class PlaceAnalyzer:
                 """
                 INSERT INTO photo_gps (
                     file_id, user_id, latitude, longitude,
-                    city, province, country, geocoded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    city, city_zh, province, country, geocoded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_id,
@@ -471,6 +490,7 @@ class PlaceAnalyzer:
                     latitude,
                     longitude,
                     city,
+                    city_zh,
                     province,
                     country,
                     geocoded_at,

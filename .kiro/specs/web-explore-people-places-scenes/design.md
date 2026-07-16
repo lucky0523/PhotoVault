@@ -82,7 +82,7 @@ face_cluster_similarity: float = 0.5   # 余弦相似度归并阈值
 {models_root}/
   faces/        det_10g.onnx, w600k_r50.onnx（检测 + 特征）
   scenes/       scene.onnx, labels_zh.json（模型 + 中文标签映射）
-  geocoding/    cities.db（离线城市坐标数据集）
+  geocoding/    cities.db（离线城市坐标数据集，仅城市级，含 name 英文名 + name_zh 中文名）
 ```
 
 ### 二、数据模型（`server/app/core/database.py`）
@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS photo_gps (
     user_id INTEGER NOT NULL,
     latitude REAL NOT NULL,
     longitude REAL NOT NULL,
-    city TEXT,
+    city TEXT,        -- 主城市名（罗马化/英文），聚合分组键
+    city_zh TEXT,     -- 城市中文名（可空），为 Web 端双语展示预留
     province TEXT,
     country TEXT,
     geocoded_at TIMESTAMP,
@@ -175,8 +176,20 @@ class AnalysisService:
 #### PlaceAnalyzer（`place_analyzer.py`）
 
 - 用 Pillow `Image.getexif().get_ifd(IFD.GPSInfo)` 读取 GPS（tag 34853），纯函数 `parse_gps_ifd(gps_ifd) -> Optional[(lat, lon)]` 负责有理数/参考方向（N/S/E/W）换算。
-- 逆地理编码：加载 `geocoding/cities.db`（城市名 + 经纬度），纯函数 `nearest_city(lat, lon, cities) -> CityRecord` 做最近邻（球面距离/近似平方距离）。默认采用离线数据集（如公开的 GeoNames cities 子集导入的 SQLite），**不发起外网请求**（需求 2.2）。
-- 写 `photo_gps`。`available = Path(models_root/geocoding/cities.db).exists()`；不可用时仅在有原始坐标时可选写入经纬度而不填城市（需求 2.5）。
+- 逆地理编码：加载 `geocoding/cities.db`，纯函数 `nearest_city(lat, lon, cities) -> CityRecord` 做最近邻（球面距离/近似平方距离）。默认采用离线数据集（如公开的 GeoNames cities 子集导入的 SQLite），**不发起外网请求**（需求 2.2）。
+- 写 `photo_gps`，同时写入主名 `city` 与中文名 `city_zh`。`available = Path(models_root/geocoding/cities.db).exists()`；不可用时仅在有原始坐标时可选写入经纬度而不填城市（需求 2.5）。
+
+**`CityRecord` 与双语名**：`CityRecord(name, province, country, latitude, longitude, name_zh=None)`。`name` 为主名（罗马化/英文，如 `Beijing`），`name_zh` 为中文名（如 `北京市`，可空）。`_load_cities_from_db` 对列名做容错探测，中文名列（`name_zh`/`name_cn`/`zh_name`/`cn_name`/`local_name`）缺失时 `name_zh=None`，旧的单名 `cities.db` 仍可正常加载。
+
+**城市级粒度过滤（构建 `cities.db` 时）**：`cities.db` 由 GeoNames dump 通过 `resource_downloader._convert_geonames_to_db` 转换生成。转换阶段用纯函数 `_is_city_level(parts)` 只保留城市级及以上的地物，避免最近邻命中街道/片区级点（如 `清河`=PPLA4 街道驻地、`张八沟`=PPLX 城市片区）：
+  - **保留**：`PPLC`（首都）、`PPLA`（省会）、`PPLA2`（地级市驻地）、`PPLA3`（县级市/县城驻地）；以及人口 ≥ `_MIN_CITY_POPULATION`（默认 15000）的通用 `PPL`。
+  - **剔除**：`PPLA4`/`PPLA5`（乡镇/街道驻地，即使人口很大也剔除）、`PPLX`（城市片区）、feature class ≠ `P` 的非聚居点、以及未达人口阈值的小型 `PPL`。
+  - 被裁剪掉级别列的精简 dump 无法判级时全部保留（降级，避免生成空库）。
+
+**中文名抽取（构建 `cities.db` 时）**：GeoNames 主 `name` 列对中国城市多为罗马化英文，中文名藏在逗号分隔的 `alternatenames` 列。纯函数 `_extract_chinese_name(name, alternatenames)`：主名本身含汉字则用主名，否则取别名中第一个含汉字（`_has_han`，覆盖 CJK 统一表意文字及扩展 A/兼容区）的词作为 `name_zh`，都没有则 `name_zh=None`。转换后 `cities` 表 schema 为 `(name, name_zh, province, country, latitude, longitude)`，英文名与中文名分列存储。
+  - 局限：`alternatenames` 不带语言标签，抽取的是"首个含汉字别名"，东亚城市基本即中文名；要 100% 精确到简体中文需引入 GeoNames 带语言标注的 `alternateNames` 文件（后续可选增强）。
+
+> 说明：城市级过滤与中文名抽取都作用于 `cities.db` 的**生成阶段**。已安装的旧库 + 已写入的 `photo_gps` 记录不会自动更新，需重新生成地理库并对存量照片触发"重新分析"后生效。直接上传成品 `.db`（不经 GeoNames 转换）则不受这两项处理约束。
 
 #### SceneAnalyzer（`scene_analyzer.py`）
 
@@ -211,7 +224,7 @@ class AnalysisService:
 | `GET /explore/people?library=` | 人物聚类列表 | `[{cluster_id, name, face_count, cover_file_id, cover_face_bbox}]` |
 | `GET /explore/people/{cluster_id}?page=&page_size=` | 某人物下照片 | 分页 `FileInfoResponse` 列表 |
 | `PUT /explore/people/{cluster_id}` body `{name}` | 重命名人物 | `{success, name}` |
-| `GET /explore/places?library=` | 城市聚合 | `[{city, province, country, count, cover_file_id}]` |
+| `GET /explore/places?library=` | 城市聚合 | `[{city, city_zh, province, country, count, cover_file_id}]` |
 | `GET /explore/places/{city}?page=&page_size=` | 某城市照片 | 分页 `FileInfoResponse` |
 | `GET /explore/scenes?library=` | 场景聚合 | `[{label, name_zh, count, cover_file_id}]` |
 | `GET /explore/scenes/{label}?page=&page_size=` | 某场景照片 | 分页 `FileInfoResponse` |
@@ -221,6 +234,7 @@ class AnalysisService:
 
 - `library` 过滤：为空表示「全部图库」；否则按 `file_records.device_name` 过滤（LibraryFilter 取值来源为 `GET /files/devices`）。
 - 照片列表项复用 `FileInfoResponse` 形态，`thumbnail_url = /api/v1/files/thumbnail/{id}`，与现有前端一致。
+- 地点聚合以主名 `city`（英文）为分组键与 `{city}` 路径段（ASCII 稳定），响应同时返回 `city_zh`（中文，可空）。`PlaceGroupResponse = {city, city_zh, province, country, count, cover_file_id}`；聚合 SQL 以 `MAX(pg.city_zh)` 附带中文名。Web 端可据语言偏好在 `city_zh`/`city` 间选择展示——**双语为预留能力**，当前 UI 未强制启用。
 - `ResourceStatus`：`{type, installed, name, version, size, updated_at, enabled}`；`enabled` 反映对应 FeatureFlag。
 - 资源上传采用 `multipart/form-data`（`UploadFile`），保存到 `models_root/{type}/`；保存前做扩展名/大小/基本格式校验，失败返回 400 且不覆盖既有文件（需求 6.7）；上传成功后分析器下次实例化即加载新文件（需求 6.3，分析器每次任务按需加载或检测 mtime 重载）。
 - 无数据/资源未安装时，聚合接口返回**空列表**并在需要处带 `enabled/installed=false` 语义，不返回错误（需求 8.4）。
@@ -254,7 +268,7 @@ class AnalysisService:
 - 顶部：标题「探索」+ LibraryFilter 下拉（选项来自 `getDeviceStats()`，默认「全部图库」）+ 右侧「管理」按钮跳 `/explore/manage`。
 - 三个分区组件（可抽 `ExploreSection.vue`）：
   - 人物：圆形头像（封面用 `getThumbnailUrl(cover_file_id)`，理想情况按 `cover_face_bbox` 裁剪，MVP 可先用整图圆形裁切）+ 名称，点击进 `/explore/people/:id`。
-  - 地点：首位「地图」入口卡片 + 城市卡片，点击进 `/explore/places/:city`。
+  - 地点：首位「地图」入口卡片 + 城市卡片（卡片标题优先 `city_zh`、回退 `city`），点击进 `/explore/places/:city`（路径段用英文主名 `city`）。
   - 场景：场景卡片，点击进 `/explore/scenes/:label`。
 - 横向滚动容器（overflow-x）。每个分区独立请求、独立加载态；空/未启用时显示占位说明（需求 9.1）。
 
@@ -270,8 +284,8 @@ class AnalysisService:
 
 ## Data Models
 
-- 新增四表见上，均含 `user_id` 做隔离；`file_records` 不变。
-- 前端类型（`explore.ts`）：`PersonCluster`、`PlaceGroup`、`SceneGroup`、`ResourceStatus`、`ExplorePhoto`（对齐 `FileInfo`）。
+- 新增四表见上，均含 `user_id` 做隔离；`file_records` 不变。`photo_gps` 的 `city_zh` 列对既有数据库通过 `init_db` 中的幂等 `ALTER TABLE ... ADD COLUMN city_zh TEXT` 迁移补齐。
+- 前端类型（`explore.ts`）：`PersonCluster`、`PlaceGroup`（含 `city` 与可空 `city_zh`）、`SceneGroup`、`ResourceStatus`、`ExplorePhoto`（对齐 `FileInfo`）。
 - 聚类 `centroid`、人脸 `embedding` 以 `float32` 字节存 BLOB；读写用 `numpy.frombuffer/tobytes`（numpy 随 onnxruntime 提供，属可选依赖范畴）。
 
 ## Error Handling

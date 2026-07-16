@@ -130,10 +130,129 @@ _CHUNK = 1024 * 1024
 
 # GeoNames "geoname" table column indices (see download.geonames.org readme).
 _GN_NAME = 1
+_GN_ALTERNATENAMES = 3
 _GN_LATITUDE = 4
 _GN_LONGITUDE = 5
+_GN_FEATURE_CLASS = 6
+_GN_FEATURE_CODE = 7
 _GN_COUNTRY = 8
 _GN_ADMIN1 = 10
+_GN_POPULATION = 14
+
+# City-level granularity filter for the GeoNames conversion.
+#
+# GeoNames populated places (feature class ``P``) range from country capitals
+# down to individual city sections / hamlets. Keeping every row makes the
+# nearest-neighbour lookup resolve to street/subdistrict names (e.g. a
+# ``PPLX`` city section or a ``PPLA4`` township seat) instead of a city. We
+# therefore keep only genuinely city-level features:
+#
+#   PPLC  - national capital
+#   PPLA  - seat of a first-order admin division (province capital)
+#   PPLA2 - seat of a second-order admin division (prefecture-level city)
+#   PPLA3 - seat of a third-order admin division (county-level city / town)
+#
+# Explicitly excluded: PPLA4 / PPLA5 (township / subdistrict seats), PPLX
+# (section of a populated place), and generic small places. A generic ``PPL``
+# is only kept when its population clears ``_MIN_CITY_POPULATION`` so that large
+# cities GeoNames happens to code as plain ``PPL`` are not dropped.
+_CITY_FEATURE_CODES = frozenset({"PPLC", "PPLA", "PPLA2", "PPLA3"})
+_MIN_CITY_POPULATION = 15000
+
+
+def _has_han(text: str) -> bool:
+    """Return whether ``text`` contains a Han (Chinese) ideograph.
+
+    Covers the common CJK Unified Ideographs block and Extension A, plus the
+    compatibility-ideographs block — enough to recognise a Chinese place name.
+    """
+    for ch in text:
+        code = ord(ch)
+        if (
+            0x4E00 <= code <= 0x9FFF
+            or 0x3400 <= code <= 0x4DBF
+            or 0xF900 <= code <= 0xFAFF
+        ):
+            return True
+    return False
+
+
+def _extract_chinese_name(name: str, alternatenames: str) -> Optional[str]:
+    """Extract the Chinese (Han-script) form of a GeoNames place, if any.
+
+    GeoNames stores the primary ``name`` of most Chinese cities romanised
+    (e.g. ``"Beijing"``); the Chinese form lives among the comma-separated
+    ``alternatenames`` (e.g. ``"北京市,北京,Beijing,..."``). This pure helper:
+
+    - returns ``name`` itself when it already contains Han characters;
+    - otherwise returns the first ``alternatenames`` entry that contains Han
+      characters (the local/Chinese form when present);
+    - otherwise returns ``None`` (no Chinese form available).
+
+    The English/romanised ``name`` is preserved separately by the caller, so
+    both forms are stored — this only surfaces the Chinese one.
+
+    Note: the alternate-names list is not language-tagged, so this prefers any
+    Han-script alias. For East Asian places that reliably yields the Chinese
+    name; a language-tagged ``alternateNames`` file would be needed for full
+    precision.
+    """
+    if _has_han(name):
+        return name
+    if alternatenames:
+        for token in alternatenames.split(","):
+            candidate = token.strip()
+            if candidate and _has_han(candidate):
+                return candidate
+    return None
+
+
+def _is_city_level(parts: list[str]) -> bool:
+    """Return whether a GeoNames row is city-level (vs street/subdistrict).
+
+    The decision is a pure function of the tab-split GeoNames columns so it can
+    be unit-tested without any IO:
+
+    - non populated-place rows (feature class other than ``P``) are rejected;
+    - admin-seat feature codes in :data:`_CITY_FEATURE_CODES` are accepted;
+    - any other populated place is accepted only when its population reaches
+      :data:`_MIN_CITY_POPULATION`.
+
+    When the feature-class / feature-code columns are absent (a trimmed dump),
+    the row is accepted so such dumps still produce a usable database.
+    """
+    feature_class = (
+        parts[_GN_FEATURE_CLASS].strip() if len(parts) > _GN_FEATURE_CLASS else ""
+    )
+    feature_code = (
+        parts[_GN_FEATURE_CODE].strip() if len(parts) > _GN_FEATURE_CODE else ""
+    )
+
+    # Trimmed dump without classification columns: cannot filter, keep the row.
+    if not feature_class and not feature_code:
+        return True
+
+    # Only populated places are candidate "cities".
+    if feature_class and feature_class != "P":
+        return False
+
+    if feature_code in _CITY_FEATURE_CODES:
+        return True
+
+    # The population fallback only rescues *generic* populated places (or rows
+    # with no feature code). Explicit sub-city codes (PPLA4/PPLA5 township &
+    # subdistrict seats, PPLX city sections, ...) are always dropped even when
+    # populous, since a Chinese 街道 can hold hundreds of thousands of people.
+    if feature_code not in ("", "PPL"):
+        return False
+
+    population = 0
+    if len(parts) > _GN_POPULATION:
+        try:
+            population = int(parts[_GN_POPULATION])
+        except ValueError:
+            population = 0
+    return population >= _MIN_CITY_POPULATION
 
 
 class ResourceDownloadError(Exception):
@@ -249,8 +368,10 @@ def _convert_geonames_to_db(txt_path: Path, db_path: Path) -> int:
     """Convert a GeoNames "geoname" tab-separated dump into a ``cities.db``.
 
     Builds a ``cities(name, province, country, latitude, longitude)`` table
-    matching the reverse-geocoder loader. Rows with unparseable coordinates are
-    skipped. Returns the number of inserted rows.
+    matching the reverse-geocoder loader. Only city-level rows are kept (see
+    :func:`_is_city_level`) so reverse geocoding resolves to a city instead of a
+    street/subdistrict. Rows with unparseable coordinates are skipped. Returns
+    the number of inserted rows.
     """
     tmp_db = db_path.with_suffix(".db.tmp")
     _safe_unlink(tmp_db)
@@ -258,15 +379,21 @@ def _convert_geonames_to_db(txt_path: Path, db_path: Path) -> int:
     conn = sqlite3.connect(str(tmp_db))
     inserted = 0
     try:
+        # ``name`` keeps the romanised/English primary name; ``name_zh`` holds
+        # the Chinese form (nullable) so the Web端 can show either language.
         conn.execute(
-            "CREATE TABLE cities (name TEXT, province TEXT, country TEXT, "
-            "latitude REAL, longitude REAL)"
+            "CREATE TABLE cities (name TEXT, name_zh TEXT, province TEXT, "
+            "country TEXT, latitude REAL, longitude REAL)"
         )
         batch: list[tuple] = []
         with open(txt_path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 parts = line.rstrip("\n").split("\t")
                 if len(parts) <= _GN_LONGITUDE:
+                    continue
+                # Keep only city-level places so reverse geocoding resolves to a
+                # city rather than a street/subdistrict (e.g. 清河 / 张八沟).
+                if not _is_city_level(parts):
                     continue
                 try:
                     lat = float(parts[_GN_LATITUDE])
@@ -276,17 +403,28 @@ def _convert_geonames_to_db(txt_path: Path, db_path: Path) -> int:
                 name = parts[_GN_NAME].strip()
                 if not name:
                     continue
+                # Keep the English/romanised name and, separately, derive the
+                # Chinese form from the alternate names (e.g. "Beijing" plus
+                # "北京市"). Both are stored for bilingual Web端 display.
+                alternatenames = (
+                    parts[_GN_ALTERNATENAMES]
+                    if len(parts) > _GN_ALTERNATENAMES
+                    else ""
+                )
+                name_zh = _extract_chinese_name(name, alternatenames)
                 province = parts[_GN_ADMIN1].strip() if len(parts) > _GN_ADMIN1 else ""
                 country = parts[_GN_COUNTRY].strip() if len(parts) > _GN_COUNTRY else ""
-                batch.append((name, province or None, country or None, lat, lon))
+                batch.append(
+                    (name, name_zh, province or None, country or None, lat, lon)
+                )
                 if len(batch) >= 5000:
                     conn.executemany(
-                        "INSERT INTO cities VALUES (?, ?, ?, ?, ?)", batch
+                        "INSERT INTO cities VALUES (?, ?, ?, ?, ?, ?)", batch
                     )
                     inserted += len(batch)
                     batch.clear()
         if batch:
-            conn.executemany("INSERT INTO cities VALUES (?, ?, ?, ?, ?)", batch)
+            conn.executemany("INSERT INTO cities VALUES (?, ?, ?, ?, ?, ?)", batch)
             inserted += len(batch)
         conn.execute(
             "CREATE INDEX idx_cities_latlon ON cities(latitude, longitude)"

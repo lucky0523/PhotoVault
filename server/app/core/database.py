@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS photo_gps (
     latitude REAL NOT NULL,
     longitude REAL NOT NULL,
     city TEXT,
+    city_zh TEXT,
     province TEXT,
     country TEXT,
     geocoded_at TIMESTAMP,
@@ -209,6 +210,14 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE upload_sessions ADD COLUMN exif_time TIMESTAMP;")
         if "mime_type" not in session_cols:
             await db.execute("ALTER TABLE upload_sessions ADD COLUMN mime_type TEXT;")
+
+        # photo_gps: bilingual city name column for existing databases. The
+        # primary ``city`` stays the romanised/English name (stable grouping
+        # key); ``city_zh`` reserves the Chinese form for Web端 bilingual display.
+        cursor = await db.execute("PRAGMA table_info(photo_gps)")
+        gps_cols = {row[1] for row in await cursor.fetchall()}
+        if "city_zh" not in gps_cols:
+            await db.execute("ALTER TABLE photo_gps ADD COLUMN city_zh TEXT;")
 
         # Create indexes
         for index_sql in _CREATE_INDEXES:

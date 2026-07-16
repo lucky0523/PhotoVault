@@ -73,9 +73,15 @@ class PersonClusterResponse(BaseModel):
 
 
 class PlaceGroupResponse(BaseModel):
-    """A city grouping in the places aggregation."""
+    """A city grouping in the places aggregation.
+
+    ``city`` is the primary (romanised/English) name and doubles as the
+    grouping key / path segment. ``city_zh`` carries the Chinese form when the
+    geocoding dataset provides one, reserving bilingual display for the Web端.
+    """
 
     city: str
+    city_zh: Optional[str] = None
     province: Optional[str] = None
     country: Optional[str] = None
     count: int
@@ -374,6 +380,7 @@ async def list_places(
     cursor = await db.execute(
         f"""
         SELECT pg.city AS city,
+               MAX(pg.city_zh) AS city_zh,
                MAX(pg.province) AS province,
                MAX(pg.country) AS country,
                COUNT(*) AS count,
@@ -393,6 +400,7 @@ async def list_places(
     return [
         PlaceGroupResponse(
             city=row["city"],
+            city_zh=row["city_zh"],
             province=row["province"],
             country=row["country"],
             count=row["count"],

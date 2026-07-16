@@ -369,6 +369,40 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Poll the server until the in-flight download for `type` finishes, keeping
+// the progress bar in sync. Shared by a freshly started download and by the
+// refresh-time resume, since the download progress lives on the server and
+// survives a page reload.
+async function pollDownloadProgress(type: ResourceType) {
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const p = await getDownloadProgress(type)
+      progress[type] = p
+      if (p.status === 'success') {
+        ElMessage.success(p.message || '资源下载成功')
+        await loadResources()
+        break
+      }
+      if (p.status === 'error') {
+        ElMessage.error(p.error || '资源下载失败')
+        break
+      }
+      if (p.status !== 'running') {
+        // idle / unknown — nothing (more) to track.
+        break
+      }
+      await sleep(800)
+    }
+  } catch (error: any) {
+    const msg = error.response?.data?.detail || '资源下载失败'
+    ElMessage.error(msg)
+  } finally {
+    downloading[type] = false
+    progress[type] = null
+  }
+}
+
 async function handleDownload(type: ResourceType) {
   const url = urls[type]?.trim()
   if (!url) return
@@ -385,30 +419,37 @@ async function handleDownload(type: ResourceType) {
 
   try {
     await downloadResource(type, url)
-
-    // Poll the server for progress until the job finishes.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      await sleep(800)
-      const p = await getDownloadProgress(type)
-      progress[type] = p
-      if (p.status === 'success') {
-        ElMessage.success(p.message || '资源下载成功')
-        await loadResources()
-        break
-      }
-      if (p.status === 'error') {
-        ElMessage.error(p.error || '资源下载失败')
-        break
-      }
-    }
   } catch (error: any) {
     const msg = error.response?.data?.detail || '资源下载失败'
     ElMessage.error(msg)
-  } finally {
     downloading[type] = false
     progress[type] = null
+    return
   }
+
+  await pollDownloadProgress(type)
+}
+
+// After a page refresh, restore the progress bar for any download still
+// running on the server. Progress is server-side state, so a reload just
+// needs to re-attach the poller rather than lose the in-flight download.
+async function resumeRunningDownloads() {
+  const types: ResourceType[] = ['face', 'scene', 'geocoding']
+  await Promise.all(
+    types.map(async (type) => {
+      try {
+        const p = await getDownloadProgress(type)
+        if (p.status === 'running') {
+          downloading[type] = true
+          progress[type] = p
+          // Fire-and-forget so all in-flight types resume concurrently.
+          pollDownloadProgress(type)
+        }
+      } catch {
+        // No/failed progress lookup just means nothing to resume.
+      }
+    })
+  )
 }
 
 async function handleReanalyze() {
@@ -433,6 +474,7 @@ onMounted(() => {
   loadResources()
   loadFlags()
   loadStatus()
+  resumeRunningDownloads()
 })
 </script>
 
