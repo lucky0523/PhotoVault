@@ -237,13 +237,13 @@ class BackgroundScanWorker @AssistedInject constructor(
                 requeueResumableUploads()
             }
 
-            scanAllFolders(forceFullScan, allowBackup)
+            scanAllFolders(forceFullScan, allowBackup, manual)
 
             // After scanning + requeue, make sure queued work (including the
             // resumed uploads above) actually starts when conditions allow and
             // the service isn't already running.
             if (allowBackup) {
-                maybeStartBackupForQueuedWork()
+                maybeStartBackupForQueuedWork(manual)
             }
 
             android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
@@ -324,6 +324,12 @@ class BackgroundScanWorker @AssistedInject constructor(
             .toSet()
 
         val resumable = records
+            // Never auto-resume/re-queue an AUTO_OFF Paused_Task: it was kept
+            // deliberately when the user turned off "自动备份" and must only be
+            // resumed by the user tapping "继续" on the 备份任务 Tab, not silently
+            // rebuilt after a process kill or when auto-backup is re-enabled
+            // (R-25.4/30.3/31.2).
+            .filter { it.pauseSource != "AUTO_OFF" }
             .filter { now - it.createdAt <= sessionExpireMs }
             .filter { it.fileUri !in queuedUris }
             // Blank folderUri = pre-migration record with no folder attribution;
@@ -356,13 +362,13 @@ class BackgroundScanWorker @AssistedInject constructor(
      * conditions allow, but the service isn't already running. [start] is
      * idempotent — a redundant call while running is a no-op.
      */
-    private fun maybeStartBackupForQueuedWork() {
+    private fun maybeStartBackupForQueuedWork(manual: Boolean) {
         if (backupQueue.size() > 0 &&
             !BackupForegroundService.isRunning &&
             backupConditionChecker.shouldStartBackup()
         ) {
             android.util.Log.i("PhotoVaultScan", "Starting backup service for ${backupQueue.size()} queued file(s)")
-            BackupForegroundService.start(applicationContext)
+            BackupForegroundService.start(applicationContext, manual = manual)
         }
     }
 
@@ -385,7 +391,11 @@ class BackgroundScanWorker @AssistedInject constructor(
      * These files can only be re-uploaded via the per-photo "重新备份"
      * action in FolderDetailScreen.
      */
-    private suspend fun scanAllFolders(forceFullScan: Boolean = false, allowBackup: Boolean = true) {
+    private suspend fun scanAllFolders(
+        forceFullScan: Boolean = false,
+        allowBackup: Boolean = true,
+        manual: Boolean = false
+    ) {
         val folders = backupFolderDao.getAllOnce()
         android.util.Log.i("PhotoVaultScan", "Scanning ${folders.size} folder(s) (forceFullScan=$forceFullScan)")
         val currentTime = System.currentTimeMillis()
@@ -521,7 +531,10 @@ class BackgroundScanWorker @AssistedInject constructor(
                 shouldStart
             }
             if (canStart) {
-                BackupForegroundService.start(applicationContext)
+                // Propagate the run source: the "立即备份" FAB sets manual=true so
+                // the run is exempt from the auto-backup toggle-off stop (R-3.15);
+                // all other (automatic) triggers pass manual=false (R-3.14).
+                BackupForegroundService.start(applicationContext, manual = manual)
             }
         } else {
             android.util.Log.i("PhotoVaultScan", "No new files to back up")

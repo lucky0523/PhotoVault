@@ -106,6 +106,101 @@
   - [x] 23.4 编写部署文档（README.md）
   - [x] 23.5 实现过期会话定时清理和磁盘空间监控告警
 
+- [x] 24. 修复：运行中关闭"自动备份"仅停止自动任务（Android）
+  - [x] 24.1 为 `BackupForegroundService.start` 增加 `manual: Boolean` 参数，经 Intent extra `KEY_MANUAL_RUN` 传入并保存为 `isManualRun`；更新所有调用方（`doBackupNow`/单张重新备份/任务页重试传 `manual=true`，`BackgroundScanWorker`/`ConditionCheckWorker` 传 `manual=false`）
+  - [x] 24.2 新增 `BackupForegroundService.stopAuto`（停止服务并将来源标记复位）；在 `SettingsViewModel.setAutoBackupEnabled(false)` 中：服务运行且 `isManualRun` 为真则不动，否则停止服务并 `backupQueue.clear()`
+  - [x] 24.3 校验断点续传：被清空/停止时保留正在上传文件的 `UploadRecord`，确保开关重新开启后可从断点续传
+  - _Requirements: 3.13, 3.14, 3.15_
+
+- [x] 25. 备份任务的手动开始/暂停控制（Android）
+  - [x] 25.1 在 `BackupForegroundService` 增加 `ACTION_RESUME`、`isUserPaused` 与 `pauseReason`（USER/CONDITION）；`ACTION_PAUSE` 标记用户暂停，`ACTION_RESUME` 清除并从断点续传
+  - [x] 25.2 让 `ConditionCheckWorker` 的自动续传分支跳过 `isUserPaused==true` 的任务（用户暂停优先于条件恢复）
+  - [x] 25.3 在"备份任务"Tab 增加"开始/暂停"按钮：订阅服务运行/暂停状态渲染按钮文案与可用性（队列为空且无进行中任务时禁用），点击分发 `ACTION_PAUSE`/`ACTION_RESUME`
+  - [x] 25.4 通知栏与任务页区分"用户暂停"与"条件暂停"的提示文案
+  - _Requirements: 24.1, 24.2, 24.3, 24.4, 24.5, 24.6_
+
+- [x] 26. iOS 对齐同等行为（可选，与 Android 保持一致）
+  - [x] 26.1 后台备份任务记录来源，关闭自动备份时停止并清空自动任务、保留手动任务
+  - [x] 26.2 备份任务页增加开始/暂停控制，区分用户暂停与条件暂停
+  - _Requirements: 3.13, 3.14, 3.15, 24.1, 24.2, 24.3, 24.4, 24.5, 24.6_
+
+- [x] 27. 关闭自动备份后保留正在上传文件为"已暂停"任务（Android）
+  - 在 R-3.14 现有行为（停服务、清空未开始队列、保留当前文件断点）基础上做 UI 层扩展：让被保留断点的 In_Flight_File 成为"备份任务"Tab 可见的 `AUTO_OFF` 已暂停条目，支持逐个"继续"续传与长按"清除"。依赖任务 24/25 已落地的 `isManualRun`/`stopAuto`/`shouldStopAutoOnDisable`/`PauseReason` 基础。
+  - _Requirements: 25, 26, 27, 28, 29, 30, 31, 32, 33_
+
+  - [x] 27.1 数据层：扩展 UploadRecord 与 Room 迁移 7→8
+    - 为 `UploadRecord` 实体新增 `pause_source: String?`（取值 USER/CONDITION/AUTO_OFF，默认 NULL）与 `paused_at: Long?` 两列
+    - `AppDatabase` 版本 7→8，新增 `MIGRATION_7_8`（`ALTER TABLE upload_records ADD COLUMN pause_source TEXT` / `ADD COLUMN paused_at INTEGER`），注册到 `addMigrations`
+    - `UploadRecordDao` 新增：`getPausedByAutoOff()`（查询 `pause_source = 'AUTO_OFF'` 且按 `paused_at DESC` 排序）、`markAutoOffPaused(fileUri, pausedAt)`（置 `pause_source='AUTO_OFF'`、写入 `paused_at`）、`clearAutoOffPause(fileUri)`（清空 `pause_source`/`paused_at`）
+    - _Requirements: 25.2, 26.1, 29.3, 31.1_
+
+  - [x] 27.2 编写 Room 迁移 7→8 单元测试
+    - 沿用既有 `MIGRATION_6_7` 单测风格，验证迁移后既有记录仍可读、两新列默认 NULL
+    - _Requirements: 31.1_
+
+  - [x] 27.3 服务层：暴露 currentFileUri 并抽出 In_Flight_File 判定纯函数
+    - `BackupForegroundService` 增加 `@Volatile var currentFileUri: String?`，上传循环 `dequeue()` 后置为当前 uri、文件结束（成功/跳过/失败/取消）后清空
+    - 将"标记 In_Flight / 清空未开始"分区逻辑抽为可单测纯函数：输入记录/队列快照，输出待标记 AUTO_OFF 集合与待清空集合（准据为"存在 Upload_Record 且 `uploaded_chunk_index >= 0`"）
+    - _Requirements: 25.1, 25.2, 25.5_
+
+  - [x] 27.4 关闭开关处理：标记 AUTO_OFF 并过滤自动续传
+    - 在 `SettingsViewModel.setAutoBackupEnabled(false)` 的既有 `shouldStopAutoOnDisable` 为真分支内，`stopAuto` 后新增 `markInFlightAsAutoOffPaused()`（遍历有效未过期记录，对 `uploaded_chunk_index >= 0` 者调 `markAutoOffPaused`），再 `backupQueue.clear()` 清空未开始队列
+    - `BackgroundScanWorker.requeueResumableUploads()` 与 `ConditionCheckWorker` 自动续传分支新增 `.filter { it.pauseSource != "AUTO_OFF" }`，使 AUTO_OFF 任务不被重新入队或条件恢复自动续传
+    - 手动任务由 `shouldStopAutoOnDisable` 返回 false 不进入此分支（沿用 R-3.15）
+    - _Requirements: 25.1, 25.3, 25.4, 29.1, 29.2, 30.3, 31.2_
+
+  - [x] 27.5 任务页数据源：TasksTabViewModel 合并三来源并计算进度
+    - `TasksTabUiState` 增加 `pausedTasks: List<PausedTaskUi>`、`isPausedTasksLoading`、`pausedTasksLoadError`；新增 `PausedTaskUi(fileUri, fileName, progressPercent, pausedAt)`
+    - 新增 `loadPausedTasks()`（在 `init` 与刷新时调用）：从 `getPausedByAutoOff()` 读取、过滤过期（`now - createdAt <= 7天`）、按 `paused_at` 降序、映射为 `PausedTaskUi`；读取失败置 `pausedTasksLoadError=true` 且不删改任何记录
+    - 进度纯函数 `computeProgressPercent(uploadedChunkIndex, totalChunks)`：`totalChunks<=0` 返回 0，否则 `((uploadedChunkIndex+1).coerceIn(0,total) * 100 / total).coerceIn(0,100)`
+    - 空状态：`pausedTasks` 为空时展示空状态提示；重启后由持久化记录重建展示
+    - _Requirements: 26.1, 26.2, 26.3, 26.4, 26.7, 26.8, 31.1, 31.3, 32.1_
+
+  - [x] 27.6 单文件"继续"续传：resumePausedTask
+    - 新增 `resumePausedTask(fileUri)`：`getByFileUri` 取记录 → 源文件存在/可读预检 → `clearAutoOffPause(fileUri)` → 由 `UploadRecord.toFileInfo()` 重建 FileInfo → `backupQueue.enqueue` → `BackupForegroundService.start(context, manual = true)` → 刷新清单
+    - 不改变 Auto_Backup_Switch 状态；复用既有 `ChunkUploader`/`SnapshotValidator` 续传、条件暂停、重试、成功清理逻辑
+    - 源文件不可读时 `deleteByFileUri` 删记录、移除条目并提示"源文件已不存在，无法续传"，不发起上传
+    - 实现 `UploadRecord.toFileInfo()` 字段映射（uri/fileName/fileSize/createdTime/folderUri，mimeType 空则按文件名推断）
+    - _Requirements: 27.1, 27.2, 27.3, 27.4, 27.5, 27.6, 27.7, 27.8, 30.4, 30.5, 32.2, 32.3_
+
+  - [x] 27.7 长按清除：TasksTab 交互与 clearPausedTask
+    - `TasksTab` 的 Paused_Task 条目用 `Modifier.combinedClickable(onLongClick = ...)` 长按弹出 `LiquidGlassDialog`（"清除"/"取消"）
+    - `clearPausedTask(fileUri)`：`deleteByFileUri` 删除记录成功后刷新清单（1 秒内移除条目）；失败保留条目与记录不变并提示清除失败；取消/关闭弹框则不变
+    - _Requirements: 28.1, 28.2, 28.3, 28.4, 28.5, 28.6_
+
+  - [x] 27.8 文案与通知区分 AUTO_OFF 第三来源
+    - 服务层 `PauseReason` 新增 `AUTO_OFF`；通知文案区分于 USER/CONDITION（如"自动备份已关闭，有未完成任务可在『备份任务』页手动继续"）
+    - UI 层为 AUTO_OFF 条目提供独立展示文案（如"已暂停 · 自动备份已关闭""点击『继续』手动续传（不会自动续传）"），与 USER（"已手动暂停，点击开始继续"）、CONDITION（"电量不足/WiFi 未连接，条件恢复后自动续传"）文字内容明确区分
+    - _Requirements: 30.1, 30.2_
+
+  - [x] 27.9 边界与异常处理
+    - 过期记录：加载/刷新清单时按 `now - createdAt <= 7天` 过滤并移除条目，不影响其他有效记录（沿用 `deleteExpired`）
+    - 源文件修改时间/大小不一致：点击"继续"后沿用 R-5.7 废弃记录并从第一个 Chunk 重传，条目转为上传中
+    - 文件夹被移除：沿用 `deleteByFolderUri` 删除该文件夹全部续传记录，对应 AUTO_OFF 条目随之移除
+    - _Requirements: 32.1, 32.2, 32.3, 32.4_
+
+  - [x] 27.10 编写属性测试（Kotest checkAll，纯 JVM，≥100 次，沿用 QuietPeriodPropertyTest 风格）
+    - **Property 18: 关闭自动备份对断点记录与队列的分区** — 对随机队列组成断言标记集合与清空集合
+    - **Property 19: AUTO_OFF 暂停任务不被自动续传或重建入队** — 断言过滤谓词 `it.pauseSource != "AUTO_OFF"`
+    - **Property 20: 已暂停任务进度计算** — 断言 `computeProgressPercent`
+    - **Property 21: 已暂停清单按暂停时间降序** — 断言按 `paused_at` 降序
+    - **Property 22: 过期记录从可续传清单中过滤** — 断言过期过滤谓词
+    - **Property 23: 由 Upload_Record 重建 FileInfo 的字段一致性** — 断言 `toFileInfo()` 字段映射
+    - **Property 24: 继续单个已暂停任务不影响其他已暂停任务** — 断言隔离性
+    - **Validates: Requirements 25.1, 25.2, 25.3, 25.5, 26.1, 26.2, 26.3, 27.1, 29.3, 30.5, 31.1, 32.1**
+
+  - [x] 27.11 编写状态转移与文案单元测试（JUnit 5 + Mockk）
+    - 覆盖：标记 AUTO_OFF（R-25.2）、"继续"清除标记并以 manual=true 发起（R-27.1/27.2）、成功后删记录移除条目（R-27.8）、源文件缺失删记录并提示（R-27.6/32.3）、长按清除成功/失败/取消（R-28.2/28.3/28.5）、读取失败错误态（R-26.4）、AUTO_OFF 与 USER/CONDITION 文案及通知区分（R-30.1/30.2）、重启后重建展示且不自动续传（R-31.1/31.2）
+    - _Requirements: 25.2, 26.4, 27.1, 27.2, 27.6, 27.8, 28.2, 28.3, 28.5, 30.1, 30.2, 31.1, 31.2, 32.3_
+
+  - [x] 27.13 iOS 平台对齐（可选，后续迭代）
+    - 在 Core Data 续传记录上增加 `pauseSource`/`pausedAt`，关闭自动备份时保留正在上传记录并在任务页展示为 AUTO_OFF 已暂停条目，对齐需求 25-32
+    - 本项为可选，不在本次 Android 必做范围内
+    - _Requirements: 33.1_
+
+  - [x] 27.12 检查点 - 确保所有测试通过
+    - Ensure all tests pass, ask the user if questions arise.
+
 ## Task Dependency Graph
 
 ```mermaid
@@ -116,6 +211,36 @@ graph TD
     22 --> 5
     22 --> 7
     23 --> 22
+    24 --> 3
+    25 --> 24
+    26 --> 25
+    27 --> 24
+    27 --> 25
+    subgraph 任务27内部依赖
+        T271["27.1 数据层/迁移/DAO"] --> T272["27.2 迁移单测"]
+        T271 --> T273["27.3 服务层 currentFileUri/纯函数"]
+        T271 --> T274["27.4 关闭开关标记AUTO_OFF/过滤"]
+        T271 --> T275["27.5 任务页数据源/进度"]
+        T273 --> T274
+        T275 --> T276["27.6 继续续传 resumePausedTask"]
+        T271 --> T276
+        T275 --> T277["27.7 长按清除"]
+        T274 --> T278["27.8 文案与通知区分"]
+        T275 --> T278
+        T276 --> T279["27.9 边界与异常处理"]
+        T275 --> T279
+        T273 --> T2710["27.10 属性测试"]
+        T274 --> T2710
+        T275 --> T2710
+        T276 --> T2710
+        T274 --> T2711["27.11 状态转移/文案单测"]
+        T276 --> T2711
+        T277 --> T2711
+        T279 --> T2712["27.12 检查点"]
+        T2710 --> T2712
+        T2711 --> T2712
+        T2712 -.-> T2713["27.13 iOS 对齐(可选)"]
+    end
 ```
 
 ## Notes
@@ -124,5 +249,8 @@ graph TD
 - Task 19 partially implemented (backup conditions group done, needs storage strategy management, account info, logout)
 - Tasks 20-21 are iOS client (new platform)
 - Tasks 22-23 are testing and deployment (depend on server being complete)
-- Requirements referenced: 1-19 (see requirements.md)
-- Design referenced: see design.md
+- Tasks 24-25 修复"运行中关闭自动备份"的逻辑缺陷并新增备份任务手动开始/暂停控制（Android）；Task 26 为 iOS 对齐（可选）
+- Task 27 覆盖需求 25-33 的 Android 实现（关闭自动备份后保留正在上传文件为 AUTO_OFF 已暂停任务、任务页展示、继续/长按清除、文案与通知区分、边界处理与属性/单元测试）；仅 Android，iOS 对齐为可选子任务 27.13（需求 33，后续迭代）。27.1 为其余子任务的数据层前置；任务 27 依赖任务 24/25 已落地的 `isManualRun`/`stopAuto`/`shouldStopAutoOnDisable`/`PauseReason` 基础
+- 标记 `*` 的子任务为测试类可选任务；核心实现子任务不标记
+- Requirements referenced: 1-33 (see requirements.md)
+- Design referenced: see design.md（含"关闭自动备份后保留已暂停任务（需求 25-33）"章节与 Property 18-24）

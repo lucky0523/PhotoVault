@@ -272,5 +272,8 @@ class ChunkUploaderCheckDuplicateTest {
         override suspend fun deleteExpired(expiryTime: Long) = throw NotImplementedError()
         override suspend fun deleteByFolderUri(folderUri: String) = throw NotImplementedError()
         override suspend fun getAll(): List<UploadRecord> = throw NotImplementedError()
+        override suspend fun getPausedByAutoOff(): List<UploadRecord> = throw NotImplementedError()
+        override suspend fun markAutoOffPaused(fileUri: String, pausedAt: Long, updatedAt: Long) = throw NotImplementedError()
+        override suspend fun clearAutoOffPause(fileUri: String, updatedAt: Long) = throw NotImplementedError()
     }
 }

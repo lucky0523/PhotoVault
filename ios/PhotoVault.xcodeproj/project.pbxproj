@@ -31,6 +31,12 @@
 		A1B2C3D400000106 /* LocalTabViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000028 /* LocalTabViewModel.swift */; };
 		A1B2C3D400000107 /* StoragePolicySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000029 /* StoragePolicySheet.swift */; };
 		A1B2C3D400000108 /* ChunkUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000002A /* ChunkUploader.swift */; };
+		A1B2C3D400000109 /* BackupPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000002B /* BackupPreferences.swift */; };
+		A1B2C3D40000010A /* BackupTaskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000002C /* BackupTaskViewModel.swift */; };
+		A1B2C3D40000010B /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000002D /* SettingsViewModel.swift */; };
+		B100000000000001 /* AutoBackupToggleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B200000000000001 /* AutoBackupToggleTests.swift */; };
+		B100000000000002 /* AutoOffPausedTaskTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B200000000000002 /* AutoOffPausedTaskTests.swift */; };
+		B100000000000003 /* BackupStartPauseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B200000000000003 /* BackupStartPauseTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -60,10 +66,34 @@
 		A1B2C3D400000028 /* LocalTabViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTabViewModel.swift; sourceTree = "<group>"; };
 		A1B2C3D400000029 /* StoragePolicySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoragePolicySheet.swift; sourceTree = "<group>"; };
 		A1B2C3D40000002A /* ChunkUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChunkUploader.swift; sourceTree = "<group>"; };
+		A1B2C3D40000002B /* BackupPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupPreferences.swift; sourceTree = "<group>"; };
+		A1B2C3D40000002C /* BackupTaskViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupTaskViewModel.swift; sourceTree = "<group>"; };
+		A1B2C3D40000002D /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
+		B200000000000000 /* PhotoVaultTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhotoVaultTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B200000000000001 /* AutoBackupToggleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoBackupToggleTests.swift; sourceTree = "<group>"; };
+		B200000000000002 /* AutoOffPausedTaskTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoOffPausedTaskTests.swift; sourceTree = "<group>"; };
+		B200000000000003 /* BackupStartPauseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupStartPauseTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		B300000000000000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D400000070 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D400000040;
+			remoteInfo = PhotoVault;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1B2C3D400000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B400000000000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -77,6 +107,7 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D400000031 /* PhotoVault */,
+				B500000000000000 /* PhotoVaultTests */,
 				A1B2C3D400000032 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -109,6 +140,7 @@
 				A1B2C3D400000024 /* PhotoLibraryScanner.swift */,
 				A1B2C3D400000025 /* BackupConditionChecker.swift */,
 				A1B2C3D40000002A /* ChunkUploader.swift */,
+				A1B2C3D40000002B /* BackupPreferences.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -157,6 +189,8 @@
 				A1B2C3D40000001B /* LoginViewModel.swift */,
 				A1B2C3D400000026 /* CloudTabViewModel.swift */,
 				A1B2C3D400000028 /* LocalTabViewModel.swift */,
+				A1B2C3D40000002C /* BackupTaskViewModel.swift */,
+				A1B2C3D40000002D /* SettingsViewModel.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -165,8 +199,19 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D400000010 /* PhotoVault.app */,
+				B200000000000000 /* PhotoVaultTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B500000000000000 /* PhotoVaultTests */ = {
+			isa = PBXGroup;
+			children = (
+				B200000000000001 /* AutoBackupToggleTests.swift */,
+				B200000000000002 /* AutoOffPausedTaskTests.swift */,
+				B200000000000003 /* BackupStartPauseTests.swift */,
+			);
+			path = PhotoVaultTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -189,6 +234,24 @@
 			productReference = A1B2C3D400000010 /* PhotoVault.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B600000000000000 /* PhotoVaultTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B700000000000000 /* Build configuration list for PBXNativeTarget "PhotoVaultTests" */;
+			buildPhases = (
+				B400000000000001 /* Sources */,
+				B400000000000000 /* Frameworks */,
+				B400000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B300000000000001 /* PBXTargetDependency */,
+			);
+			name = PhotoVaultTests;
+			productName = PhotoVaultTests;
+			productReference = B200000000000000 /* PhotoVaultTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -201,6 +264,10 @@
 				TargetAttributes = {
 					A1B2C3D400000040 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					B600000000000000 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = A1B2C3D400000040;
 					};
 				};
 			};
@@ -219,6 +286,7 @@
 			projectRoot = "";
 			targets = (
 				A1B2C3D400000040 /* PhotoVault */,
+				B600000000000000 /* PhotoVaultTests */,
 			);
 		};
 /* End PBXProject section */
@@ -229,6 +297,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1B2C3D400000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B400000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -262,10 +337,31 @@
 				A1B2C3D400000106 /* LocalTabViewModel.swift in Sources */,
 				A1B2C3D400000107 /* StoragePolicySheet.swift in Sources */,
 				A1B2C3D400000108 /* ChunkUploader.swift in Sources */,
+				A1B2C3D400000109 /* BackupPreferences.swift in Sources */,
+				A1B2C3D40000010A /* BackupTaskViewModel.swift in Sources */,
+				A1B2C3D40000010B /* SettingsViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B400000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B100000000000001 /* AutoBackupToggleTests.swift in Sources */,
+				B100000000000002 /* AutoOffPausedTaskTests.swift in Sources */,
+				B100000000000003 /* BackupStartPauseTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B300000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D400000040 /* PhotoVault */;
+			targetProxy = B300000000000000 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A1B2C3D400000081 /* Debug */ = {
@@ -451,6 +547,42 @@
 			};
 			name = Release;
 		};
+		B700000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.photovault.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PhotoVault.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PhotoVault";
+				TEST_TARGET_NAME = PhotoVault;
+			};
+			name = Debug;
+		};
+		B700000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.photovault.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PhotoVault.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PhotoVault";
+				TEST_TARGET_NAME = PhotoVault;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -468,6 +600,15 @@
 			buildConfigurations = (
 				A1B2C3D400000081 /* Debug */,
 				A1B2C3D400000082 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B700000000000000 /* Build configuration list for PBXNativeTarget "PhotoVaultTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B700000000000001 /* Debug */,
+				B700000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

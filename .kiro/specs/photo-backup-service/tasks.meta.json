@@ -1,0 +1,392 @@
+{
+  "pbtResults": {
+    "27.10 编写属性测试（Kotest checkAll，纯 JVM，≥100 次，沿用 QuietPeriodPropertyTest 风格）": {
+      "status": "passed",
+      "lastRunTimestamp": 1784122054074
+    }
+  },
+  "executionHistory": {
+    "24.1 为 `BackupForegroundService.start` 增加 `manual: Boolean` 参数，经 Intent extra `KEY_MANUAL_RUN` 传入并保存为 `isManualRun`；更新所有调用方（`doBackupNow`/单张重新备份/任务页重试传 `manual=true`，`BackgroundScanWorker`/`ConditionCheckWorker` 传 `manual=false`）": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946012
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102960983
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784103761060
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108122288
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108577630
+      }
+    ],
+    "24.2 新增 `BackupForegroundService.stopAuto`（停止服务并将来源标记复位）；在 `SettingsViewModel.setAutoBackupEnabled(false)` 中：服务运行且 `isManualRun` 为真则不动，否则停止服务并 `backupQueue.clear()`": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946112
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784103767651
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784103946055
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108123201
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108580102
+      }
+    ],
+    "24.3 校验断点续传：被清空/停止时保留正在上传文件的 `UploadRecord`，确保开关重新开启后可从断点续传": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946206
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784103952193
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784104661455
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108124200
+      },
+      {
+        "executionId": "0db1dc16-7c23-426d-9f3d-a34f3c189943",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784108580686
+      }
+    ],
+    "25.1 在 `BackupForegroundService` 增加 `ACTION_RESUME`、`isUserPaused` 与 `pauseReason`（USER/CONDITION）；`ACTION_PAUSE` 标记用户暂停，`ACTION_RESUME` 清除并从断点续传": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946251
+      },
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784104688747
+      }
+    ],
+    "25.2 让 `ConditionCheckWorker` 的自动续传分支跳过 `isUserPaused==true` 的任务（用户暂停优先于条件恢复）": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946282
+      },
+      {
+        "executionId": "08b5a32b-5c71-437b-863d-40bb610fc01d",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784105734976
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105787184
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105815204
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106379770
+      }
+    ],
+    "25.3 在\"备份任务\"Tab 增加\"开始/暂停\"按钮：订阅服务运行/暂停状态渲染按钮文案与可用性（队列为空且无进行中任务时禁用），点击分发 `ACTION_PAUSE`/`ACTION_RESUME`": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946344
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105787204
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106385500
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106658064
+      }
+    ],
+    "25.4 通知栏与任务页区分\"用户暂停\"与\"条件暂停\"的提示文案": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946366
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105787230
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106663217
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106880383
+      }
+    ],
+    "26.1 后台备份任务记录来源，关闭自动备份时停止并清空自动任务、保留手动任务": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946387
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105787255
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106886058
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784107470833
+      }
+    ],
+    "26.2 备份任务页增加开始/暂停控制，区分用户暂停与条件暂停": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784102946412
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784105787284
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784107476031
+      },
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784107924146
+      }
+    ],
+    "24. 修复：运行中关闭\"自动备份\"仅停止自动任务（Android）": [
+      {
+        "executionId": "475d520a-585c-47e6-b150-da03c59f2725",
+        "chatSessionId": "sess_3a65cc9e-f4d4-4fa3-8815-712b0a9be040",
+        "timestamp": 1784104661492
+      }
+    ],
+    "25. 备份任务的手动开始/暂停控制（Android）": [
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784106880417
+      }
+    ],
+    "26. iOS 对齐同等行为（可选，与 Android 保持一致）": [
+      {
+        "executionId": "09358e91-5d1d-4948-8794-c05b8a63414b",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784107924185
+      }
+    ],
+    "27.1 数据层：扩展 UploadRecord 与 Room 迁移 7→8": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784119625300
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784119792905
+      }
+    ],
+    "27.3 服务层：暴露 currentFileUri 并抽出 In_Flight_File 判定纯函数": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784119827617
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120061995
+      }
+    ],
+    "27.4 关闭开关处理：标记 AUTO_OFF 并过滤自动续传": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120062857
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120361039
+      }
+    ],
+    "27.5 任务页数据源：TasksTabViewModel 合并三来源并计算进度": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120362043
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120610125
+      }
+    ],
+    "27.6 单文件\"继续\"续传：resumePausedTask": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784120611112
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121048019
+      }
+    ],
+    "27.7 长按清除：TasksTab 交互与 clearPausedTask": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121262467
+      }
+    ],
+    "27.8 文案与通知区分 AUTO_OFF 第三来源": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121500806
+      }
+    ],
+    "27.9 边界与异常处理": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121677943
+      }
+    ],
+    "27.2 编写 Room 迁移 7→8 单元测试": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121678951
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122283079
+      }
+    ],
+    "27.10 编写属性测试（Kotest checkAll，纯 JVM，≥100 次，沿用 QuietPeriodPropertyTest 风格）": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121680935
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122285063
+      }
+    ],
+    "27.11 编写状态转移与文案单元测试（JUnit 5 + Mockk）": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784121682844
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122286981
+      }
+    ],
+    "27.12 检查点 - 确保所有测试通过": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122287043
+      },
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122472661
+      }
+    ],
+    "27. 关闭自动备份后保留正在上传文件为\"已暂停\"任务（Android）": [
+      {
+        "executionId": "a4372fa9-6a40-483c-b97a-d5ab79aebd4c",
+        "chatSessionId": "sess_264a46e6-bde4-40d0-8705-4bc23dec41dc",
+        "timestamp": 1784122472698
+      }
+    ],
+    "27.13 iOS 平台对齐（可选，后续迭代）": [
+      {
+        "executionId": "2a1d38c5-8316-4b52-9f37-dcf6898bd0a0",
+        "chatSessionId": "sess_c4b14220-c09b-4f03-8671-4a53c986e7ff",
+        "timestamp": 1784169022697
+      },
+      {
+        "executionId": "2a1d38c5-8316-4b52-9f37-dcf6898bd0a0",
+        "chatSessionId": "sess_c4b14220-c09b-4f03-8671-4a53c986e7ff",
+        "timestamp": 1784169044831
+      },
+      {
+        "executionId": "2a1d38c5-8316-4b52-9f37-dcf6898bd0a0",
+        "chatSessionId": "sess_c4b14220-c09b-4f03-8671-4a53c986e7ff",
+        "timestamp": 1784169674015
+      }
+    ]
+  }
+}

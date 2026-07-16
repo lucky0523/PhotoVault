@@ -31,6 +31,17 @@ class PersistenceController {
             let description = NSPersistentStoreDescription()
             description.type = NSInMemoryStoreType
             container.persistentStoreDescriptions = [description]
+        } else {
+            // Enable automatic lightweight migration so additive, optional
+            // attributes (e.g. `source`, `pauseSource`, `pausedAt` on
+            // UploadRecord) are added to an existing on-disk store as NULL
+            // without a hand-written mapping model. These options are true by
+            // default, but we set them explicitly to guarantee older stores keep
+            // loading after the programmatic model grows.
+            for description in container.persistentStoreDescriptions {
+                description.shouldMigrateStoreAutomatically = true
+                description.shouldInferMappingModelAutomatically = true
+            }
         }
 
         container.loadPersistentStores { _, error in
@@ -270,6 +281,32 @@ class PersistenceController {
         updatedAt.attributeType = .dateAttributeType
         updatedAt.isOptional = true
         properties.append(updatedAt)
+
+        // source - how the file was queued ("auto" or "manual"). Optional with
+        // a default of "auto" so previously persisted records decode cleanly.
+        let source = NSAttributeDescription()
+        source.name = "source"
+        source.attributeType = .stringAttributeType
+        source.isOptional = true
+        source.defaultValue = "auto"
+        properties.append(source)
+
+        // pauseSource - why this resumable record is parked (USER/CONDITION/AUTO_OFF).
+        // Only AUTO_OFF is persisted on iOS (R-25.2/R-29.3). Optional with no
+        // default so existing stores migrate to NULL via lightweight migration.
+        let pauseSource = NSAttributeDescription()
+        pauseSource.name = "pauseSource"
+        pauseSource.attributeType = .stringAttributeType
+        pauseSource.isOptional = true
+        properties.append(pauseSource)
+
+        // pausedAt - when the record was parked (paired with pauseSource=AUTO_OFF),
+        // used to sort the paused-task list newest-first (R-26.1). Optional/nil.
+        let pausedAt = NSAttributeDescription()
+        pausedAt.name = "pausedAt"
+        pausedAt.attributeType = .dateAttributeType
+        pausedAt.isOptional = true
+        properties.append(pausedAt)
 
         entity.properties = properties
         return entity

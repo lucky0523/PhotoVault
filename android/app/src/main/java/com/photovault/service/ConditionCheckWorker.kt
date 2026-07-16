@@ -39,8 +39,10 @@ class ConditionCheckWorker @AssistedInject constructor(
 
         if (activelyBackingUp) {
             // Actively uploading — pause if conditions dropped (e.g. WiFi lost).
+            // This is a condition-driven pause, so tag it CONDITION: only such
+            // pauses may later be auto-resumed here (R-24.5).
             if (backupConditionChecker.shouldPauseBackup()) {
-                BackupForegroundService.pause(applicationContext)
+                BackupForegroundService.pause(applicationContext, PauseReason.CONDITION)
             }
         } else {
             // Either not running, or running-but-paused (interrupted earlier by a
@@ -49,16 +51,44 @@ class ConditionCheckWorker @AssistedInject constructor(
             // and resumes any interrupted file from its persisted UploadRecord
             // (断点续传). Previously the running-but-paused state was skipped, so a
             // reconnect alone never resumed the backup.
-            //
-            // Gated by the auto-backup toggle: when it's off, backup is only ever
-            // started by the user via the Local tab FAB, so condition-recovery must
-            // not auto-(re)start it. (R-AUTO-BACKUP)
-            if (settingsPreferences.getAutoBackupEnabled() &&
-                backupQueue.size() > 0 &&
-                backupConditionChecker.shouldResumeBackup()
+            if (shouldAutoResume(
+                    autoBackupEnabled = settingsPreferences.getAutoBackupEnabled(),
+                    queueSize = backupQueue.size(),
+                    conditionsRecovered = backupConditionChecker.shouldResumeBackup(),
+                    isUserPaused = BackupForegroundService.isUserPaused
+                )
             ) {
-                BackupForegroundService.start(applicationContext)
+                // Condition recovery is an automatic trigger (R-3.14 classifies it
+                // as such): mark the run non-manual so turning off "自动备份" stops it.
+                BackupForegroundService.start(applicationContext, manual = false)
             }
+        }
+    }
+
+    companion object {
+        /**
+         * Decides whether the condition-recovery path may automatically (re)start
+         * the backup service. Pure function so the gating rules can be unit-tested
+         * without a running service/Worker.
+         *
+         * A user pause takes priority over condition recovery: when
+         * [isUserPaused] is true the backup stays paused until the user explicitly
+         * taps "开始" (ACTION_RESUME); condition recovery must not override it
+         * (R-24.5). Only condition-driven pauses (and the not-running case) are
+         * auto-resumed here.
+         *
+         * The auto-backup toggle still gates everything: when it's off, backup is
+         * only ever started by the user, so condition recovery must not auto-start
+         * it (R-AUTO-BACKUP).
+         */
+        fun shouldAutoResume(
+            autoBackupEnabled: Boolean,
+            queueSize: Int,
+            conditionsRecovered: Boolean,
+            isUserPaused: Boolean
+        ): Boolean {
+            if (isUserPaused) return false
+            return autoBackupEnabled && queueSize > 0 && conditionsRecovered
         }
     }
 }

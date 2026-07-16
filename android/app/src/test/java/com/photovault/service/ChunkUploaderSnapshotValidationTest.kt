@@ -280,6 +280,9 @@ class ChunkUploaderSnapshotValidationTest {
         override suspend fun deleteExpired(expiryTime: Long) {}
         override suspend fun deleteByFolderUri(folderUri: String) {}
         override suspend fun getAll(): List<UploadRecord> = emptyList()
+        override suspend fun getPausedByAutoOff(): List<UploadRecord> = emptyList()
+        override suspend fun markAutoOffPaused(fileUri: String, pausedAt: Long, updatedAt: Long) {}
+        override suspend fun clearAutoOffPause(fileUri: String, updatedAt: Long) {}
     }
 
     /** In-memory [PhotoStatusDao] — only markActive is exercised on success. */

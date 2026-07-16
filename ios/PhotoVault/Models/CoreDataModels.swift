@@ -12,6 +12,48 @@ enum UploadStatus: String {
     case skipped = "skipped"
 }
 
+// MARK: - Backup Source
+
+/// Records how a backup task / queued file was initiated.
+///
+/// Mirrors the Android `isManualRun` concept (see `BackupForegroundService`):
+/// the source is the deciding factor for whether turning OFF the "自动备份"
+/// switch aborts an in-progress task (R-3.13/3.14/3.15).
+///
+/// - `auto`: initiated by an automatic trigger (background scan, photo-library
+///   change, condition recovery). These are stopped and their queued files are
+///   cleared when the user disables auto-backup.
+/// - `manual`: initiated by an explicit user action ("立即备份" / single
+///   re-backup / task-list retry). These continue to completion regardless of
+///   the auto-backup switch.
+enum BackupSource: String {
+    case auto = "auto"
+    case manual = "manual"
+}
+
+// MARK: - Pause Source (R-29.3 / R-25.2)
+
+/// Persisted reason a resumable `UploadRecord` is currently parked.
+///
+/// Mirrors the Android `UploadRecord.pause_source` column (values USER /
+/// CONDITION / AUTO_OFF). On iOS only `AUTO_OFF` is persisted today — USER and
+/// CONDITION pauses are represented in-memory by `BackupPauseOrigin` on the
+/// `ChunkUploader` (see `ChunkUploader.pauseOrigin`) because those pauses only
+/// exist while the app is running. `AUTO_OFF`, by contrast, must survive a
+/// process restart so the file can be shown as a "已暂停" task on the next launch
+/// (R-31.1), so it is stored on the record.
+///
+/// - `user`: the user tapped "暂停".
+/// - `condition`: battery low / WiFi disconnected.
+/// - `autoOff`: the user turned OFF the auto-backup switch while this file was
+///   in-flight; the file keeps its 断点续传 progress and is shown as a paused
+///   task that only resumes on an explicit "继续" (R-25.2 / R-30.4).
+enum PauseSource: String {
+    case user = "USER"
+    case condition = "CONDITION"
+    case autoOff = "AUTO_OFF"
+}
+
 // MARK: - Backup History Status
 
 /// Represents the result status of a completed backup
@@ -102,6 +144,18 @@ public class UploadRecord: NSManagedObject {
     @NSManaged public var fileModifiedTime: Date?
     @NSManaged public var createdAt: Date
     @NSManaged public var updatedAt: Date?
+    /// How this file was queued: "auto" or "manual" (see `BackupSource`).
+    /// Optional/defaulted to "auto" so older persisted stores decode cleanly.
+    @NSManaged public var source: String?
+    /// Why this resumable record is currently parked (see `PauseSource`): nil for
+    /// a normal pending/uploading record, or "AUTO_OFF" when preserved after the
+    /// user disabled auto-backup mid-upload (R-25.2 / R-29.3). Optional with no
+    /// default so previously persisted stores load unchanged (lightweight
+    /// migration adds it as NULL — see `PersistenceController`).
+    @NSManaged public var pauseSource: String?
+    /// When this record was parked (set together with `pauseSource == "AUTO_OFF"`).
+    /// Used to sort the paused-task list newest-first (R-26.1). Optional/nil.
+    @NSManaged public var pausedAt: Date?
     @NSManaged public var backupFolder: BackupFolder?
 }
 
@@ -112,6 +166,54 @@ extension UploadRecord {
     var uploadStatus: UploadStatus {
         get { UploadStatus(rawValue: status) ?? .pending }
         set { status = newValue.rawValue }
+    }
+
+    /// The source that queued this record. Defaults to `.auto` for records
+    /// created before source tracking existed (nil source).
+    var uploadSource: BackupSource {
+        get { BackupSource(rawValue: source ?? BackupSource.auto.rawValue) ?? .auto }
+        set { source = newValue.rawValue }
+    }
+
+    /// Whether this record is currently parked because auto-backup was turned off
+    /// mid-upload (R-25.2). Such records are shown as "已暂停" tasks and must not be
+    /// auto-resumed (R-30.3); only an explicit "继续" clears the flag (R-30.4).
+    var isAutoOffPaused: Bool {
+        pauseSource == PauseSource.autoOff.rawValue
+    }
+
+    /// Whether this record represents an *in-flight* file, i.e. one that has
+    /// already started uploading and therefore has 断点续传 progress worth
+    /// preserving when auto-backup is disabled (R-25.1). This is the iOS
+    /// equivalent of the Android criterion "存在 Upload_Record 且
+    /// uploaded_chunk_index >= 0": a chunk was confirmed (`uploadedChunks > 0`) or
+    /// a server session was opened (`sessionId` present). A record with neither is
+    /// a Queued_Not_Started_File and is cleared instead (R-25.3).
+    var isInFlight: Bool {
+        if uploadedChunks > 0 { return true }
+        if let session = sessionId, !session.isEmpty { return true }
+        return false
+    }
+
+    /// Mark this record as an `AUTO_OFF` paused task and stamp the pause time.
+    /// Mirrors Android `UploadRecordDao.markAutoOffPaused`.
+    func markAutoOffPaused(at date: Date = Date()) {
+        pauseSource = PauseSource.autoOff.rawValue
+        pausedAt = date
+        // Keep it resumable: park as pending so an explicit "继续" can pick it up
+        // from the persisted breakpoint (R-27.1) without a background trigger
+        // touching it (the pending fetch requests exclude AUTO_OFF).
+        status = UploadStatus.pending.rawValue
+        updatedAt = date
+    }
+
+    /// Clear the `AUTO_OFF` pause marker. Mirrors Android
+    /// `UploadRecordDao.clearAutoOffPause`; called when the user taps "继续"
+    /// (R-27.1) so the record resumes as a normal manual task.
+    func clearAutoOffPause() {
+        pauseSource = nil
+        pausedAt = nil
+        updatedAt = Date()
     }
 
     /// Upload progress as a percentage (0.0 - 1.0)
@@ -134,7 +236,8 @@ extension UploadRecord {
         fileHash: String,
         fileSize: Int64,
         fileName: String,
-        folder: BackupFolder? = nil
+        folder: BackupFolder? = nil,
+        source: BackupSource = .auto
     ) -> UploadRecord {
         let record = UploadRecord(context: context)
         record.id = UUID()
@@ -147,8 +250,33 @@ extension UploadRecord {
         record.totalChunks = 0
         record.retryCount = 0
         record.createdAt = Date()
+        record.source = source.rawValue
         record.backupFolder = folder
         return record
+    }
+
+    /// Fetch request for pending uploads queued by a specific source.
+    ///
+    /// `AUTO_OFF` paused records are always excluded (R-25.4 / R-30.3): they are
+    /// pending only so an explicit "继续" can resume them, and must never be
+    /// re-enqueued by an automatic trigger or counted as ordinary queued files
+    /// (e.g. when clearing Queued_Not_Started_File on toggle-off).
+    static func pendingFetchRequest(source: BackupSource) -> NSFetchRequest<UploadRecord> {
+        let request = NSFetchRequest<UploadRecord>(entityName: "UploadRecord")
+        // Treat a nil source as "auto" for legacy records.
+        if source == .auto {
+            request.predicate = NSPredicate(
+                format: "status == %@ AND (source == %@ OR source == nil) AND (pauseSource == nil OR pauseSource != %@)",
+                UploadStatus.pending.rawValue, BackupSource.auto.rawValue, PauseSource.autoOff.rawValue
+            )
+        } else {
+            request.predicate = NSPredicate(
+                format: "status == %@ AND source == %@ AND (pauseSource == nil OR pauseSource != %@)",
+                UploadStatus.pending.rawValue, source.rawValue, PauseSource.autoOff.rawValue
+            )
+        }
+        request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: true)]
+        return request
     }
 
     /// Fetch request for all upload records
@@ -156,11 +284,38 @@ extension UploadRecord {
         return NSFetchRequest<UploadRecord>(entityName: "UploadRecord")
     }
 
-    /// Fetch request for pending uploads
+    /// Fetch request for pending uploads.
+    ///
+    /// Excludes `AUTO_OFF` paused records (R-25.4 / R-30.3) so automatic
+    /// background uploads and the ordinary "排队中" queue never pick them up —
+    /// those are surfaced separately via `autoOffPausedFetchRequest()` and only
+    /// resume on an explicit "继续".
     static func pendingFetchRequest() -> NSFetchRequest<UploadRecord> {
         let request = NSFetchRequest<UploadRecord>(entityName: "UploadRecord")
-        request.predicate = NSPredicate(format: "status == %@", UploadStatus.pending.rawValue)
+        request.predicate = NSPredicate(
+            format: "status == %@ AND (pauseSource == nil OR pauseSource != %@)",
+            UploadStatus.pending.rawValue, PauseSource.autoOff.rawValue
+        )
         request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: true)]
+        return request
+    }
+
+    /// Fetch request for `AUTO_OFF` paused records, newest pause first (R-26.1).
+    /// These are the files preserved when the user disabled auto-backup mid-upload
+    /// and are shown as "已暂停" tasks in the Tasks Tab.
+    static func autoOffPausedFetchRequest() -> NSFetchRequest<UploadRecord> {
+        let request = NSFetchRequest<UploadRecord>(entityName: "UploadRecord")
+        request.predicate = NSPredicate(format: "pauseSource == %@", PauseSource.autoOff.rawValue)
+        request.sortDescriptors = [NSSortDescriptor(key: "pausedAt", ascending: false)]
+        return request
+    }
+
+    /// Fetch a single record by its PHAsset local identifier (used as the stable
+    /// key for a paused task, mirroring Android's `getByFileUri`).
+    static func fetchRequest(localFilePath: String) -> NSFetchRequest<UploadRecord> {
+        let request = NSFetchRequest<UploadRecord>(entityName: "UploadRecord")
+        request.predicate = NSPredicate(format: "localFilePath == %@", localFilePath)
+        request.fetchLimit = 1
         return request
     }
 }

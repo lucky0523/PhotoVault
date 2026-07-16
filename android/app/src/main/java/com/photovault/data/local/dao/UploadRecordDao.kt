@@ -41,4 +41,29 @@ interface UploadRecordDao {
 
     @Query("SELECT * FROM upload_records")
     suspend fun getAll(): List<UploadRecord>
+
+    /**
+     * Returns all records paused because automatic backup was turned off,
+     * ordered by pause time (most recently paused first).
+     */
+    @Query("SELECT * FROM upload_records WHERE pause_source = 'AUTO_OFF' ORDER BY paused_at DESC")
+    suspend fun getPausedByAutoOff(): List<UploadRecord>
+
+    /**
+     * Marks an in-flight upload as paused because automatic backup was turned
+     * off, recording the pause timestamp for ordering.
+     */
+    @Query("UPDATE upload_records SET pause_source = 'AUTO_OFF', paused_at = :pausedAt, updated_at = :updatedAt WHERE file_uri = :fileUri")
+    suspend fun markAutoOffPaused(
+        fileUri: String,
+        pausedAt: Long = System.currentTimeMillis(),
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    /**
+     * Clears an AUTO_OFF pause marker, turning the record back into an ordinary
+     * resume record (e.g. when the user resumes/continues the paused task).
+     */
+    @Query("UPDATE upload_records SET pause_source = NULL, paused_at = NULL, updated_at = :updatedAt WHERE file_uri = :fileUri")
+    suspend fun clearAutoOffPause(fileUri: String, updatedAt: Long = System.currentTimeMillis())
 }

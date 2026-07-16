@@ -110,14 +110,29 @@ fun LocalTab(
     val pullToRefreshState = rememberPullToRefreshState()
     var isRefreshing by remember { mutableStateOf(false) }
 
-    // Shared refresh action, triggered by both the pull gesture and the backup FAB.
-    // Running the backup then clearing the flag (after a short delay so the pull
-    // feels responsive) is what retracts the indicator.
-    val onRefresh: () -> Unit = {
+    // Pull-to-refresh gesture. When 自动备份 is on this continues the automatic
+    // backup; when it's off it only syncs server data + refreshes counts (no
+    // upload). The ViewModel decides based on the toggle. Clearing the flag after
+    // a short delay (so the pull feels responsive) is what retracts the indicator.
+    val onPullRefresh: () -> Unit = {
+        isRefreshing = true
+        scope.launch {
+            viewModel.refreshOnPull { errorMsg ->
+                val msg = errorMsg ?: "已刷新"
+                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+            }
+            delay(800)
+            isRefreshing = false
+        }
+    }
+
+    // Backup FAB ("立即备份"). Always backs up: automatic backup when 自动备份 is
+    // on, manual backup when it's off. Reuses the refresh indicator for feedback.
+    val onBackupClick: () -> Unit = {
         isRefreshing = true
         scope.launch {
             viewModel.backupNow { errorMsg ->
-                val msg = errorMsg ?: "已开始刷新备份状态"
+                val msg = errorMsg ?: "已开始备份"
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
             delay(800)
@@ -153,9 +168,9 @@ fun LocalTab(
         floatingActionButton = {
             // Lift the buttons above the floating tab bar so they don't overlap it.
             Column(modifier = Modifier.padding(bottom = LocalBottomBarPadding.current)) {
-                // Backup button — reuses the pull-to-refresh flow so the indicator shows.
+                // Backup button — reuses the pull-to-refresh indicator for feedback.
                 SurfaceLiquidButton(
-                    onClick = onRefresh,
+                    onClick = onBackupClick,
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
@@ -181,7 +196,7 @@ fun LocalTab(
     ) { paddingValues ->
         PullToRefreshBox(
             isRefreshing = isRefreshing,
-            onRefresh = onRefresh,
+            onRefresh = onPullRefresh,
             state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()

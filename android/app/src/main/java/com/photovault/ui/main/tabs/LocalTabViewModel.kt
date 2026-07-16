@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photovault.data.local.CredentialManager
+import com.photovault.data.local.SettingsPreferences
 import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.BackupFolder
 import com.photovault.data.repository.AuthRepository
@@ -39,6 +40,7 @@ class LocalTabViewModel @Inject constructor(
     private val statusSyncManager: StatusSyncManager,
     private val backupQueue: BackupQueue,
     private val uploadRecordDao: UploadRecordDao,
+    private val settingsPreferences: SettingsPreferences,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -176,29 +178,78 @@ class LocalTabViewModel @Inject constructor(
     }
 
     /**
-     * Manually triggers an immediate full backup scan ("立即备份").
-     * Checks conditions before starting: battery level (unless charging), network, and server connectivity.
-     * @param onResult Callback with error message or null if backup started successfully.
+     * Pull-to-refresh action on the Local tab.
+     *
+     * The gesture's meaning depends on the "自动备份" (automatic backup) toggle:
+     * - Auto-backup ON: run a full scan and continue the automatic backup
+     *   ([BackgroundScanWorker.runNow] with manual=false; the worker uploads
+     *   because the toggle is on).
+     * - Auto-backup OFF: only sync server-side status and refresh folder counts,
+     *   never upload. The same manual=false run is issued, but the worker skips
+     *   enqueuing/uploading while the toggle is off — so this is effectively a
+     *   "仅同步服务器数据，不触发备份" refresh.
+     *
+     * Because a disabled toggle means no upload happens, the battery gate is
+     * skipped in that case (it would only produce a misleading "电量不足" error
+     * for a refresh that never backs up).
+     *
+     * @param onResult Callback with an error message, or null on success.
      */
-    fun backupNow(onResult: (String?) -> Unit) {
+    fun refreshOnPull(onResult: (String?) -> Unit) {
         viewModelScope.launch {
-            val error = doBackupNow()
+            val autoBackupOn = settingsPreferences.getAutoBackupEnabled()
+            val error = startScan(manual = false, requireBattery = autoBackupOn)
             onResult(error)
         }
     }
 
-    private suspend fun doBackupNow(): String? {
+    /**
+     * Backup FAB ("立即备份").
+     *
+     * Always backs up, but honors the "自动备份" toggle for the run source:
+     * - Auto-backup ON: automatic backup (manual=false).
+     * - Auto-backup OFF: manual backup (manual=true) that proceeds despite the
+     *   disabled toggle — the only way to back up while auto-backup is off.
+     *
+     * Checks conditions before starting: network, battery (unless charging), and
+     * server connectivity.
+     *
+     * @param onResult Callback with an error message, or null on success.
+     */
+    fun backupNow(onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val autoBackupOn = settingsPreferences.getAutoBackupEnabled()
+            val error = startScan(manual = !autoBackupOn, requireBattery = true)
+            onResult(error)
+        }
+    }
+
+    /**
+     * Runs the pre-flight checks and, if they pass, kicks off an immediate full
+     * scan via [BackgroundScanWorker.runNow].
+     *
+     * @param manual forwarded to the worker: true exempts the run from the
+     *   auto-backup toggle (manual backup), false honors it (automatic backup /
+     *   sync-only when the toggle is off).
+     * @param requireBattery when true, fail early with an error if the battery is
+     *   below the configured minimum and the device isn't charging. Skipped for
+     *   refreshes that won't upload.
+     * @return an error message, or null on success.
+     */
+    private suspend fun startScan(manual: Boolean, requireBattery: Boolean): String? {
         val networkOk = backupConditionChecker.isNetworkAvailableForBackup()
         if (!networkOk) {
             return "网络不可用，请检查网络连接"
         }
 
-        val isCharging = backupConditionChecker.isCharging()
-        val batteryLevel = backupConditionChecker.getBatteryLevel()
-        val minBattery = backupConditionChecker.getMinBatteryLevel()
+        if (requireBattery) {
+            val isCharging = backupConditionChecker.isCharging()
+            val batteryLevel = backupConditionChecker.getBatteryLevel()
+            val minBattery = backupConditionChecker.getMinBatteryLevel()
 
-        if (!isCharging && batteryLevel <= minBattery) {
-            return "电量不足 ${minBattery}%，请充电后再试"
+            if (!isCharging && batteryLevel <= minBattery) {
+                return "电量不足 ${minBattery}%，请充电后再试"
+            }
         }
 
         // Check server connectivity
@@ -210,8 +261,7 @@ class LocalTabViewModel @Inject constructor(
             }
         }
 
-        // Explicit user action: back up even when automatic backup is disabled.
-        BackgroundScanWorker.runNow(context, manual = true)
+        BackgroundScanWorker.runNow(context, manual = manual)
         return null
     }
 

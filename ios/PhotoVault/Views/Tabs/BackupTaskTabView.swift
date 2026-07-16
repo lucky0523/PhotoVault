@@ -29,6 +29,17 @@ struct BackupTaskTabView: View {
             .onAppear {
                 viewModel.refresh()
             }
+            .alert(
+                "操作失败",
+                isPresented: Binding(
+                    get: { viewModel.pausedTaskActionError != nil },
+                    set: { if !$0 { viewModel.pausedTaskActionError = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) { viewModel.pausedTaskActionError = nil }
+            } message: {
+                Text(viewModel.pausedTaskActionError ?? "")
+            }
         }
     }
 }
@@ -42,14 +53,36 @@ private struct CurrentTasksView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                // Pause state banner
-                if viewModel.isPaused, let reason = viewModel.pauseReason {
+                // Manual start/pause control (R-24.1/24.4). A user pause is shown
+                // as a status line on this button (no separate banner).
+                StartPauseButton(
+                    showingPause: viewModel.isStartPauseShowingPause,
+                    enabled: viewModel.isStartPauseEnabled,
+                    isManualRun: viewModel.isManualRun,
+                    statusText: (viewModel.isPaused && viewModel.isUserPaused) ? "已手动暂停" : nil,
+                    action: { viewModel.toggleStartPause() }
+                )
+
+                // Pause banner only for a CONDITION pause (R-24.5). A user pause is
+                // surfaced on the button above instead of its own banner.
+                if viewModel.isPaused, !viewModel.isUserPaused, let reason = viewModel.pauseReason {
                     PauseBannerView(reason: reason)
                 }
 
                 // Currently uploading file
                 if let progress = viewModel.currentProgress {
                     CurrentUploadCard(progress: progress, viewModel: viewModel)
+                }
+
+                // AUTO_OFF paused tasks (R-26): files preserved after auto-backup
+                // was turned off, each with a "继续" button and long-press "清除".
+                if viewModel.pausedTasksLoadError {
+                    PausedTasksErrorView(onRetry: { viewModel.loadPausedTasks() })
+                } else if !viewModel.pausedTasks.isEmpty {
+                    PausedTasksSection(
+                        tasks: viewModel.pausedTasks,
+                        viewModel: viewModel
+                    )
                 }
 
                 // Pending queue
@@ -61,7 +94,11 @@ private struct CurrentTasksView: View {
                 }
 
                 // Empty state
-                if viewModel.currentProgress == nil && viewModel.pendingQueue.isEmpty && !viewModel.isPaused {
+                if viewModel.currentProgress == nil
+                    && viewModel.pendingQueue.isEmpty
+                    && viewModel.pausedTasks.isEmpty
+                    && !viewModel.pausedTasksLoadError
+                    && !viewModel.isPaused {
                     EmptyCurrentTaskView()
                 }
             }
@@ -71,9 +108,59 @@ private struct CurrentTasksView: View {
     }
 }
 
+// MARK: - Start/Pause Button
+
+/// Manual start/pause control for the current backup task (R-24).
+///
+/// Renders "暂停" while a backup is actively in progress and "开始" when paused or
+/// idle (R-24.1). Disabled when the queue is empty and no task is in progress
+/// (R-24.4). Tapping pauses (user pause) or resumes the current task.
+private struct StartPauseButton: View {
+    let showingPause: Bool
+    let enabled: Bool
+    /// Whether the in-progress run is manual (vs automatic). Only meaningful while
+    /// `showingPause` is true; selects the "正在手动/自动备份" wording.
+    let isManualRun: Bool
+    /// Optional pause status (e.g. "已手动暂停") rendered under the action label so a
+    /// user pause needs no separate banner. nil when not paused by the user.
+    let statusText: String?
+    let action: () -> Void
+
+    /// While actively backing up the button reads "正在手动/自动备份，点击暂停";
+    /// otherwise it's the plain "开始" action.
+    private var label: String {
+        guard showingPause else { return "开始" }
+        return isManualRun ? "正在手动备份，点击暂停" : "正在自动备份，点击暂停"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: showingPause ? "pause.fill" : "play.fill")
+                if let statusText {
+                    VStack(spacing: 2) {
+                        Text(label)
+                            .fontWeight(.medium)
+                        Text(statusText)
+                            .font(.caption)
+                            .opacity(0.9)
+                    }
+                } else {
+                    Text(label)
+                        .fontWeight(.medium)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!enabled)
+    }
+}
+
 // MARK: - Pause Banner
 
-/// Displays pause reason and resume condition hint
+/// Displays a **condition** pause reason and its auto-resume hint (R-24.5).
 private struct PauseBannerView: View {
     let reason: PauseReason
 
@@ -271,6 +358,164 @@ private struct PendingFileRow: View {
                 )
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Paused Tasks Section (AUTO_OFF, R-26/27/28/30)
+
+/// Lists the `AUTO_OFF` paused tasks (files preserved when auto-backup was turned
+/// off mid-upload). Each row shows the file name and progress, a "继续" button to
+/// resume it as a manual upload (R-26.6/27.1), and a long-press "清除" action to
+/// discard it (R-28.1). The section wording is distinct from USER/CONDITION
+/// pauses and makes clear the task will not auto-resume (R-30.1).
+private struct PausedTasksSection: View {
+    let tasks: [PausedTaskUi]
+    @ObservedObject var viewModel: BackupTaskViewModel
+    @State private var taskPendingClear: PausedTaskUi?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "pause.circle.fill")
+                    .foregroundStyle(.secondary)
+                Text("已暂停 · 自动备份已关闭")
+                    .font(.headline)
+                Spacer()
+                Text("\(tasks.count) 个文件")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Distinct explanatory copy: manual "继续" required, no auto-resume.
+            Text("这些任务因关闭自动备份而暂停，点击「继续」手动续传（不会自动续传）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(tasks) { task in
+                PausedTaskRow(
+                    task: task,
+                    viewModel: viewModel,
+                    onRequestClear: { taskPendingClear = task }
+                )
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemBackground))
+        )
+        .shadow(color: .black.opacity(0.05), radius: 4, y: 2)
+        .confirmationDialog(
+            "清除已暂停任务？",
+            isPresented: Binding(
+                get: { taskPendingClear != nil },
+                set: { if !$0 { taskPendingClear = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: taskPendingClear
+        ) { task in
+            Button("清除", role: .destructive) {
+                viewModel.clearPausedTask(fileURI: task.fileURI)
+                taskPendingClear = nil
+            }
+            Button("取消", role: .cancel) { taskPendingClear = nil }
+        } message: { task in
+            Text("将移除 \(task.fileName) 的断点记录，此操作不可撤销。")
+        }
+    }
+}
+
+/// A single `AUTO_OFF` paused-task row.
+///
+/// Provides a visible "继续" button (R-26.6) and a long-press context menu with a
+/// destructive "清除" action (R-28.1). SwiftUI's `.contextMenu` is triggered by a
+/// long press (~0.5s), matching the Android long-press-to-clear interaction.
+private struct PausedTaskRow: View {
+    let task: PausedTaskUi
+    @ObservedObject var viewModel: BackupTaskViewModel
+    let onRequestClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pause.fill")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.fileName)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 6) {
+                    Text("已暂停 · \(task.progressPercent)%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Small progress bar reflecting the persisted breakpoint.
+                ProgressView(value: Double(task.progressPercent) / 100.0)
+                    .tint(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                viewModel.resumePausedTask(fileURI: task.fileURI)
+            } label: {
+                Text("继续")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule().fill(Color.blue)
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 0.5, perform: onRequestClear)
+    }
+}
+
+/// Error state for a failed paused-task read, with a retry entry (R-26.4).
+private struct PausedTasksErrorView: View {
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("已暂停任务加载失败")
+                    .font(.headline)
+                Spacer()
+            }
+
+            Text("无法读取已暂停的备份任务，请重试。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button(action: onRetry) {
+                Text("重试")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 

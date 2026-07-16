@@ -291,7 +291,9 @@ class FolderDetailViewModel @Inject constructor(
                 forceReupload = true
             )
             backupQueue.enqueue(listOf(fileInfo))
-            BackupForegroundService.start(context)
+            // Single-photo 重新备份 is an explicit user action: mark the run manual
+            // so turning off "自动备份" mid-run won't stop it (R-3.15).
+            BackupForegroundService.start(context, manual = true)
         }
     }
 

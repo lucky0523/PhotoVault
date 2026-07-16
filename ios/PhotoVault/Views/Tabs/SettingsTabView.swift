@@ -50,6 +50,13 @@ struct SettingsTabView: View {
 
     private var backupConditionsSection: some View {
         Section {
+            // Auto-backup switch (R-3.8): controls all automatic triggers.
+            HStack {
+                Label("自动备份", systemImage: "arrow.triangle.2.circlepath")
+                Spacer()
+                Toggle("", isOn: $viewModel.autoBackupEnabled)
+            }
+
             // WiFi switch (always ON, disabled)
             HStack {
                 Label("仅 WiFi 备份", systemImage: "wifi")
@@ -101,7 +108,7 @@ struct SettingsTabView: View {
         } header: {
             Text("备份条件")
         } footer: {
-            Text("备份仅在 WiFi 连接且电量高于设定值时进行")
+            Text("关闭「自动备份」后仅手动备份可用；备份仅在 WiFi 连接且电量高于设定值时进行")
         }
     }
 

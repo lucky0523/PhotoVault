@@ -85,6 +85,7 @@ class BackgroundTaskManager {
     /// Schedule the next background scan task.
     /// Should be called after completing a scan or when the app enters background.
     func scheduleBackgroundScan() {
+        guard BackupPreferences.autoBackupEnabled else { return }
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundScanIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Self.scanInterval)
 
@@ -99,6 +100,7 @@ class BackgroundTaskManager {
     /// Schedule the background upload processing task.
     /// Should be called when there are pending files to upload.
     func scheduleBackgroundUpload() {
+        guard BackupPreferences.autoBackupEnabled else { return }
         let request = BGProcessingTaskRequest(identifier: Self.backgroundUploadIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Self.uploadInterval)
         request.requiresNetworkConnectivity = true
@@ -192,6 +194,15 @@ class BackgroundTaskManager {
     private func performBackgroundScan() async {
         print("[BackgroundTaskManager] Performing background scan...")
 
+        // 0. Respect the "自动备份" switch. When disabled, automatic triggers
+        //    must not enqueue new files or start uploads, and the folders'
+        //    lastScanTime is frozen so incremental scans still catch files added
+        //    while auto-backup was off once it is re-enabled (R-3.10/3.11).
+        guard BackupPreferences.autoBackupEnabled else {
+            print("[BackgroundTaskManager] Scan skipped enqueue: auto-backup disabled")
+            return
+        }
+
         // 1. Check backup conditions (WiFi, battery > 50%)
         let conditionChecker = BackupConditionChecker.shared
         guard conditionChecker.canBackup() else {
@@ -262,6 +273,7 @@ class BackgroundTaskManager {
                 record.totalChunks = 0
                 record.retryCount = 0
                 record.createdAt = Date()
+                record.source = BackupSource.auto.rawValue // R-3.13: automatic origin
                 record.backupFolder = targetFolder
 
                 // Populate filename from PHAsset if available
@@ -270,7 +282,7 @@ class BackgroundTaskManager {
                     if let resource = resources.first(where: { $0.type == .photo }) ?? resources.first {
                         record.fileName = resource.originalFilename
                     }
-                    record.fileModifiedTime = asset.creationDate
+                    record.fileModifiedTime = asset.modificationDate ?? asset.creationDate
                 }
             }
 
@@ -302,6 +314,14 @@ class BackgroundTaskManager {
     private func performBackgroundUpload() async -> Bool {
         print("[BackgroundTaskManager] Performing background upload...")
 
+        // This handler is an automatic trigger. Manual uploads are started
+        // directly by their explicit UI action and remain untouched when the
+        // automatic switch is off (R-29.1).
+        guard BackupPreferences.autoBackupEnabled else {
+            print("[BackgroundTaskManager] Upload skipped: auto-backup disabled")
+            return false
+        }
+
         // 1. Check backup conditions (WiFi, battery > 50%)
         let conditionChecker = BackupConditionChecker.shared
         guard conditionChecker.canBackup() else {
@@ -315,7 +335,11 @@ class BackgroundTaskManager {
         var hasPendingUploads = false
 
         await context.perform {
-            let request = UploadRecord.pendingFetchRequest()
+            // `pendingFetchRequest()` excludes `AUTO_OFF` paused records
+            // (R-25.4/R-30.3): files preserved after the user disabled
+            // auto-backup are never auto-resumed by this background upload — they
+            // only resume on an explicit "继续" in the Tasks Tab.
+            let request = UploadRecord.pendingFetchRequest(source: .auto)
             request.fetchLimit = 10 // Process in batches
 
             guard let pendingRecords = try? context.fetch(request) else {

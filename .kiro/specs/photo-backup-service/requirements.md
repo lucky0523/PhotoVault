@@ -20,6 +20,15 @@
 - **Motion_Photo**: Android 动态照片，一个 JPEG 图片文件尾部内嵌了一段 MP4 视频，通过图片 XMP 元数据（`GCamera:MotionPhoto` / `MicroVideoOffset` 或 Container 中语义为 `MotionPhoto` 的 Item）描述内嵌视频，遵循 [Android Motion Photo 规范](https://developer.android.com/media/platform/motion-photo-format)
 - **Ultra_HDR**: 遵循 [Android Ultra HDR 规范](https://developer.android.com/media/platform/hdr-image-format) 的 JPEG 照片，内含 SDR 基础图 + 增益图（gain map），通过图片 XMP 中的 `hdr-gain-map`（`hdrgm`）命名空间或语义为 `GainMap` 的 Container Item 标识
 - **Media_Type**: 文件的媒体类型标记，取值为 `image` 或 `video`，由服务端根据 MIME 类型 / 扩展名推断并持久化
+- **Backup_Queue**: 内存中的待备份文件队列（`BackupQueue`），进程被杀后丢失
+- **Auto_Backup_Switch**: 设置中的"自动备份"开关，默认开启，其状态持久化保存（对应 R-3.8）
+- **Upload_Record**: Room `upload_records` 表中的一条断点续传记录（`UploadRecord` 实体），记录某文件已上传的分块进度、会话标识、文件名、文件大小、修改时间、所属文件夹等；进程被杀或备份中断后仍持久保留，是断点续传的依据
+- **In_Flight_File**: 关闭 Auto_Backup_Switch 时，正在上传（已开始传输、已产生持久化 Upload_Record）的那个文件
+- **Queued_Not_Started_File**: 在 Backup_Queue 中尚未开始上传、因而没有 Upload_Record 的文件
+- **Paused_Task**: 因关闭 Auto_Backup_Switch 而被保留、并在"备份任务"Tab 展示为"已暂停"的未完成上传条目；数据来源为持久化的 Upload_Record，而非内存 Backup_Queue
+- **Pause_Source**: 一个 Paused_Task 或当前备份暂停的来源，取值为 `USER`（用户手动暂停）、`CONDITION`（条件暂停：电量不足/WiFi 断开）、`AUTO_OFF`（因关闭自动备份而暂停）
+- **Tasks_Tab**: "备份任务"Tab 页
+- **Session_Expiry**: Upload_Record 的有效期，自 `created_at` 起 7 天；超过 7 天视为过期
 
 ## 需求
 
@@ -63,6 +72,9 @@
 10. WHILE "自动备份"开关处于关闭状态时，THE Mobile_Client SHALL 仅在用户点击本地 Tab 的"立即备份"FAB 时发起 Backup_Task；所有自动触发方式 SHALL NOT 入队新文件或启动备份服务（但仍可扫描以刷新各文件夹的状态/计数）
 11. WHILE "自动备份"开关处于关闭状态时，THE Mobile_Client SHALL 在自动扫描时冻结各文件夹的 lastScanTime，以便开关重新开启后增量扫描仍能发现关闭期间新增的文件
 12. WHEN 用户点击"立即备份"FAB 时，THE Mobile_Client SHALL 无视"自动备份"开关状态执行一次全量扫描与备份（仍需满足网络/电量/服务端连通等前置条件）
+13. WHEN 备份前台服务启动一次 Backup_Task 时，THE Mobile_Client SHALL 记录该次任务的来源类型（手动或自动），作为后续判定"关闭自动备份开关时是否中止该任务"的依据
+14. WHILE 一次**自动**发起的 Backup_Task 正在进行（上传中或排队中）时，IF 用户关闭"自动备份"开关，THEN THE Mobile_Client SHALL 立即停止该 Backup_Task、清空 Backup_Queue 中尚未上传的排队文件、并停止备份前台服务（正在上传中的当前文件保留其断点续传进度以便再次开启后续传）
+15. WHILE 一次**手动**发起的 Backup_Task（"立即备份"FAB、单张"重新备份"、任务页"重试"）正在进行时，IF 用户关闭"自动备份"开关，THEN THE Mobile_Client SHALL 继续该手动任务直至完成，SHALL NOT 清空其队列或停止服务
 
 ### 需求 4：多用户支持
 
@@ -326,3 +338,124 @@
 2. WHEN 展示日期范围选择器时，THE Web 前端 SHALL 将未来日期以及没有任何已备份照片/视频的日期置灰显示
 3. WHILE 日期被置灰时，THE Web 前端 SHALL 仍允许用户点击选择这些日期（不禁用），仅作视觉弱化
 4. THE Web 前端 SHALL 在存在任意生效筛选条件时，于筛选组件左侧显示"清除筛选"按钮，点击后清空全部筛选条件
+
+### 需求 24：备份任务的手动开始/暂停控制
+
+**用户故事：** 作为用户，我希望在"备份任务"Tab 上手动暂停和恢复当前的备份任务，以便在需要时主动控制备份进度，而不必依赖"自动备份"开关或等待系统条件变化。
+
+#### 验收标准
+
+1. THE Mobile_Client SHALL 在"备份任务"Tab 提供一个针对当前备份任务的"开始/暂停"按钮，其显示随任务状态切换（备份进行中显示"暂停"，已暂停或空闲时显示"开始"）
+2. WHEN 用户在备份进行中点击"暂停"按钮时，THE Mobile_Client SHALL 暂停当前 Backup_Task、保留断点续传进度，并将该暂停标记为"用户暂停"
+3. WHEN 用户在已暂停或存在排队文件时点击"开始"按钮时，THE Mobile_Client SHALL 在满足 Backup_Condition 时从断点继续上传 Backup_Queue 中的文件
+4. WHILE Backup_Queue 为空且无正在进行的任务时，THE Mobile_Client SHALL 将"开始/暂停"按钮置为不可用状态
+5. THE Mobile_Client SHALL 区分"用户暂停"与"条件暂停"（电量不足/WiFi 断开）：仅"条件暂停"在条件恢复后自动续传；"用户暂停"须由用户再次点击"开始"才恢复，条件恢复不得自动覆盖用户暂停
+6. WHEN 用户手动发起的任务被"用户暂停"后，用户关闭"自动备份"开关，THE Mobile_Client SHALL 保持该手动任务的暂停状态与队列不变（不套用需求 3.14 的自动任务清空逻辑）
+
+### 需求 25：关闭自动备份时区分保留正在上传文件与清空未开始文件
+
+**用户故事：** 作为用户，我希望在关闭自动备份时，正在上传（已传了一半）的文件被保留下来而不是消失，同时那些还没开始上传的排队文件按现状被清理掉，以便我能继续处理那个真正传了一半的文件。
+
+> 说明：本组需求（需求 25 至需求 33）是对 R-3.14"关闭自动备份停止自动任务、保留正在上传文件断点"行为的 UI 层扩展（让该断点文件作为可见的"已暂停"任务并支持继续/清除），不改变 R-3.14 的核心行为。
+
+#### 验收标准
+
+1. WHILE 一次**自动**发起的 Backup_Task 正在进行时，IF 用户关闭 Auto_Backup_Switch，THEN THE Mobile_Client SHALL 在关闭开关后 5 秒内停止备份前台服务、停止 In_Flight_File 当前 Chunk 的上传、清空 Backup_Queue 中的全部 Queued_Not_Started_File，并保留 In_Flight_File 的 Upload_Record 及其已确认的 Chunk 续传进度（不删除该断点续传记录）；由于逐个上传，同一时刻至多存在一个 In_Flight_File
+2. WHEN 用户关闭 Auto_Backup_Switch 导致自动 Backup_Task 停止时，THE Mobile_Client SHALL 将拥有持久化 Upload_Record 的 In_Flight_File 标记为 Pause_Source 为 `AUTO_OFF` 的 Paused_Task，并在 Tasks_Tab 中将其展示为"已暂停"条目
+3. WHEN 用户关闭 Auto_Backup_Switch 导致自动 Backup_Task 停止时，THE Mobile_Client SHALL 不为任何 Queued_Not_Started_File 创建 Paused_Task（这些文件没有 Upload_Record），且被清空的 Queued_Not_Started_File 不出现在 Tasks_Tab 的任务列表中
+4. WHILE Auto_Backup_Switch 处于关闭状态时，THE Mobile_Client SHALL 不将 `AUTO_OFF` 来源的 Paused_Task 重新入队 Backup_Queue，也不因该 Paused_Task 自动启动备份前台服务
+5. WHILE 一次**自动**发起的 Backup_Task 正在进行时，IF 用户关闭 Auto_Backup_Switch 且此刻不存在任何 In_Flight_File（无文件正在上传，或队列中文件均无 Upload_Record），THEN THE Mobile_Client SHALL 在 5 秒内停止备份前台服务、清空 Backup_Queue，并不创建任何 Paused_Task
+
+### 需求 26：在备份任务 Tab 展示已暂停任务清单
+
+**用户故事：** 作为用户，我希望在"备份任务"Tab 上看到因关闭自动备份而被暂停的、传了一半的文件，以便我知道它还没备份完并能对它进行操作。
+
+#### 验收标准
+
+1. WHEN 用户打开 Tasks_Tab 的"当前任务"区时，THE Mobile_Client SHALL 从持久化的 Upload_Record 读取并展示 `AUTO_OFF` 来源的 Paused_Task 清单，而不仅依赖内存 Backup_Queue，且 SHALL 在 3 秒内完成加载并按暂停时间由近到远排序展示
+2. WHEN Tasks_Tab 展示一个 Paused_Task 条目时，THE Mobile_Client SHALL 显示该文件的文件名与已上传进度，进度为基于 Upload_Record 的已上传分块数除以总分块数、再向下取整所得的 0 至 100 的整数百分比
+3. IF Upload_Record 的总分块数为 0 或不可用，THEN THE Mobile_Client SHALL 将该 Paused_Task 的已上传进度显示为 0%
+4. IF Mobile_Client 从持久化的 Upload_Record 读取 Paused_Task 清单失败，THEN THE Mobile_Client SHALL 向用户显示指示读取失败的错误提示、提供重试入口，且不删除或修改任何 Upload_Record
+5. WHEN Tasks_Tab 展示一个 `AUTO_OFF` 来源的 Paused_Task 条目时，THE Mobile_Client SHALL 显示"已暂停"状态标识，并附带区别于 `USER`（已手动暂停）与 `CONDITION`（条件暂停）的说明文案，指明该任务因关闭自动备份而暂停、需用户手动点击"继续"才会续传
+6. WHEN Tasks_Tab 展示一个 `AUTO_OFF` 来源的 Paused_Task 条目时，THE Mobile_Client SHALL 为该条目提供"继续"按钮
+7. WHILE 存在一个或多个 `AUTO_OFF` 来源的 Paused_Task 时，THE Mobile_Client SHALL 在 Tasks_Tab 的"当前任务"区持续展示这些条目，直至它们被续传完成或被用户清除
+8. WHILE 不存在任何 `AUTO_OFF` 来源的 Paused_Task 时，THE Mobile_Client SHALL 在 Tasks_Tab 对应区域展示空状态提示
+
+### 需求 27：单文件"继续"续传
+
+**用户故事：** 作为用户，我希望点击"继续"就能单独把这个传了一半的文件续传完，而不用重新打开自动备份开关。
+
+#### 验收标准
+
+1. WHEN 用户点击某个 Paused_Task 的"继续"按钮时，THE Mobile_Client SHALL 依据该文件的 Upload_Record 重建其文件信息，并将其作为一次**手动**任务（`manual=true`）发起备份前台服务，从断点续传
+2. WHEN 用户点击 Paused_Task 的"继续"按钮时，THE Mobile_Client SHALL 不改变 Auto_Backup_Switch 的状态（不重新开启自动备份）
+3. WHEN 用户点击"继续"发起的手动续传时，IF 当前满足 Backup_Condition（设备电量大于 50% 且网络处于 WiFi 连接），THEN THE Mobile_Client SHALL 从该文件 Upload_Record 记录的已上传分块位置继续上传，不重新传输已确认的分块
+4. WHEN 用户点击"继续"发起的手动续传时，IF 当前不满足 Backup_Condition（设备电量小于等于 50% 或网络未连接 WiFi），THEN THE Mobile_Client SHALL 将该任务标记为 Pause_Source 为 `CONDITION` 的条件暂停并如此显示，并在设备电量回升至大于 55% 且网络处于 WiFi 连接时自动续传该手动任务
+5. WHEN 用户点击"继续"发起的手动续传时，IF 该文件的 Upload_Record 无效（源文件修改时间或文件大小与记录不一致，或该记录自创建起已超过 7 天），THEN THE Mobile_Client SHALL 废弃该 Upload_Record 并从第一个 Chunk 重新上传该文件（沿用 R-5.7 与 R-5.3）
+6. WHEN 用户点击"继续"发起的手动续传时，IF 该文件的源文件已不存在或不可读，THEN THE Mobile_Client SHALL 取消该续传、向用户显示指示无法续传的错误提示、删除对应的 Upload_Record，并将对应的 Paused_Task 从 Tasks_Tab 的清单中移除
+7. IF 用户点击"继续"发起的手动续传上传失败，THEN THE Mobile_Client SHALL 最多重试 3 次、每次间隔 30 秒；若仍失败，THE Mobile_Client SHALL 保留该文件的 Upload_Record 与对应的 Paused_Task 并将其标记为待重试（沿用 R-3.7）
+8. WHEN 用户点击"继续"发起的手动续传收到服务端返回 `success=true` 而成功完成该文件的上传时，THE Mobile_Client SHALL 删除该文件的 Upload_Record，并将对应的 Paused_Task 从 Tasks_Tab 的清单中移除
+
+### 需求 28：长按清除已暂停任务
+
+**用户故事：** 作为用户，我希望长按一个已暂停的任务条目就能选择清除它，彻底放弃这个文件的续传。
+
+#### 验收标准
+
+1. WHEN 用户长按（持续时间 ≥ 500 毫秒）某个 Paused_Task 条目时，THE Mobile_Client SHALL 弹出包含"清除"选项的选项框
+2. WHEN 用户在选项框中选择"清除"时，THE Mobile_Client SHALL 通过 `deleteByFileUri` 删除该文件对应的 Upload_Record
+3. IF 通过 `deleteByFileUri` 删除 Upload_Record 失败，THEN THE Mobile_Client SHALL 保留该 Paused_Task 条目于 Tasks_Tab 清单中且不改变其 Upload_Record，并向用户显示指示清除失败的错误提示
+4. WHEN 某个 Paused_Task 的 Upload_Record 被成功清除后，THE Mobile_Client SHALL 在 1 秒内将该 Paused_Task 条目从 Tasks_Tab 的清单中移除
+5. IF 用户取消或关闭选项框而未选择"清除"，THEN THE Mobile_Client SHALL 保留该 Paused_Task 条目及其 Upload_Record 不变
+6. WHEN 某个 Paused_Task 被成功清除后，THE Mobile_Client SHALL 不再在后续扫描、续传或进程重建中重新入队或续传该文件（作为一个新文件被下一次全量扫描重新发现的情形除外）
+
+### 需求 29：与既有自动备份关闭与手动任务逻辑保持一致
+
+**用户故事：** 作为用户，我希望这个新行为不破坏已有的规则——手动任务在关闭自动备份时仍不受影响，而已暂停任务的清单来源是持久化记录。
+
+#### 验收标准
+
+1. WHILE 一次**手动**发起的 Backup_Task（"立即备份"FAB、单张"重新备份"、任务页"重试"、以及本功能的"继续"续传）正在进行时，IF 用户关闭 Auto_Backup_Switch，THEN THE Mobile_Client SHALL 继续该手动任务直至完成，SHALL NOT 清空其队列或停止服务（沿用 R-3.15）
+2. WHEN 用户重新开启 Auto_Backup_Switch 时，THE Mobile_Client SHALL 允许既有的自动触发方式在满足 Backup_Condition 时续传仍存在 Upload_Record 的文件（沿用既有进程重建/条件恢复续传逻辑）
+3. THE Mobile_Client SHALL 使用 `AUTO_OFF` 作为独立于 `USER` 与 `CONDITION` 的第三种 Pause_Source，用于表示因关闭自动备份而产生的 Paused_Task
+
+### 需求 30：暂停状态文案区分与不自动续传
+
+**用户故事：** 作为用户，我希望能在界面和通知上区分"因关闭自动备份而暂停"和其他暂停原因，并且这种暂停不会在电量/WiFi 恢复时被系统自动续传。
+
+#### 验收标准
+
+1. WHEN Mobile_Client 在界面上展示一个 `AUTO_OFF` 来源的 Paused_Task 时，THE Mobile_Client SHALL 使用在文字内容上区别于 `USER`（"已手动暂停，点击开始继续"）与 `CONDITION`（"电量不足/WiFi 未连接，条件恢复后自动续传"）的文案，且该文案 SHALL 明确表明该任务因"自动备份已关闭"而暂停
+2. WHEN Mobile_Client 在通知栏展示因关闭自动备份而暂停的状态时，THE Mobile_Client SHALL 使用在文字内容上区别于 `USER` 与 `CONDITION` 的通知文案，且该文案 SHALL 明确表明该状态因"自动备份已关闭"而产生
+3. IF Backup_Condition 在存在 `AUTO_OFF` 来源 Paused_Task 期间恢复（设备电量回升至大于 50% 或网络重新连接 WiFi），THEN THE Mobile_Client SHALL 不自动续传任何该来源的 Paused_Task
+4. THE Mobile_Client SHALL 仅在用户点击该 Paused_Task 的"继续"按钮后才发起该文件的续传
+5. WHEN 用户点击某个 `AUTO_OFF` 来源 Paused_Task 的"继续"按钮时，THE Mobile_Client SHALL 不改变其他未被点击的 `AUTO_OFF` 来源 Paused_Task 的暂停状态
+
+### 需求 31：应用重启后从持久化记录恢复展示
+
+**用户故事：** 作为用户，我希望关掉 App 再打开后，那些已暂停的任务还在清单里，以便我下次打开时仍能继续或清除它们。
+
+#### 验收标准
+
+1. WHEN Mobile_Client 在存在有效 Upload_Record 且 Auto_Backup_Switch 处于关闭状态时被重新启动，THE Mobile_Client SHALL 从持久化的 Upload_Record 重建并在 Tasks_Tab 展示对应的 Paused_Task
+2. WHILE Auto_Backup_Switch 处于关闭状态时，THE Mobile_Client SHALL 在应用重启后不自动续传这些 Paused_Task
+3. WHEN Mobile_Client 重启后展示重建的 Paused_Task 时，THE Mobile_Client SHALL 支持对其执行需求 27（继续）与需求 28（长按清除）中定义的操作
+
+### 需求 32：边界与异常处理
+
+**用户故事：** 作为用户，我希望在断点记录过期、源文件被改动或删除、备份文件夹被移除等异常情况下，暂停任务的展示与操作有明确、合理的行为，不会卡在无法处理的状态。
+
+#### 验收标准
+
+1. WHEN Mobile_Client 加载或刷新暂停清单且检测到某个 Paused_Task 对应的 Upload_Record 已超过 Session_Expiry（自创建起超过 7 天），THE Mobile_Client SHALL 不将该已过期记录作为可续传的 Paused_Task 展示、将该条目从 Tasks_Tab 清单中移除，其后续处理沿用既有过期记录逻辑（由下一次全量扫描作为新文件重新发现并重新上传），且 SHALL 不影响任何仍在有效期内的其他 Upload_Record
+2. IF 用户对某个 Paused_Task 点击"继续"时，其源文件的修改时间或文件大小与 Upload_Record 记录不一致，THEN THE Mobile_Client SHALL 废弃该续传记录、将该条目从清单中移除、将该任务置为上传中，并从第一个 Chunk 重新上传该文件而不修改源文件（沿用 R-5.7）
+3. IF 用户对某个 Paused_Task 点击"继续"时，其源文件已不存在（已被删除），THEN THE Mobile_Client SHALL 向用户显示指示该文件已不存在、无法续传的提示，删除对应的 Upload_Record 使该 Paused_Task 从清单中移除，且 SHALL 不触发任何上传请求
+4. WHEN Mobile_Client 检测到某个 Paused_Task 所属的备份文件夹已被移除，THE Mobile_Client SHALL 不对该文件发起续传或重传，并将其对应的 Upload_Record 及 Paused_Task 从本地存储与 Tasks_Tab 清单中一并清除（沿用移除文件夹时删除续传记录的既有逻辑）
+
+### 需求 33：iOS 平台对齐（可选）
+
+**用户故事：** 作为使用 iOS 客户端的用户，我希望未来也能获得同样的"关闭自动备份后保留已暂停任务"体验，以便跨平台行为一致。
+
+#### 验收标准
+
+1. WHERE 目标平台为 iOS，THE Mobile_Client SHALL 在后续迭代中对齐需求 25 至需求 32 定义的行为（本项为可选，不在本次 Android 必做范围内）

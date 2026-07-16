@@ -104,6 +104,18 @@ object DatabaseModule {
         }
     }
 
+    // Exposed (internal) so the 7→8 migration can be unit-tested directly.
+    internal val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Track why an upload is paused so files left uploading when the user
+            // turns off automatic backup are kept as "paused" tasks (AUTO_OFF)
+            // and ordered by pause time, instead of being resumed silently.
+            // Both columns are nullable (NULL = ordinary resume record).
+            db.execSQL("ALTER TABLE upload_records ADD COLUMN pause_source TEXT")
+            db.execSQL("ALTER TABLE upload_records ADD COLUMN paused_at INTEGER")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -112,7 +124,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photovault_db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .build()
     }
 

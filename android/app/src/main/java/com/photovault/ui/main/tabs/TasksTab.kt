@@ -1,10 +1,13 @@
 package com.photovault.ui.main.tabs
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +31,8 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.WifiOff
@@ -38,13 +44,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,7 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,9 +69,11 @@ import com.photovault.data.local.entity.BackupStatus
 import com.photovault.ui.theme.LiquidDialogButton
 import com.photovault.ui.theme.LiquidDialogButtonStyle
 import com.photovault.ui.theme.LiquidGlassDialog
+import com.photovault.ui.theme.liquid.LiquidProgressBar
 import com.photovault.ui.theme.LocalBottomBarPadding
 import com.photovault.ui.theme.PhotoVaultColors
 import com.photovault.service.FileInfo
+import kotlin.math.roundToInt
 
 /**
  * 备份任务 Tab - 显示当前正在进行的备份任务、排队中的任务以及历史备份记录。
@@ -79,6 +88,17 @@ fun TasksTab(
     viewModel: TasksTabViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+
+    // Surface one-shot messages (e.g. resume rejected / clear failed) as a
+    // toast, then consume so it is not shown again on recomposition (R-28.3).
+    LaunchedEffect(uiState.transientMessage) {
+        val message = uiState.transientMessage
+        if (message != null) {
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            viewModel.consumeTransientMessage()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Segmented control (TabRow)
@@ -89,7 +109,13 @@ fun TasksTab(
 
         // Content based on selected segment
         when (uiState.selectedSegment) {
-            TasksSegment.CURRENT_TASKS -> CurrentTasksView(uiState = uiState)
+            TasksSegment.CURRENT_TASKS -> CurrentTasksView(
+                uiState = uiState,
+                onToggleStartPause = { viewModel.toggleStartPause() },
+                onResumePausedTask = { viewModel.resumePausedTask(it) },
+                onClearPausedTask = { viewModel.clearPausedTask(it) },
+                onRetryLoadPausedTasks = { viewModel.loadPausedTasks() }
+            )
             TasksSegment.HISTORY -> HistoryView(
                 uiState = uiState,
                 onFilterChanged = { viewModel.setHistoryFilter(it) },
@@ -137,7 +163,17 @@ private fun SegmentedControl(
  * Displays current upload progress, queued files, and pause status.
  */
 @Composable
-private fun CurrentTasksView(uiState: TasksTabUiState) {
+private fun CurrentTasksView(
+    uiState: TasksTabUiState,
+    onToggleStartPause: () -> Unit,
+    onResumePausedTask: (String) -> Unit,
+    onClearPausedTask: (String) -> Unit,
+    onRetryLoadPausedTasks: () -> Unit
+) {
+    // Tracks which paused task (by fileUri) currently has its long-press options
+    // dialog open. null = no dialog shown (R-28.1).
+    var longPressedFileUri by remember { mutableStateOf<String?>(null) }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -148,8 +184,56 @@ private fun CurrentTasksView(uiState: TasksTabUiState) {
         ),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Pause reason banner
-        if (uiState.isPaused && uiState.pauseReason != null) {
+        // Manual start/pause control (R-24.1/24.4). A user pause is surfaced as a
+        // status line on this button (no separate banner) — see statusText.
+        item {
+            StartPauseButton(
+                showingPause = uiState.isStartPauseShowingPause,
+                enabled = uiState.isStartPauseEnabled,
+                isManualRun = uiState.isManualRun,
+                statusText = if (uiState.isPaused && uiState.pauseReason?.isUserPause == true) {
+                    uiState.pauseReason.message
+                } else {
+                    null
+                },
+                onClick = onToggleStartPause
+            )
+        }
+
+        // AUTO_OFF paused tasks section (需求 26/27/28): tasks preserved when the
+        // user turned off "自动备份" mid-upload. Each entry can be continued
+        // (tap "继续") or cleared (long-press → "清除").
+        if (uiState.pausedTasksLoadError) {
+            // R-26.4: reading the paused list failed — offer a retry entry
+            // without touching any persisted record.
+            item {
+                PausedTasksLoadErrorCard(onRetry = onRetryLoadPausedTasks)
+            }
+        } else if (uiState.pausedTasks.isNotEmpty()) {
+            item {
+                Text(
+                    text = "已暂停（自动备份已关闭）",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+
+            items(
+                items = uiState.pausedTasks,
+                key = { it.fileUri }
+            ) { task ->
+                PausedTaskItem(
+                    task = task,
+                    onResume = { onResumePausedTask(task.fileUri) },
+                    onLongPress = { longPressedFileUri = task.fileUri }
+                )
+            }
+        }
+
+        // Pause reason banner — only for CONDITION pauses (电量/WiFi). A user
+        // pause no longer gets its own banner; it is shown on the 开始/暂停 button.
+        if (uiState.isPaused && uiState.pauseReason != null && !uiState.pauseReason.isUserPause) {
             item {
                 PauseReasonBanner(pauseReason = uiState.pauseReason)
             }
@@ -163,7 +247,9 @@ private fun CurrentTasksView(uiState: TasksTabUiState) {
         }
 
         // Empty state when nothing is happening
-        if (!uiState.isUploading && !uiState.isPaused && uiState.queuedFiles.isEmpty()) {
+        if (!uiState.isUploading && !uiState.isPaused && uiState.queuedFiles.isEmpty() &&
+            uiState.pausedTasks.isEmpty() && !uiState.pausedTasksLoadError
+        ) {
             item {
                 EmptyCurrentTasksState()
             }
@@ -186,17 +272,121 @@ private fun CurrentTasksView(uiState: TasksTabUiState) {
             }
         }
     }
+
+    // Long-press options dialog for a paused task (R-28.1/28.2/28.5).
+    val targetFileUri = longPressedFileUri
+    if (targetFileUri != null) {
+        LiquidGlassDialog(
+            onDismissRequest = { longPressedFileUri = null },
+            title = "清除已暂停任务",
+            text = "确定要清除这个已暂停的任务吗？将放弃该文件的续传，此操作不可恢复。"
+        ) {
+            LiquidDialogButton(
+                text = "取消",
+                onClick = { longPressedFileUri = null },
+                style = LiquidDialogButtonStyle.Neutral
+            )
+            LiquidDialogButton(
+                text = "清除",
+                onClick = {
+                    longPressedFileUri = null
+                    onClearPausedTask(targetFileUri)
+                },
+                style = LiquidDialogButtonStyle.Destructive
+            )
+        }
+    }
+}
+
+/**
+ * Manual start/pause control for the current backup task (R-24).
+ *
+ * Renders "暂停" while a backup is actively in progress and "开始" when paused or
+ * idle (R-24.1). Disabled when the queue is empty and no task is in progress
+ * (R-24.4). Tapping dispatches ACTION_PAUSE / ACTION_RESUME via the ViewModel.
+ */
+@Composable
+private fun StartPauseButton(
+    showingPause: Boolean,
+    enabled: Boolean,
+    isManualRun: Boolean,
+    statusText: String?,
+    onClick: () -> Unit
+) {
+    // While actively backing up the button reads "正在手动/自动备份，点击暂停";
+    // otherwise it's the plain "开始" action.
+    val label = if (showingPause) {
+        if (isManualRun) "正在手动备份，点击暂停" else "正在自动备份，点击暂停"
+    } else {
+        "开始"
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        // Reserve enough height for the two-line (label + status) layout so the
+        // button doesn't grow/shrink when the status subtitle appears or clears
+        // (e.g. switching between the uploading and paused states).
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Icon(
+            imageVector = if (showingPause) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        if (statusText != null) {
+            // Show the action label plus the current pause status (e.g. 已手动暂停)
+            // so no separate banner is needed.
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = label,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LocalContentColor.current.copy(alpha = 0.8f)
+                )
+            }
+        } else {
+            Text(label)
+        }
+    }
 }
 
 /**
  * Banner showing why backup is paused and when it will resume.
+ *
+ * Distinguishes a **user pause** from a **condition pause** (R-24.5 / 状态指示设计):
+ * - 已暂停(用户): neutral grey pause icon + "点击开始继续" — backup only resumes
+ *   when the user taps "开始".
+ * - 已暂停(条件): amber warning icon + the specific recovery hint (e.g.
+ *   "将在 WiFi 连接后自动恢复") — backup auto-resumes once conditions are met.
  */
 @Composable
 private fun PauseReasonBanner(pauseReason: PauseReason) {
+    val isUserPause = pauseReason.isUserPause
+    // User pause = neutral/grey; condition pause = amber warning.
+    val accentColor = if (isUserPause) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        PhotoVaultColors.ArchiveAmber
+    }
+    val containerColor = if (isUserPause) {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    } else {
+        PhotoVaultColors.ArchiveAmber.copy(alpha = 0.15f)
+    }
+    val textColor = MaterialTheme.colorScheme.onSurface
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+            containerColor = containerColor
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -208,12 +398,13 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
         ) {
             Icon(
                 imageVector = when (pauseReason) {
+                    is PauseReason.UserPaused -> Icons.Filled.Pause
                     is PauseReason.LowBattery -> Icons.Filled.BatteryAlert
                     is PauseReason.NoWifi -> Icons.Filled.WifiOff
                     is PauseReason.LowBatteryAndNoWifi -> Icons.Filled.Pause
                 },
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.error,
+                tint = accentColor,
                 modifier = Modifier.size(28.dp)
             )
 
@@ -224,13 +415,13 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
                     text = "备份已暂停：${pauseReason.message}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onErrorContainer
+                    color = textColor
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = pauseReason.resumeHint,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                    color = textColor.copy(alpha = 0.7f)
                 )
             }
         }
@@ -244,45 +435,66 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
 private fun CurrentUploadCard(upload: CurrentUploadState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        shape = RoundedCornerShape(16.dp),
+        // The default Card container falls back to an auto-generated (purplish)
+        // surfaceContainer tone because this theme doesn't define those tokens.
+        // Pin it to the clean `surface` color, which is what this card's text and
+        // progress-track colors are designed against, and let the elevation shadow
+        // lift it off the near-white page as the focal "current upload" card.
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
-            // File name
-            Text(
-                text = upload.fileName,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Progress bar
-            LinearProgressIndicator(
-                progress = { upload.progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Speed and remaining time
+            // File name + live percentage
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = upload.fileName.ifEmpty { "准备上传…" },
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "${(upload.progress * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Progress bar — LiquidSlider track look, without the draggable thumb.
+            LiquidProgressBar(
+                progress = upload.progress,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Speed · transferred / total · remaining time
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = formatSpeed(upload.speedBytesPerSec),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary
                 )
 
                 Text(
@@ -347,6 +559,131 @@ private fun QueuedFileItem(fileInfo: FileInfo) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+/**
+ * A single AUTO_OFF paused-task card (需求 26/27/28).
+ *
+ * Shows the file name, upload progress percentage and the "已暂停 · 自动备份已关闭"
+ * status line, with a "继续" button that manually resumes the upload (R-27.1).
+ * Long-pressing the card (≥500ms via [combinedClickable]) opens the clear
+ * options dialog (R-28.1). A plain tap does nothing so the card is not
+ * accidentally activated.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PausedTaskItem(
+    task: PausedTaskUi,
+    onResume: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongPress
+            ),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PauseCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = task.fileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "已暂停 · 自动备份已关闭 · ${task.progressPercent}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // Second line distinguishes this AUTO_OFF pause from USER
+                // ("已手动暂停，点击开始继续") and CONDITION ("条件恢复后自动续传"):
+                // it will NOT auto-resume and must be continued manually (R-30.1).
+                Text(
+                    text = "点击“继续”手动续传（不会自动续传）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            TextButton(onClick = onResume) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("继续")
+            }
+        }
+    }
+}
+
+/**
+ * Error card shown when the paused-task list fails to load (R-26.4). Offers a
+ * retry that re-reads the persisted records; no records are modified.
+ */
+@Composable
+private fun PausedTasksLoadErrorCard(onRetry: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = PhotoVaultColors.ArchiveAmber.copy(alpha = 0.15f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Error,
+                contentDescription = null,
+                tint = PhotoVaultColors.ArchiveAmber,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "已暂停任务读取失败",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onRetry) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("重试")
+            }
         }
     }
 }

@@ -32,6 +32,23 @@ struct UploadProgressInfo: Equatable {
     let state: ChunkUploadState
 }
 
+// MARK: - Pause Origin (R-24.5)
+
+/// Distinguishes *why* an in-progress backup was paused.
+///
+/// Mirrors Android `enum class PauseReason { USER, CONDITION }` in
+/// `BackupForegroundService`. It is intentionally separate from the
+/// condition-detail `PauseReason` (电量不足 / 未连接WiFi …) defined in
+/// `BackupConditionChecker`, because this only records the *source* of the pause:
+/// - `.user`   — the user tapped "暂停"; must NOT be auto-resumed by condition
+///               recovery. Only an explicit "开始" (resume) clears it.
+/// - `.condition` — battery low / WiFi disconnected; auto-resumes once conditions
+///               recover.
+enum BackupPauseOrigin {
+    case user
+    case condition
+}
+
 // MARK: - Upload Result
 
 /// Result of an upload operation
@@ -190,9 +207,43 @@ class ChunkUploader: ObservableObject {
 
     @Published private(set) var currentProgress: UploadProgressInfo?
     @Published private(set) var uploadState: ChunkUploadState = .idle
+
+    /// Merged "paused for any reason" flag (user OR condition). Mirrors Android
+    /// `BackupForegroundService.isPaused`.
     @Published private(set) var isPaused: Bool = false
     @Published private(set) var queueCount: Int = 0
     @Published private(set) var completedCount: Int = 0
+
+    /// Whether an upload is currently in progress. Mirrors Android
+    /// `BackupForegroundService.isRunning`.
+    @Published private(set) var isRunning: Bool = false
+
+    // MARK: - Manual Pause State (R-24)
+
+    /// `true` when the current pause was initiated by the user tapping "暂停".
+    /// A user pause takes priority over condition recovery: it stays paused until
+    /// the user taps "开始" (`resume()`); condition recovery must NOT override it
+    /// (R-24.5). Mirrors Android `BackupForegroundService.isUserPaused`.
+    @Published private(set) var isUserPaused: Bool = false
+
+    /// The origin of the current pause (`.user` / `.condition`), or `nil` when not
+    /// paused. Mirrors Android `BackupForegroundService.pauseReason`.
+    @Published private(set) var pauseOrigin: BackupPauseOrigin?
+
+    // MARK: - Run Source Tracking (R-3.13)
+
+    /// The source of the run currently in progress. `true` when the active
+    /// upload was initiated by an explicit user action (manual), `false` for an
+    /// automatic trigger. Mirrors Android `BackupForegroundService.isManualRun`
+    /// and is the deciding factor for the auto-backup toggle-off behavior
+    /// (R-3.14/3.15). Published so the task view can label the button
+    /// "正在手动/自动备份".
+    @Published private(set) var isManualRun: Bool = false
+
+    /// The id of the record currently being uploaded, so callers (e.g. the
+    /// auto-backup toggle handler) can preserve its 断点续传 progress while
+    /// clearing the rest of the queue.
+    private(set) var currentRecordID: UUID?
 
     // MARK: - Properties
 
@@ -201,6 +252,20 @@ class ChunkUploader: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var pauseContinuation: CheckedContinuation<Void, Never>?
     private var uploadStartTime: Date?
+
+    /// Cooperative stop flag. Set by `stopAuto()` to halt an in-flight automatic
+    /// run at the next chunk boundary while preserving resumable progress.
+    private var stopRequested: Bool = false
+
+    /// Cooperative user-pause flag. Set by `pause()` to park an in-flight run at
+    /// the next chunk boundary (preserving 断点续传 progress) until the user taps
+    /// "开始" (`resume()`). Unlike `stopRequested`, the queue is NOT cleared.
+    private var userPauseRequested: Bool = false
+
+    /// Continuation the upload loop parks on while user-paused; resumed by
+    /// `resume()`. Kept separate from `pauseContinuation` (condition wait) so that
+    /// condition recovery can never wake a user pause (R-24.5).
+    private var userPauseContinuation: CheckedContinuation<Void, Never>?
 
     // MARK: - Singleton
 
@@ -261,12 +326,125 @@ class ChunkUploader: ObservableObject {
         return hash.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Returns whether a persisted resumable session belongs to different
+    /// source bytes. Unknown legacy values (empty hash / zero size / nil date)
+    /// do not by themselves invalidate a session, while every known mismatch
+    /// forces a restart from chunk zero (R-32.2).
+    static func hasSourceChanged(
+        persistedHash: String,
+        persistedSize: Int64,
+        persistedModifiedTime: Date?,
+        currentHash: String,
+        currentSize: Int64,
+        currentModifiedTime: Date?
+    ) -> Bool {
+        if !persistedHash.isEmpty && persistedHash != currentHash { return true }
+        if persistedSize > 0 && persistedSize != currentSize { return true }
+        if let persistedModifiedTime, let currentModifiedTime,
+           persistedModifiedTime != currentModifiedTime {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Upload Flow
 
-    /// Upload a file represented by an UploadRecord
+    /// Upload a file represented by an UploadRecord.
+    ///
+    /// Records the run source (manual vs auto) for the duration of the upload so
+    /// that a concurrent auto-backup toggle-off can decide whether to stop this
+    /// task (R-3.13). Run bookkeeping (`isRunning`, `isManualRun`,
+    /// `currentRecordID`, `stopRequested`) is set up before and torn down after
+    /// the actual upload work regardless of how it terminates.
     /// - Parameter record: The UploadRecord from Core Data containing file info
     /// - Returns: ChunkUploadResult indicating the outcome
     func uploadFile(record: UploadRecord) async -> ChunkUploadResult {
+        await beginRun(source: record.uploadSource, recordID: record.id)
+        let result = await performUpload(record: record)
+        await endRun()
+        return result
+    }
+
+    /// Request that an in-flight **automatic** run stop as soon as possible,
+    /// preserving the current file's 断点续传 progress (R-3.14).
+    ///
+    /// Called by the auto-backup toggle-off handler. The stop is cooperative:
+    /// the upload loop checks `stopRequested` before each chunk, persists the
+    /// chunks uploaded so far, marks the record back to `pending` (keeping its
+    /// `sessionId`/`uploadedChunks` so it can resume when re-enabled), and exits.
+    /// A manual run ignores this request and runs to completion (R-3.15).
+    func stopAuto() {
+        guard isRunning, !isManualRun else { return }
+        stopRequested = true
+        // Wake up a condition-wait so the loop can observe the stop flag.
+        pauseContinuation?.resume()
+        pauseContinuation = nil
+    }
+
+    /// User taps "暂停" (R-24.2). Marks the current run as a **user pause**,
+    /// preserving 断点续传 progress. The upload loop parks at the next chunk
+    /// boundary until `resume()` is called; the queue is left intact (unlike
+    /// `stopAuto()`), and condition recovery will NOT auto-resume it (R-24.5).
+    ///
+    /// No-op unless a backup is actively in progress (not already paused), which
+    /// matches the button semantics (the button only shows "暂停" while running).
+    @MainActor
+    func pause() {
+        guard isRunning, !isPaused else { return }
+        userPauseRequested = true
+        isUserPaused = true
+        isPaused = true
+        pauseOrigin = .user
+    }
+
+    /// User taps "开始" (R-24.3). Clears the user pause and wakes the parked
+    /// upload loop so it resumes from the persisted breakpoint (the loop re-checks
+    /// `Backup_Condition` before the next chunk, so it only proceeds when
+    /// conditions allow, otherwise it transitions to a condition wait).
+    ///
+    /// Only meaningful for a user pause; condition pauses resume automatically.
+    @MainActor
+    func resume() {
+        guard isUserPaused else { return }
+        isUserPaused = false
+        userPauseRequested = false
+        pauseOrigin = nil
+        // Wake the parked loop; it will re-evaluate conditions before continuing.
+        if let continuation = userPauseContinuation {
+            userPauseContinuation = nil
+            isPaused = false
+            continuation.resume()
+        } else {
+            isPaused = false
+        }
+    }
+
+    @MainActor
+    private func beginRun(source: BackupSource, recordID: UUID) {
+        isRunning = true
+        isManualRun = source == .manual
+        currentRecordID = recordID
+        stopRequested = false
+        userPauseRequested = false
+        isUserPaused = false
+        if pauseOrigin == .user { pauseOrigin = nil }
+    }
+
+    @MainActor
+    private func endRun() {
+        isRunning = false
+        currentRecordID = nil
+        stopRequested = false
+        userPauseRequested = false
+        isUserPaused = false
+        if pauseOrigin == .user {
+            pauseOrigin = nil
+            isPaused = false
+        }
+    }
+
+    /// Perform the actual chunked upload work for a record.
+    private func performUpload(record: UploadRecord) async -> ChunkUploadResult {
         uploadStartTime = Date()
 
         // Step 1: Fetch PHAsset data from photo library
@@ -284,11 +462,34 @@ class ChunkUploader: ObservableObject {
             state: .hashing
         )
 
-        // Step 2: Calculate SHA-256 file hash
+        // Step 2: Calculate SHA-256 and validate the persisted source snapshot.
+        // Capture the old values before updating the record; otherwise a changed
+        // source could incorrectly reuse a session created for different bytes.
+        let persistedHash = record.fileHash
+        let persistedSize = record.fileSize
+        let persistedModifiedTime = record.fileModifiedTime
+        let currentModifiedTime = await getAssetModificationDate(localIdentifier: record.localFilePath)
         let fileHash = calculateSHA256(for: fileData)
+        let sourceChanged = Self.hasSourceChanged(
+            persistedHash: persistedHash,
+            persistedSize: persistedSize,
+            persistedModifiedTime: persistedModifiedTime,
+            currentHash: fileHash,
+            currentSize: Int64(fileData.count),
+            currentModifiedTime: currentModifiedTime
+        )
 
-        // Update the record's file hash
-        await updateRecordHash(record: record, hash: fileHash, fileSize: Int64(fileData.count))
+        if sourceChanged {
+            // R-32.2: discard the old breakpoint and restart at chunk zero.
+            await resetRecordForChangedSource(record: record)
+        }
+
+        await updateRecordHash(
+            record: record,
+            hash: fileHash,
+            fileSize: Int64(fileData.count),
+            modifiedTime: currentModifiedTime
+        )
 
         // Step 3: Check for duplicates
         await updateState(.checkingDuplicate)
@@ -370,6 +571,45 @@ class ChunkUploader: ObservableObject {
         await updateState(.uploading)
 
         for chunkIndex in sessionInfo.startChunkIndex..<totalChunks {
+            // Stop requested (auto-backup switched off mid-run): persist progress
+            // for 断点续传 and exit without failing the record (R-3.14).
+            if stopRequested {
+                await saveProgress(record: record, uploadedChunks: Int32(chunkIndex))
+                await markRecordPendingForResume(record: record)
+                await updateState(.paused)
+                await updateProgress(
+                    fileName: record.fileName,
+                    progress: Double(chunkIndex) / Double(totalChunks),
+                    speed: 0,
+                    currentChunk: chunkIndex,
+                    totalChunks: totalChunks,
+                    state: .paused
+                )
+                return .paused
+            }
+
+            // User tapped "暂停" (R-24.2): persist 断点续传 progress and park until
+            // the user taps "开始". The queue is preserved (unlike stopAuto), and
+            // condition recovery will NOT wake this pause (R-24.5).
+            if userPauseRequested {
+                await saveProgress(record: record, uploadedChunks: Int32(chunkIndex))
+                await updateState(.paused)
+                await updateProgress(
+                    fileName: record.fileName,
+                    progress: Double(chunkIndex) / Double(totalChunks),
+                    speed: 0,
+                    currentChunk: chunkIndex,
+                    totalChunks: totalChunks,
+                    state: .paused
+                )
+
+                // Wait for the user to resume. `resume()` clears the flags and
+                // resumes this continuation.
+                await waitForUserResume()
+
+                await updateState(.uploading)
+            }
+
             // Check backup conditions before each chunk
             if !conditionChecker.canBackup() {
                 // Save progress and pause
@@ -383,12 +623,22 @@ class ChunkUploader: ObservableObject {
                     totalChunks: totalChunks,
                     state: .paused
                 )
-                isPaused = true
+                await markConditionPaused(true)
 
-                // Wait for conditions to restore
+                // Wait for conditions to restore. `stopAuto()` also wakes this
+                // wait, so re-check the stop request before uploading another
+                // chunk (R-25.1).
                 await waitForConditionRestore()
 
-                isPaused = false
+                if stopRequested {
+                    await saveProgress(record: record, uploadedChunks: Int32(chunkIndex))
+                    await markRecordPendingForResume(record: record)
+                    await markConditionPaused(false)
+                    await updateState(.paused)
+                    return .paused
+                }
+
+                await markConditionPaused(false)
                 await updateState(.uploading)
             }
 
@@ -749,6 +999,35 @@ class ChunkUploader: ObservableObject {
         }
     }
 
+    /// Update the merged pause flag / origin for a **condition** pause on the main
+    /// actor. A user pause takes priority (R-24.5): while `isUserPaused` is set we
+    /// do not overwrite the origin with `.condition`.
+    @MainActor
+    private func markConditionPaused(_ paused: Bool) {
+        isPaused = paused
+        if paused {
+            if !isUserPaused { pauseOrigin = .condition }
+        } else {
+            if pauseOrigin == .condition { pauseOrigin = nil }
+        }
+    }
+
+    /// Park the upload loop until the user taps "开始" (`resume()`).
+    ///
+    /// Kept deliberately independent from `waitForConditionRestore()` so that
+    /// condition recovery (which resumes `pauseContinuation`) can never wake a
+    /// user pause — only `resume()` resumes `userPauseContinuation` (R-24.5).
+    private func waitForUserResume() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Already resumed (race): continue immediately.
+            if !userPauseRequested {
+                continuation.resume()
+                return
+            }
+            self.userPauseContinuation = continuation
+        }
+    }
+
     /// Wait for backup conditions to be restored
     private func waitForConditionRestore() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -764,12 +1043,31 @@ class ChunkUploader: ObservableObject {
 
     // MARK: - Core Data Operations
 
-    /// Update the record's file hash and size
-    private func updateRecordHash(record: UploadRecord, hash: String, fileSize: Int64) async {
+    /// Update the record's current source snapshot.
+    private func updateRecordHash(
+        record: UploadRecord,
+        hash: String,
+        fileSize: Int64,
+        modifiedTime: Date?
+    ) async {
         let context = persistenceController.viewContext
         await context.perform {
             record.fileHash = hash
             record.fileSize = fileSize
+            record.fileModifiedTime = modifiedTime
+            record.updatedAt = Date()
+            self.persistenceController.save()
+        }
+    }
+
+    /// Discard a breakpoint created for source bytes that no longer match.
+    private func resetRecordForChangedSource(record: UploadRecord) async {
+        let context = persistenceController.viewContext
+        await context.perform {
+            record.sessionId = nil
+            record.uploadedChunks = 0
+            record.totalChunks = 0
+            record.status = UploadStatus.pending.rawValue
             record.updatedAt = Date()
             self.persistenceController.save()
         }
@@ -792,6 +1090,18 @@ class ChunkUploader: ObservableObject {
         let context = persistenceController.viewContext
         await context.perform {
             record.uploadedChunks = uploadedChunks
+            record.updatedAt = Date()
+            self.persistenceController.save()
+        }
+    }
+
+    /// Reset a record to `pending` while preserving its `sessionId` and
+    /// `uploadedChunks` so the upload can resume from the last chunk boundary
+    /// once auto-backup is re-enabled (断点续传, R-3.14).
+    private func markRecordPendingForResume(record: UploadRecord) async {
+        let context = persistenceController.viewContext
+        await context.perform {
+            record.status = UploadStatus.pending.rawValue
             record.updatedAt = Date()
             self.persistenceController.save()
         }

@@ -62,5 +62,25 @@ data class UploadRecord(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    /**
+     * Why this upload is paused. NULL means an ordinary resume record (an
+     * interrupted upload that will be retried automatically). "AUTO_OFF" means
+     * the record was paused because the user turned off automatic backup while
+     * this file was still uploading; such records are kept as "paused" tasks
+     * and surfaced to the user instead of being resumed silently. The design
+     * also reserves USER/CONDITION semantics for future use, but only NULL and
+     * AUTO_OFF are populated today.
+     */
+    @ColumnInfo(name = "pause_source")
+    val pauseSource: String? = null,
+
+    /**
+     * Timestamp (epoch millis) at which this record was marked AUTO_OFF, used to
+     * order paused tasks by pause time (most recent first). NULL for records
+     * that were never AUTO_OFF paused.
+     */
+    @ColumnInfo(name = "paused_at")
+    val pausedAt: Long? = null
 )

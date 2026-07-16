@@ -416,9 +416,11 @@ graph TD
 **布局结构：**
 - 顶部：分段控制器（当前任务 / 历史记录）
 - 当前任务视图：
+  - **备份控制条**：一个"开始/暂停"按钮，控制当前备份任务（进行中显示"暂停"，已暂停或空闲显示"开始"；队列为空且无进行中任务时禁用）
   - 正在上传的文件：文件名 + 进度条 + 速度 + 剩余时间
   - 排队中的文件列表：文件名 + 文件大小 + 等待状态
-  - 暂停状态提示：暂停原因（电量不足/WiFi断开）+ 恢复条件
+  - 暂停状态提示：区分"用户暂停"与"条件暂停"（电量不足/WiFi断开）+ 恢复条件；用户暂停时提示"已手动暂停，点击开始继续"
+  - **已暂停任务清单（关闭自动备份产生，需求 26）**：来源为持久化 Upload_Record 的 `AUTO_OFF` 条目，每条显示文件名 + 已上传进度百分比 + "已暂停 · 自动备份已关闭"文案 + "继续"按钮；长按条目弹出"清除"选项框；按暂停时间由近到远排序；为空时展示空状态；不随电量/WiFi 恢复自动续传
 - 历史记录视图：
   - 按日期分组的备份记录列表
   - 每条记录：文件名 + 大小 + 备份时间 + 状态（成功/失败/跳过）
@@ -477,7 +479,9 @@ graph TD
 | 已连接(公网) | 绿色圆点 + "公网" | 顶部状态栏 |
 | 未连接 | 灰色圆点 + "未连接" | 顶部状态栏 |
 | 备份中 | 蓝色旋转图标 | 文件夹卡片 |
-| 已暂停 | 黄色暂停图标 | 备份任务页 |
+| 已暂停(条件) | 黄色暂停图标 + 恢复条件 | 备份任务页 |
+| 已暂停(用户) | 灰色暂停图标 + "点击开始继续" | 备份任务页 |
+| 已暂停(自动备份关闭) | 灰色暂停图标 + "自动备份已关闭，点击继续手动续传" + 每条目"继续"按钮 | 备份任务页已暂停清单 |
 | 备份完成 | 绿色对勾 | 文件缩略图 |
 | 备份失败 | 红色感叹号 | 历史记录 |
 
@@ -630,6 +634,28 @@ interface BackgroundScanService {
 - 手动"立即备份"通过 `KEY_MANUAL_BACKUP` 标记 `manual=true`，无视开关执行全量扫描与备份（仍需通过网络/电量/服务端连通预检）
 - 注：单张"重新备份"与备份任务页的"重试"属于显式的逐项用户操作，不受"自动备份"开关约束
 
+**运行中关闭"自动备份"开关的处理（R-3.13/3.14/3.15）：**
+
+此前仅门控了备份的*启动*：`allowBackup` 阻止自动触发器发起新的备份，但对一次**已经在运行**的 `BackupForegroundService` 没有任何拦截——上传循环 `while (backupQueue.size() > 0 && !isPaused)` 只检查网络/电量条件，不读取 `autoBackupEnabled`。这导致一次自动备份启动后，中途关闭开关也无法停止它，队列里剩余的文件会继续传完（一个逻辑缺陷）。
+
+修复方案是让备份服务记住**每次运行的来源**，并让开关的关闭动作作用于正在运行的任务：
+
+- **来源标记**：`BackupForegroundService.start(context, manual: Boolean)` 通过 Intent extra `KEY_MANUAL_RUN` 传入本次运行是否由用户手动发起，服务将其保存为 `@Volatile var isManualRun`。所有手动入口（`LocalTabViewModel.doBackupNow`、`FolderDetailViewModel` 单张重新备份、`TasksTabViewModel` 重试）传 `manual=true`；所有自动入口（`BackgroundScanWorker`、`ConditionCheckWorker`）传 `manual=false`。
+- **关闭开关的动作**：`SettingsViewModel.setAutoBackupEnabled(false)` 在写入偏好后，检查 `BackupForegroundService.isRunning`：
+  - 若正在运行且 `isManualRun == true`：不做任何中止（手动任务继续跑完，R-3.15）。
+  - 否则（自动任务运行中，或服务未运行但队列中残留自动入队的文件）：调用 `BackupForegroundService.stopAuto(context)` 停止服务并 `backupQueue.clear()` 清空排队文件（R-3.14）。正在上传中的当前文件因 `ChunkUploader` 已持久化分块进度，其断点续传记录被保留，开关再次开启后可续传。
+- 由于 `SettingsPreferences` 与服务/队列分属不同层，清空与停止的编排放在 `SettingsViewModel`（持有 `@ApplicationContext` 与注入的 `BackupQueue`），避免在偏好存储层引入服务依赖。
+
+**备份任务的手动开始/暂停（R-24）：**
+
+`BackupForegroundService` 扩充暂停语义，区分**用户暂停**与**条件暂停**：
+
+- 新增 `ACTION_RESUME` 与 `@Volatile var isUserPaused` 状态；原有 `isPaused` 保留为"因任意原因暂停"的合并态，配套 `pauseReason`（`USER` / `CONDITION`）。
+- `ACTION_PAUSE`（用户点击"暂停"）：置 `isUserPaused=true`、`pauseReason=USER`，取消 `backupJob`，通知栏显示"已暂停（手动）"。
+- `ACTION_RESUME`（用户点击"开始"）：清 `isUserPaused`，若满足 `Backup_Condition` 则重新进入上传循环从断点续传。
+- `ConditionCheckWorker` 的自动续传分支在 `isUserPaused==true` 时**不得**自动恢复（用户暂停优先于条件恢复，R-24.5）；仅 `pauseReason==CONDITION` 的暂停才在条件恢复后自动续传。
+- `TasksTab` 订阅服务运行/暂停状态（经 `BackupForegroundService.isRunning` / `isPaused` 暴露的可观察状态或 `TasksTabViewModel` 轮询/StateFlow），据此渲染"开始/暂停"按钮：进行中显示"暂停"、暂停或空闲显示"开始"；`backupQueue` 为空且无进行中任务时禁用按钮（R-24.1/24.4）。
+
 **备份方式总结表：**
 
 | 触发方式 | 入口 / 代码 | 类型 | 扫描范围 | 受"自动备份"开关约束 | 说明 |
@@ -646,6 +672,253 @@ interface BackgroundScanService {
 | 任务页"重试" | `TasksTabViewModel` → `enqueue` + `BackupForegroundService.start` | 手动 | 单文件 | 否 | 重传失败任务 |
 
 > 关闭"自动备份"后，所有"自动"行仅扫描以刷新状态/计数，不入队、不启动上传，并冻结各文件夹的 `lastScanTime`；所有"手动"行不受影响。所有方式都会跳过本地 `photo_status` 标记为 trashed/purged 的文件（仅"单张重新备份"可强制重传）。
+>
+> 此外，**运行中**关闭"自动备份"开关：正在进行的**自动**任务会被立即停止并清空排队队列（当前文件保留断点续传进度）；正在进行的**手动**任务不受影响，继续跑完。详见上文"运行中关闭'自动备份'开关的处理"。
+
+**关闭自动备份后保留已暂停任务（需求 25-33，仅 Android；iOS 见需求 33 为后续可选项）：**
+
+本组设计是对 R-3.14（"关闭自动备份停止自动任务、保留正在上传文件断点"）的 **UI 层扩展**：让那个被保留断点的 In_Flight_File 成为"备份任务"Tab 上可见的 `AUTO_OFF` 已暂停条目，并支持逐个"继续"续传与长按"清除"。R-3.14 的核心行为（停服务、清空未开始队列、保留当前文件断点）**不变**，仅在其基础上增加标记、展示与操作。
+
+术语沿用 requirements：In_Flight_File（有 Upload_Record 的正在上传文件）、Queued_Not_Started_File（在 `BackupQueue` 中尚未开始、无 Upload_Record 的文件）、Paused_Task（数据来源为持久化 Upload_Record 的"已暂停"展示条目）、Pause_Source ∈ {USER, CONDITION, AUTO_OFF}。
+
+**1）标记"当前正在上传的 file_uri"**
+
+关闭开关时需要确定哪一个文件是 In_Flight_File（应保留并标记 AUTO_OFF），哪些是 Queued_Not_Started_File（应清空）。由于逐个上传，同一时刻至多一个 In_Flight_File。有两种确定方式，采用二者结合：
+
+- **主判据（服务暴露 currentFileUri）**：`BackupForegroundService` 增加 `@Volatile var currentFileUri: String?`，在上传循环 `dequeue()` 后置为当前文件 uri、该文件结束（成功/跳过/失败/取消）后清空。关闭开关时若服务在运行，该值即为唯一 In_Flight_File。
+- **兜底判据（持久化记录）**：`In_Flight_File` 的充要标志是"存在 Upload_Record 且 `uploaded_chunk_index >= 0`"（已确认至少一个分块）。当服务已被系统杀死、`currentFileUri` 丢失时，以持久化 Upload_Record 作为准据。
+
+推荐实现：关闭开关的编排以"是否存在 Upload_Record"为最终准据——即 `SettingsViewModel.setAutoBackupEnabled(false)` 停止服务后，把当前尚存的、属于自动任务的 Upload_Record（`uploaded_chunk_index >= 0` 且未过期）标记为 AUTO_OFF；`BackupQueue` 中无 Upload_Record 的排队文件随 `backupQueue.clear()` 一并清空。这样即便 `currentFileUri` 因进程被杀而丢失，仍能正确保留断点文件（满足 R-25.1/25.5）。
+
+**2）关闭开关的处理变更（`SettingsViewModel.setAutoBackupEnabled(false)`，R-25/29）**
+
+在既有 `shouldStopAutoOnDisable`（R-3.14/3.15 门控，不变）为真的分支内，新增"标记 In_Flight_File 为 AUTO_OFF"这一步，再清空队列：
+
+```kotlin
+fun setAutoBackupEnabled(enabled: Boolean) {
+    settingsPreferences.setAutoBackupEnabled(enabled)
+    if (!enabled &&
+        BackupForegroundService.shouldStopAutoOnDisable(
+            isRunning = BackupForegroundService.isRunning,
+            isManualRun = BackupForegroundService.isManualRun
+        )
+    ) {
+        // R-3.14/3.15：手动任务在 shouldStopAutoOnDisable 中已返回 false，此分支只处理自动任务/残留队列
+        BackupForegroundService.stopAuto(context)      // 停服务（当前 Chunk 上传随 job 取消停止）
+        viewModelScope.launch {
+            // R-25.2：把仍有断点、属于自动任务的 In_Flight_File 标记为 AUTO_OFF Paused_Task 并保留其 Upload_Record
+            markInFlightAsAutoOffPaused()
+            // R-25.1/25.3：清空内存队列中尚未开始的 Queued_Not_Started_File（它们无 Upload_Record，不产生 Paused_Task）
+            backupQueue.clear()
+        }
+    }
+}
+```
+
+`markInFlightAsAutoOffPaused()` 的判定（纯逻辑，便于单测）：遍历当前有效（未过期、所属文件夹仍存在）的 Upload_Record，对 `uploaded_chunk_index >= 0` 者调用 `uploadRecordDao.markAutoOffPaused(fileUri)`。
+
+- R-25.1：In_Flight_File 的 Upload_Record 及其已确认分块进度**不被删除**（`clear()` 只动内存队列，`stopAuto` 明确不删断点记录）。
+- R-25.3：Queued_Not_Started_File 因无 Upload_Record，`clear()` 后既不入清单也不产生 Paused_Task。
+- R-25.5：若此刻无任何 In_Flight_File（无 `uploaded_chunk_index >= 0` 的记录），`markInFlightAsAutoOffPaused()` 不标记任何记录、不产生 Paused_Task，仅停服务 + 清队列。
+- R-25.4/30.3/31.2：`BackgroundScanWorker.requeueResumableUploads()` 与 `ConditionCheckWorker` 的自动续传分支在遍历 Upload_Record 时**排除 `pause_source == "AUTO_OFF"` 的记录**，从而开关关闭期间 AUTO_OFF 任务既不重新入队也不因条件恢复被自动续传（新增一处 `.filter { it.pauseSource != "AUTO_OFF" }`）。
+- R-29.1：手动任务由 `shouldStopAutoOnDisable` 返回 false 而完全不进入本分支，队列与服务不受影响（沿用 R-3.15）。
+
+关闭开关处理时序：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant SV as SettingsViewModel
+    participant FS as BackupForegroundService
+    participant Q as BackupQueue
+    participant DB as UploadRecordDao
+    U->>SV: 关闭"自动备份"开关
+    SV->>SV: shouldStopAutoOnDisable(isRunning, isManualRun)
+    alt 手动任务运行中 → false
+        SV-->>U: 不处理，手动任务继续 (R-29.1)
+    else 自动任务/残留队列 → true
+        SV->>FS: stopAuto(context)  (停服务, 取消当前Chunk上传)
+        SV->>DB: 遍历有效记录, 对 uploaded_chunk_index>=0 者 markAutoOffPaused (R-25.2)
+        SV->>Q: clear()  (清空未开始文件, R-25.1/25.3)
+        Note over DB: In_Flight_File 的 Upload_Record 保留断点 (R-25.1)
+    end
+```
+
+**3）任务页数据源（`TasksTabViewModel`，R-26/31）**
+
+现状 `refreshCurrentTasks()` 仅从内存 `backupQueue.getAll()` 取排队文件。扩展为**三来源合并**：
+
+- 当前上传中文件（既有 `currentUpload`，来自服务进度回调）；
+- 内存 `BackupQueue` 的排队文件（既有 `queuedFiles`）；
+- **新增**：从 `uploadRecordDao.getPausedByAutoOff()` 读取 AUTO_OFF Paused_Task 清单。
+
+在 `TasksTabUiState` 增加 `pausedTasks: List<PausedTaskUi>` 与加载态/错误态字段：
+
+```kotlin
+data class PausedTaskUi(
+    val fileUri: String,
+    val fileName: String,
+    val progressPercent: Int,   // 0..100，见进度计算
+    val pausedAt: Long
+)
+data class TasksTabUiState(
+    // ...既有字段...
+    val pausedTasks: List<PausedTaskUi> = emptyList(),
+    val isPausedTasksLoading: Boolean = false,
+    val pausedTasksLoadError: Boolean = false   // R-26.4 读取失败
+)
+```
+
+加载逻辑（`loadPausedTasks()`，在 `init` 与刷新时调用）：
+
+```kotlin
+private fun loadPausedTasks() {
+    viewModelScope.launch {
+        _uiState.update { it.copy(isPausedTasksLoading = true, pausedTasksLoadError = false) }
+        try {
+            val now = System.currentTimeMillis()
+            val records = uploadRecordDao.getPausedByAutoOff()
+                .filter { now - it.createdAt <= SESSION_EXPIRY_MS }   // R-32.1 过滤过期
+            val items = records.map {   // 已按 paused_at DESC 排序 (R-26.1)
+                PausedTaskUi(
+                    fileUri = it.fileUri,
+                    fileName = it.fileName,
+                    progressPercent = computeProgressPercent(it.uploadedChunkIndex, it.totalChunks),
+                    pausedAt = it.pausedAt ?: it.updatedAt
+                )
+            }
+            _uiState.update { it.copy(pausedTasks = items, isPausedTasksLoading = false) }
+        } catch (e: Exception) {
+            // R-26.4：显示错误 + 重试入口，绝不删改任何 Upload_Record
+            _uiState.update { it.copy(isPausedTasksLoading = false, pausedTasksLoadError = true) }
+        }
+    }
+}
+```
+
+进度计算（纯函数，R-26.2/26.3）：
+
+```kotlin
+// 已上传分块数 = uploaded_chunk_index + 1（index 从 0 计，-1 表示尚未确认任何分块）
+fun computeProgressPercent(uploadedChunkIndex: Int, totalChunks: Int): Int {
+    if (totalChunks <= 0) return 0                     // R-26.3 total 为 0/不可用 → 0%
+    val uploaded = (uploadedChunkIndex + 1).coerceIn(0, totalChunks)
+    return (uploaded * 100 / totalChunks).coerceIn(0, 100)  // 整数除法即向下取整 (R-26.2)
+}
+```
+
+- R-26.1：3 秒内加载——单表按索引查询，量级极小，满足；轮询式 2 秒刷新同样调用 `loadPausedTasks()`。
+- R-26.7/26.8：`pausedTasks` 非空时持续展示于"当前任务"区，直至被续传完成（成功后删记录）或清除；为空时展示空状态提示。
+- R-31.1/31.2/31.3：数据源为持久化 Upload_Record，重启后 `init` 即重建展示；开关关闭下 `requeueResumableUploads` 已排除 AUTO_OFF，故不自动续传；条目照常支持"继续"（R-27）与"长按清除"（R-28）。
+
+**4）单文件"继续"续传（R-27/30.4/30.5）**
+
+`TasksTabViewModel.resumePausedTask(fileUri)`：
+
+```kotlin
+fun resumePausedTask(fileUri: String) {
+    viewModelScope.launch {
+        val record = uploadRecordDao.getByFileUri(fileUri) ?: run { removeFromUi(fileUri); return@launch }
+        // 源文件存在性 / 可读性预检 (R-27.6 / R-32.3)
+        if (!isSourceReadable(record.fileUri)) {
+            uploadRecordDao.deleteByFileUri(fileUri)   // 删记录并移除条目
+            _uiState.update { /* 显示"源文件已不存在，无法续传"提示 */ }
+            return@launch
+        }
+        // 清除 AUTO_OFF 标记 → 恢复为普通断点记录，避免仍被自动续传门控排除，
+        // 并让它以手动任务身份续传 (R-27.1/27.2：不改自动备份开关)
+        uploadRecordDao.clearAutoOffPause(fileUri)
+        val fileInfo = record.toFileInfo()             // 由 Upload_Record 重建 FileInfo
+        backupQueue.enqueue(listOf(fileInfo))
+        BackupForegroundService.start(context, manual = true)   // 手动任务 (R-27.1)
+        refreshCurrentTasks()
+    }
+}
+```
+
+从 Upload_Record 重建 FileInfo（复用既有 `requeueResumableUploads` 的映射规则，保证一致）：
+
+```kotlin
+fun UploadRecord.toFileInfo(): FileInfo = FileInfo(
+    uri = fileUri,
+    fileName = fileName,
+    fileSize = fileSize,
+    createdTime = fileModifiedTime,
+    mimeType = mimeType.ifBlank { guessMimeFromName(fileName) },
+    folderUri = folderUri
+)
+```
+
+后续续传行为完全复用既有 `ChunkUploader.uploadFile` 与服务上传循环，因此以下需求"零新增逻辑"即满足：
+
+- R-27.3：满足 Backup_Condition 时，`resolveSession` 通过 `getByFileUri` 命中记录，从 `uploaded_chunk_index+1` 续传，不重传已确认分块（沿用 Property 8）。
+- R-27.4/32.2：条件不满足时进入既有 `PauseReason.CONDITION` 暂停并在条件恢复后自动续传；因该记录已被 `clearAutoOffPause` 转为手动任务的普通断点，条件恢复分支正常接管。
+- R-27.5/32.2：源文件修改时间/大小不一致或记录超 7 天时，`ChunkUploader`/`SnapshotValidator` 沿用 R-5.7/R-5.3 废弃记录并从第一个 Chunk 重传。
+- R-27.7：上传失败沿用 R-3.7 重试 3 次、间隔 30 秒；仍失败则保留 Upload_Record 与条目、标记待重试（此时它已是普通断点记录，不再显示为 AUTO_OFF）。
+- R-27.8：`completeUpload` 成功后 `ChunkUploader` 既有 `deleteByFileUri` 删除记录，`TasksTabViewModel` 下次刷新时该条目自然从清单移除。
+- R-30.5：`resumePausedTask` 只对被点击的 `fileUri` 调用 `clearAutoOffPause`，其余 AUTO_OFF 记录不受影响，仍保持暂停展示。
+
+**5）长按清除（R-28）**
+
+`TasksTab` 的 Paused_Task 条目 Compose 交互：使用 `Modifier.combinedClickable(onLongClick = { ... })`（长按语义默认 ≥500ms，符合 R-28.1）触发，弹出既有风格的 `LiquidGlassDialog`/选项框，含"清除"与"取消"：
+
+```kotlin
+Card(
+    modifier = Modifier.combinedClickable(
+        onClick = { /* 无操作或高亮 */ },
+        onLongClick = { showClearSheet = true }   // R-28.1 长按弹框
+    )
+) { /* 文件名 + 进度 + AUTO_OFF 已暂停文案 + 继续按钮 */ }
+
+if (showClearSheet) {
+    LiquidGlassDialog(onDismissRequest = { showClearSheet = false }, title = "清除已暂停任务", text = "...") {
+        LiquidDialogButton("取消", style = Neutral) { showClearSheet = false }         // R-28.5 取消 → 保留不变
+        LiquidDialogButton("清除", style = Destructive) {
+            showClearSheet = false
+            viewModel.clearPausedTask(fileUri)                                          // R-28.2
+        }
+    }
+}
+```
+
+```kotlin
+fun clearPausedTask(fileUri: String) {
+    viewModelScope.launch {
+        try {
+            uploadRecordDao.deleteByFileUri(fileUri)   // R-28.2 删除 Upload_Record
+            refreshCurrentTasks()                       // R-28.4 1 秒内从清单移除
+        } catch (e: Exception) {
+            _uiState.update { /* R-28.3 显示清除失败提示，保留条目与记录不变 */ }
+        }
+    }
+}
+```
+
+- R-28.6：清除即删除 Upload_Record，之后 `requeueResumableUploads`/续传都无从命中该记录；仅当它作为一个"新文件"被下一次全量扫描重新发现时才会重新入队（属既有正常行为）。
+
+**6）文案与通知区分（R-30，第三种来源 AUTO_OFF）**
+
+现有两处"暂停语义"需要引入第三种来源：
+
+- **服务层枚举**：`BackupForegroundService.PauseReason` 目前为 `{ USER, CONDITION }`。为使通知文案可区分，新增 `AUTO_OFF`。但注意：AUTO_OFF 暂停并非"当前备份任务被暂停"，而是"关闭自动备份后遗留的、以持久化记录形式存在的条目"——服务在关闭开关时已 `stopAuto` 停止，通常不再前台运行。因此 AUTO_OFF 的**通知**文案主要用于：若在标记 AUTO_OFF 后仍需短暂提示，展示"自动备份已关闭，有 N 个未完成任务可在备份任务页继续"。实现上可复用通知构建，仅文案不同：`updateNotification("自动备份已关闭", "有未完成的备份任务，可在『备份任务』页手动继续")`（R-30.2）。
+- **UI 层 sealed class**：`TasksTabViewModel.PauseReason` 目前含 `UserPaused / LowBattery / NoWifi / LowBatteryAndNoWifi`。这是描述"当前整体备份暂停原因"的横幅。AUTO_OFF 任务是**逐条**展示的 Paused_Task，不走这个整体横幅，而是在每个 `PausedTaskUi` 条目内展示独立文案，例如标题"已暂停 · 自动备份已关闭"、副文案"点击『继续』手动续传（不会自动续传）"。这样与 `USER`（"已手动暂停，点击开始继续"）、`CONDITION`（"电量不足/WiFi 未连接，条件恢复后自动续传"）在**文字内容**上明确区分（R-30.1）。
+
+  为保持类型清晰，可在 UI 层新增一个与横幅无关的展示枚举/常量（如 `PausedTaskLabel.AUTO_OFF`）承载条目文案，避免与整体横幅的 `PauseReason` sealed class 混用；两者关系为：整体横幅 `PauseReason` 仍只表达 USER/CONDITION（当前活动任务的暂停），AUTO_OFF 属于"遗留已暂停条目清单"的每条目标签。
+
+- R-30.3/30.4：条件恢复不自动续传任何 AUTO_OFF 任务（由 `ConditionCheckWorker` 过滤 `pause_source == AUTO_OFF` 保证），仅"继续"按钮触发续传。
+
+**7）边界与异常处理（R-32）**
+
+| 边界情形 | 处理 | 复用/新增 |
+|----------|------|-----------|
+| Upload_Record 过期（自 `created_at` 超 7 天，R-32.1） | 加载清单时 `filter { now - createdAt <= 7天 }` 排除；`deleteExpired` 照常清理；过期文件由下次全量扫描作为新文件重新发现 | 复用 `deleteExpired` + 新增加载时过滤，不影响其他有效记录 |
+| 源文件修改/大小不一致（R-32.2） | 点击"继续"后 `ChunkUploader` + `SnapshotValidator` 沿用 R-5.7 废弃记录、从第一个 Chunk 重传，条目转为上传中 | 复用既有 |
+| 源文件已删除/不可读（R-27.6/R-32.3） | "继续"前预检不可读 → 提示"源文件已不存在，无法续传"、`deleteByFileUri` 删记录、条目移除，不触发上传 | 新增预检 |
+| 备份文件夹被移除（R-32.4） | 沿用移除文件夹时 `deleteByFolderUri` 删除该文件夹全部 Upload_Record 的既有逻辑；对应 AUTO_OFF 条目随之从清单消失；`requeueResumableUploads` 亦已按文件夹存在性过滤 | 复用 `deleteByFolderUri` |
+
+**8）iOS（R-33，可选，后续迭代）**
+
+iOS 端在后续迭代对齐需求 25-32：等价地在 Core Data 的续传记录上增加 `pauseSource`/`pausedAt`，在关闭自动备份时保留正在上传记录并在任务页展示为 AUTO_OFF 已暂停条目。本次不在 Android 必做范围内，标注为后续。
 
 **上传字节一致性（ChunkUploader）：**
 - 先用 URI 计算哈希做去重预检查（命中则跳过，不落盘）
@@ -796,6 +1069,77 @@ data class ScanState(
     val lastFileTimestamp: Long     // 上次扫描到的最新文件时间
 )
 ```
+
+### 断点续传记录扩展（Upload_Record，需求 25-33）
+
+为支持"关闭自动备份后将正在上传的文件保留为可见的『已暂停』任务并支持继续/清除"，需在既有 `upload_records` 表（`UploadRecord` 实体，主键 `file_uri`）上新增两列，用于标记暂停来源与暂停时间：
+
+```kotlin
+@Entity(tableName = "upload_records")
+data class UploadRecord(
+    // ...既有字段：file_uri / session_id / file_hash / file_name / file_size /
+    //             file_modified_time / folder_uri / mime_type / total_chunks /
+    //             uploaded_chunk_index / created_at / updated_at 保持不变...
+
+    /**
+     * 暂停来源：NULL 表示普通断点记录（进程被杀/条件暂停留下的可自动续传记录，
+     * 行为不变）；"AUTO_OFF" 表示因用户关闭自动备份而被保留、需用户手动"继续"
+     * 才续传的 Paused_Task。对应 Pause_Source 术语中的 AUTO_OFF。
+     */
+    @ColumnInfo(name = "pause_source")
+    val pauseSource: String? = null,
+
+    /**
+     * 被标记为 AUTO_OFF 暂停的时间戳（毫秒）。用于 Tasks_Tab 按暂停时间由近到远
+     * （降序）排序展示（R-26.1）。非 AUTO_OFF 记录为 NULL。
+     */
+    @ColumnInfo(name = "paused_at")
+    val pausedAt: Long? = null
+)
+```
+
+**方案权衡与推荐：**
+
+| 方案 | 说明 | 取舍 |
+|------|------|------|
+| **A（推荐）：在 `upload_records` 上加 `pause_source` + `paused_at`** | 断点数据与暂停语义同表，`getByFileUri`/`deleteByFileUri` 等既有 DAO 直接复用，"继续/清除"只需读/删同一条记录 | 单一数据源，无需跨表 JOIN；`UploadRecord` 既是断点续传依据又是 Paused_Task 展示来源，语义内聚 |
+| B：新建独立 `paused_tasks` 表，外键关联 `upload_records` | 关注点分离更"干净" | 引入额外表与迁移、双写一致性问题、删除断点时需级联，复杂度上升且无实际收益 |
+| C：仅用内存标记（不落库） | 实现最简单 | 进程被杀 / 重启后 AUTO_OFF 状态丢失，违背需求 31（重启后仍需展示），否决 |
+
+推荐方案 A：`pause_source` 用可空字符串而非布尔，为未来可能的其他暂停来源留出扩展空间，同时 `NULL` 天然表示"普通断点记录"，与既有 `requeueResumableUploads`（进程重建续传）行为完全兼容——该逻辑只需在自动续传时排除 `pause_source == "AUTO_OFF"` 的记录（详见组件设计）。
+
+**Room 迁移（版本 7 → 8）：**
+
+`AppDatabase` 版本由 `7` 升至 `8`，新增迁移追加两列（可空，默认 NULL，向后兼容既有记录）：
+
+```kotlin
+// 与既有 MIGRATION_6_7 同风格，internal 以便单测直接验证
+internal val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE upload_records ADD COLUMN pause_source TEXT")
+        db.execSQL("ALTER TABLE upload_records ADD COLUMN paused_at INTEGER")
+    }
+}
+// provideAppDatabase 的 addMigrations(...) 追加 MIGRATION_7_8
+```
+
+**`UploadRecordDao` 新增查询：**
+
+```kotlin
+// 读取所有 AUTO_OFF 暂停任务，按暂停时间由近到远排序（R-26.1）
+@Query("SELECT * FROM upload_records WHERE pause_source = 'AUTO_OFF' ORDER BY paused_at DESC")
+suspend fun getPausedByAutoOff(): List<UploadRecord>
+
+// 将某文件标记为 AUTO_OFF 暂停（关闭开关时对 In_Flight_File 调用）
+@Query("UPDATE upload_records SET pause_source = 'AUTO_OFF', paused_at = :pausedAt, updated_at = :updatedAt WHERE file_uri = :fileUri")
+suspend fun markAutoOffPaused(fileUri: String, pausedAt: Long = System.currentTimeMillis(), updatedAt: Long = System.currentTimeMillis())
+
+// 清除 AUTO_OFF 标记（用户点击"继续"、转为手动上传时调用），恢复为普通断点记录
+@Query("UPDATE upload_records SET pause_source = NULL, paused_at = NULL, updated_at = :updatedAt WHERE file_uri = :fileUri")
+suspend fun clearAutoOffPause(fileUri: String, updatedAt: Long = System.currentTimeMillis())
+```
+
+既有 `getByFileUri` / `deleteByFileUri` / `deleteByFolderUri` / `deleteExpired` / `getAll` 保持不变，直接复用于"继续"（读记录）、"清除"（删记录）、文件夹移除（按文件夹删）、过期清理等场景。
 
 ### API 数据传输对象
 
@@ -964,6 +1308,60 @@ class ResumeInfoResponse(BaseModel):
 
 **Validates: Requirements 5.1**
 
+### Property 16: 关闭自动备份对运行中任务的作用与来源相关
+
+*对于任意*正在进行的 Backup_Task，当用户关闭"自动备份"开关时：若该任务来源为**自动**，则任务被停止且 Backup_Queue 被清空（size 归零）；若该任务来源为**手动**，则任务继续、Backup_Queue 内容不变。该行为对任务运行到任意进度点都成立。
+
+**Validates: Requirements 3.13, 3.14, 3.15, 24.6**
+
+### Property 17: 用户暂停不被条件恢复覆盖
+
+*对于任意*处于"用户暂停"状态的 Backup_Task，无论电量/网络条件如何恢复，`ConditionCheckWorker` 都不得自动恢复该任务；仅当任务处于"条件暂停"状态且条件恢复时才自动续传。用户暂停只能由用户再次点击"开始"解除。
+
+**Validates: Requirements 24.2, 24.3, 24.5**
+
+### Property 18: 关闭自动备份对断点记录与队列的分区
+
+*对于任意*正在进行的**自动**任务的队列组成（若干有 Upload_Record 且 `uploaded_chunk_index >= 0` 的 In_Flight_File，与若干无 Upload_Record 的 Queued_Not_Started_File），当用户关闭"自动备份"开关时：每个 In_Flight_File 的 Upload_Record 均被保留（不删除）并被标记为 `pause_source = AUTO_OFF`（`paused_at` 被写入）；每个 Queued_Not_Started_File 都不产生任何 Paused_Task。当不存在任何 In_Flight_File 时，不产生任何 Paused_Task。
+
+**Validates: Requirements 25.1, 25.2, 25.3, 25.5, 29.3**
+
+### Property 19: AUTO_OFF 暂停任务不被自动续传或重建入队
+
+*对于任意* `pause_source = AUTO_OFF` 的 Upload_Record 集合，当"自动备份"开关处于关闭状态时，进程重建续传（`requeueResumableUploads`）与条件恢复续传（`ConditionCheckWorker`）都不得将其重新入队或发起上传；这些任务仅在用户点击其"继续"按钮后才被续传。
+
+**Validates: Requirements 25.4, 30.3, 30.4, 31.2**
+
+### Property 20: 已暂停任务进度计算
+
+*对于任意* `uploaded_chunk_index`（整数，可为 -1）与 `total_chunks`，进度百分比应等于 `floor((uploaded_chunk_index + 1) / total_chunks * 100)` 并落在 `[0, 100]` 区间内；当 `total_chunks <= 0`（为 0 或不可用）时，进度应为 0。
+
+**Validates: Requirements 26.2, 26.3**
+
+### Property 21: 已暂停清单按暂停时间降序
+
+*对于任意*一组 `AUTO_OFF` 来源的 Upload_Record，Tasks_Tab 展示的 Paused_Task 清单顺序应严格按 `paused_at` 从近到远（降序）排列。
+
+**Validates: Requirements 26.1**
+
+### Property 22: 过期记录从可续传清单中过滤
+
+*对于任意*一组 Upload_Record 与任意当前时间，可续传的 Paused_Task 展示集合应恰好为满足 `now - created_at <= 7 天` 的那些记录；任何已过期记录都被排除，且该过滤不改变任何仍在有效期内记录的展示与内容。
+
+**Validates: Requirements 32.1**
+
+### Property 23: 由 Upload_Record 重建 FileInfo 的字段一致性
+
+*对于任意* Upload_Record，由其重建的 FileInfo 应满足：`uri = file_uri`、`fileName = file_name`、`fileSize = file_size`、`createdTime = file_modified_time`、`folderUri = folder_uri`，且 `mimeType` 在记录 `mime_type` 非空时等于该值、为空时回退为按文件名推断的可预测值。
+
+**Validates: Requirements 27.1, 31.1**
+
+### Property 24: 继续单个已暂停任务不影响其他已暂停任务
+
+*对于任意*两个或更多 `AUTO_OFF` 来源的 Paused_Task，当用户对其中一个点击"继续"时，其余未被点击的 Paused_Task 的 `pause_source`、`paused_at` 与存在性均保持不变。
+
+**Validates: Requirements 30.5**
+
 ## 错误处理
 
 ### 服务端错误处理策略
@@ -994,6 +1392,10 @@ class ResumeInfoResponse(BaseModel):
 | 续传记录过期（>7天） | 废弃记录，重新传输 |
 | 源文件已修改 | 废弃续传记录，重新传输 |
 | 登录失败 | 显示具体错误原因，停留在登录页 |
+| 已暂停清单读取失败（R-26.4） | 显示读取失败提示 + 重试入口，不删改任何 Upload_Record |
+| 继续续传时源文件已删除（R-27.6/32.3） | 提示"源文件已不存在，无法续传"，删除该 Upload_Record 并从清单移除，不发起上传 |
+| 长按清除删除记录失败（R-28.3） | 保留该 Paused_Task 条目与其 Upload_Record 不变，显示清除失败提示 |
+| 已暂停任务对应文件夹被移除（R-32.4） | 沿用 `deleteByFolderUri` 删除该文件夹全部续传记录，条目随之移除 |
 
 ### 错误恢复机制
 
@@ -1033,6 +1435,15 @@ stateDiagram-v2
 - 策略配置持久化（Property 12, 13）
 - 输入验证（Property 14）
 
+**客户端（Android）纯函数属性测试**：Property 16-24 涉及客户端纯逻辑，沿用既有 Android 属性测试方式（Kotest `checkAll`，纯 JVM JUnit，无需 Robolectric，与 `QuietPeriodPropertyTest` 同风格），每个属性最少 100 次迭代：
+- 关闭自动备份的分区逻辑（Property 18）——把"标记 In_Flight / 清空未开始"抽为纯函数（输入为记录/队列快照，输出为待标记集合与待清空集合），对随机队列组成断言
+- AUTO_OFF 自动续传门控（Property 19）——对 `requeueResumableUploads`/`ConditionCheckWorker` 的过滤谓词 `it.pauseSource != "AUTO_OFF"` 做属性断言（与既有 `shouldStopAutoOnDisable` 纯函数单测同思路）
+- 进度计算 `computeProgressPercent`（Property 20）
+- 清单按 `paused_at` 降序排序（Property 21）
+- 过期记录过滤谓词（Property 22）
+- `UploadRecord.toFileInfo()` 字段一致性（Property 23）
+- 继续单个任务的隔离性（Property 24）
+
 每个属性测试必须标注对应的设计属性：
 ```python
 # Feature: photo-backup-service, Property 2: 存储路径引擎的四种组合正确性
@@ -1050,6 +1461,10 @@ def test_storage_path_combinations(user, device, source, custom, dt):
 - 登录界面验证
 - Tab 页导航
 - 默认配置值
+- Room 迁移 7→8：追加 `pause_source` / `paused_at` 两列后既有记录仍可读、默认 NULL（与既有 `MIGRATION_6_7` 单测同风格，直接对迁移做验证）
+- 关闭自动备份保留已暂停任务的状态转移示例：标记 AUTO_OFF（R-25.2）、"继续"清除 AUTO_OFF 标记并以 manual=true 发起（R-27.1/27.2）、成功后删记录移除条目（R-27.8）、源文件缺失时删记录并提示（R-27.6/32.3）、长按清除成功/失败（R-28.2/28.3/28.4/28.5）、读取失败错误态（R-26.4）
+- AUTO_OFF 条目文案与 USER/CONDITION 的区分（R-30.1）、通知文案区分（R-30.2）
+- 重启后从持久化记录重建展示且不自动续传（R-31.1/31.2）
 
 #### 3. 集成测试
 
