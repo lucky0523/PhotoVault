@@ -87,6 +87,7 @@ fun SettingsTab(
     val wifiOnly by viewModel.wifiOnly.collectAsState()
     val minBatteryLevel by viewModel.minBatteryLevel.collectAsState()
     val scanIntervalMinutes by viewModel.scanIntervalMinutes.collectAsState()
+    val fileLoggingEnabled by viewModel.fileLoggingEnabled.collectAsState()
     val backupFolders by viewModel.backupFolders.collectAsState()
     val showPolicySheet by viewModel.showPolicySheet.collectAsState()
     val selectedFolder by viewModel.selectedFolder.collectAsState()
@@ -154,6 +155,14 @@ fun SettingsTab(
 
         // 后台运行 group（电池优化白名单）
         BackgroundRunGroup()
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 诊断 group（把日志写入文件，绕过部分 ROM 屏蔽 logcat）
+        DiagnosticsGroup(
+            fileLoggingEnabled = fileLoggingEnabled,
+            onFileLoggingChanged = { viewModel.setFileLoggingEnabled(it) }
+        )
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -248,6 +257,49 @@ private fun BackupConditionsGroup(
             currentInterval = scanIntervalMinutes,
             onIntervalChanged = onScanIntervalChanged
         )
+    }
+}
+
+/**
+ * 诊断 (Diagnostics) settings group.
+ *
+ * A debug toggle that writes backup/scan/resume diagnostics to a file, so issues
+ * can be traced on ROMs that suppress third-party logcat output. Reads via:
+ *   adb pull /sdcard/Android/data/com.photovault/files/diagnostics.log
+ */
+@Composable
+private fun DiagnosticsGroup(
+    fileLoggingEnabled: Boolean,
+    onFileLoggingChanged: (Boolean) -> Unit
+) {
+    SettingsGroupCard(title = "诊断") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "记录日志到文件",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = if (fileLoggingEnabled) {
+                        "已开启，备份/扫描/恢复诊断信息写入日志文件"
+                    } else {
+                        "开启后记录后台备份诊断信息，用于排查问题"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    minLines = 2
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = fileLoggingEnabled,
+                onCheckedChange = onFileLoggingChanged
+            )
+        }
     }
 }
 

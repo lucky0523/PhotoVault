@@ -30,6 +30,13 @@ interface BackupHistoryDao {
     fun getByStatus(status: BackupStatus): Flow<List<BackupHistoryRecord>>
 
     /**
+     * One-shot (non-Flow) fetch of records by status, for use inside a scan.
+     * Used to compute a per-file retry backoff from prior FAILED attempts.
+     */
+    @Query("SELECT * FROM backup_history WHERE status = :status")
+    suspend fun getByStatusOnce(status: BackupStatus): List<BackupHistoryRecord>
+
+    /**
      * Get a single record by ID.
      */
     @Query("SELECT * FROM backup_history WHERE id = :id")

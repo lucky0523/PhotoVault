@@ -65,6 +65,11 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
     override fun onCreate() {
         super.onCreate()
 
+        // Diagnostic file logger (gated by a Settings toggle) — used because some
+        // OEM ROMs suppress third-party logcat output.
+        com.photovault.util.FileLogger.init(this, settingsPreferences.getFileLoggingEnabled())
+        com.photovault.util.FileLogger.log("App", "onCreate; process start")
+
         // Track app foreground/background so background workers can decide whether
         // to resume a user-paused backup silently (background) or ask for
         // confirmation (foreground).

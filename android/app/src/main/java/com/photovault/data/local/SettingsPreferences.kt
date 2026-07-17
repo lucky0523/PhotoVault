@@ -29,12 +29,14 @@ class SettingsPreferences @Inject constructor(
         private const val KEY_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
         private const val KEY_MEDIA_BACKFILL_VERSION = "media_backfill_version"
         private const val KEY_USER_PAUSED_BACKUP = "user_paused_backup"
+        private const val KEY_FILE_LOGGING_ENABLED = "file_logging_enabled"
 
         const val DEFAULT_AUTO_BACKUP_ENABLED = true
         const val DEFAULT_WIFI_ONLY = true
         const val DEFAULT_MIN_BATTERY_LEVEL = 50
         const val DEFAULT_SCAN_INTERVAL_MINUTES = 15
         const val DEFAULT_USER_PAUSED_BACKUP = false
+        const val DEFAULT_FILE_LOGGING_ENABLED = false
 
         /**
          * Current media-scan capability version. Bump this whenever the set of
@@ -90,6 +92,10 @@ class SettingsPreferences @Inject constructor(
     private val _userPausedBackup = MutableStateFlow(DEFAULT_USER_PAUSED_BACKUP)
     val userPausedBackup: StateFlow<Boolean> = _userPausedBackup.asStateFlow()
 
+    /** Debug: whether diagnostic logging to a file is enabled (see [com.photovault.util.FileLogger]). */
+    private val _fileLoggingEnabled = MutableStateFlow(DEFAULT_FILE_LOGGING_ENABLED)
+    val fileLoggingEnabled: StateFlow<Boolean> = _fileLoggingEnabled.asStateFlow()
+
     init {
         // Load saved values
         _autoBackupEnabled.value = prefs.getBoolean(KEY_AUTO_BACKUP_ENABLED, DEFAULT_AUTO_BACKUP_ENABLED)
@@ -97,6 +103,16 @@ class SettingsPreferences @Inject constructor(
         _minBatteryLevel.value = prefs.getInt(KEY_MIN_BATTERY_LEVEL, DEFAULT_MIN_BATTERY_LEVEL)
         _scanIntervalMinutes.value = prefs.getInt(KEY_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES)
         _userPausedBackup.value = prefs.getBoolean(KEY_USER_PAUSED_BACKUP, DEFAULT_USER_PAUSED_BACKUP)
+        _fileLoggingEnabled.value = prefs.getBoolean(KEY_FILE_LOGGING_ENABLED, DEFAULT_FILE_LOGGING_ENABLED)
+    }
+
+    /** Whether diagnostic file logging is enabled. */
+    fun getFileLoggingEnabled(): Boolean = _fileLoggingEnabled.value
+
+    /** Enable/disable diagnostic file logging (persisted). */
+    fun setFileLoggingEnabled(enabled: Boolean) {
+        _fileLoggingEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_FILE_LOGGING_ENABLED, enabled).apply()
     }
 
     /**

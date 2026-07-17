@@ -379,6 +379,10 @@ class BackupForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        com.photovault.util.FileLogger.log(
+            "Service",
+            "onStartCommand action=${intent?.action} isRunning=$isRunning isPaused=$isPaused"
+        )
         when (intent?.action) {
             ACTION_START -> {
                 isRunning = true
@@ -471,6 +475,10 @@ class BackupForegroundService : Service() {
             // in-memory queue are skipped.
             backupQueue.restoreFromPersistence()
             totalFiles = backupQueue.size()
+            com.photovault.util.FileLogger.log(
+                "Service",
+                "backup loop start; queue=$totalFiles isManualRun=$isManualRun"
+            )
 
             while (backupQueue.size() > 0 && !isPaused) {
                 // Check conditions before each file

@@ -13,8 +13,10 @@ import androidx.work.WorkerParameters
 import com.photovault.data.local.CredentialManager
 import com.photovault.data.local.SettingsPreferences
 import com.photovault.data.local.dao.BackupFolderDao
+import com.photovault.data.local.dao.BackupHistoryDao
 import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.dao.UploadRecordDao
+import com.photovault.data.local.entity.BackupStatus
 import com.photovault.data.local.entity.PhotoStatusValue
 import com.photovault.util.AppForegroundState
 import dagger.assisted.Assisted
@@ -45,6 +47,7 @@ class BackgroundScanWorker @AssistedInject constructor(
     private val statusSyncManager: StatusSyncManager,
     private val credentialManager: CredentialManager,
     private val uploadRecordDao: UploadRecordDao,
+    private val backupHistoryDao: BackupHistoryDao,
     private val settingsPreferences: SettingsPreferences
 ) : CoroutineWorker(appContext, workerParams) {
 
@@ -81,6 +84,27 @@ class BackgroundScanWorker @AssistedInject constructor(
         ): PausedScanAction {
             if (!allowBackup || isManualRun || !userPaused) return PausedScanAction.NONE
             return if (isForeground) PausedScanAction.PROMPT else PausedScanAction.RESUME
+        }
+
+        /**
+         * Lightweight retry backoff for re-enqueuing a not-yet-backed-up file that
+         * has already FAILED before. The periodic scan enqueues every file with no
+         * backup status (so previously-missed/failed files self-heal), but a file
+         * that keeps failing must not be retried on every scan — this returns how
+         * long to wait, from its last failure, before it's eligible again.
+         *
+         * Grows exponentially from 30 minutes (1st failure) and is capped at 24h:
+         * 30m, 1h, 2h, 4h, 8h, 16h, 24h, 24h, … Pure function so it is unit-testable.
+         *
+         * @param failureCount number of prior FAILED attempts for the file.
+         * @return backoff window in ms; 0 when there were no prior failures.
+         */
+        fun retryBackoffMs(failureCount: Int): Long {
+            if (failureCount <= 0) return 0L
+            val base = 30L * 60 * 1000        // 30 minutes
+            val cap = 24L * 60 * 60 * 1000    // 24 hours
+            val shift = (failureCount - 1).coerceIn(0, 20)
+            return (base shl shift).coerceIn(base, cap)
         }
 
         /**
@@ -289,10 +313,94 @@ class BackgroundScanWorker @AssistedInject constructor(
                 workRequest
             )
         }
+
+        // ---- Background silent resume of a user-paused backup ----
+
+        const val RESUME_WORK_NAME = "background_scan_worker_resume"
+
+        /** Input flag: this run's sole job is to resume a user-paused backup. */
+        const val KEY_RESUME_PAUSED = "resume_paused_backup"
+
+        /**
+         * Resumes a user-paused backup from an EXPEDITED worker so the
+         * [BackupForegroundService] can be (re)started even from the background.
+         *
+         * A plain (non-expedited) periodic/scan worker cannot call
+         * `startForegroundService` from the background on API 31+
+         * (`ForegroundServiceStartNotAllowedException`), so the background-resume
+         * branch of [decidePausedResumeAction] delegates here instead of resuming
+         * inline. This mirrors the FGS-capable expedited path already used by
+         * [runOnce] / [runNow], keeping a silent background resume exactly as
+         * reliable as any other background-triggered backup (enabling 无感备份).
+         */
+        fun resumePausedBackup(context: Context) {
+            val workRequest = androidx.work.OneTimeWorkRequestBuilder<BackgroundScanWorker>()
+                .setExpedited(
+                    androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST
+                )
+                .setInputData(
+                    androidx.work.Data.Builder()
+                        .putBoolean(KEY_RESUME_PAUSED, true)
+                        .build()
+                )
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                RESUME_WORK_NAME,
+                androidx.work.ExistingWorkPolicy.REPLACE,
+                workRequest
+            )
+        }
     }
 
     override suspend fun doWork(): Result {
         val isTestRun = inputData.getBoolean(KEY_TEST_INTERVAL_RUN, false)
+        com.photovault.util.FileLogger.log(
+            "Scan",
+            "doWork ENTER manual=${inputData.getBoolean(KEY_MANUAL_BACKUP, false)} " +
+                "test=$isTestRun resume=${inputData.getBoolean(KEY_RESUME_PAUSED, false)} " +
+                "fg=${AppForegroundState.isForeground}"
+        )
+
+        // Dedicated expedited run (enqueued by resumePausedBackup) whose only job
+        // is to resume a user-paused backup from a foreground-service-capable
+        // context. It runs before — and instead of — the normal scan body so the
+        // FGS start is legal from the background (API 31+).
+        if (inputData.getBoolean(KEY_RESUME_PAUSED, false)) {
+            return try {
+                // Promote THIS worker to a foreground service first. Starting the
+                // BackupForegroundService then counts as a foreground-service ->
+                // foreground-service start (always allowed), instead of a
+                // restricted *background* foreground-service start (API 31+). This
+                // is what lets a silent resume work even after the paused service
+                // was reclaimed / the process was killed. Best-effort: if the
+                // platform refuses setForeground, we still attempt the resume —
+                // which succeeds outright when the paused service is still alive.
+                try {
+                    setForeground(getForegroundInfo())
+                } catch (e: Exception) {
+                    android.util.Log.w(
+                        "PhotoVaultScan",
+                        "setForeground for resume run failed (continuing): ${e.message}"
+                    )
+                }
+                BackupForegroundService.resume(applicationContext)
+                com.photovault.util.FileLogger.log("Scan", "resume run: resume() dispatched")
+                Result.success()
+            } catch (e: Exception) {
+                com.photovault.util.FileLogger.log(
+                    "Scan",
+                    "resume run FAILED ${e.javaClass.simpleName}: ${e.message}"
+                )
+                android.util.Log.e(
+                    "PhotoVaultScan",
+                    "Resume-paused backup run failed: ${e.message}",
+                    e
+                )
+                Result.retry()
+            }
+        }
+
         val result = try {
             val forceFullScan = inputData.getBoolean(KEY_FORCE_FULL_SCAN, false)
             val manual = inputData.getBoolean(KEY_MANUAL_BACKUP, false)
@@ -304,6 +412,10 @@ class BackgroundScanWorker @AssistedInject constructor(
             android.util.Log.i(
                 "PhotoVaultScan",
                 "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, allowBackup=$allowBackup)"
+            )
+            com.photovault.util.FileLogger.log(
+                "Scan",
+                "scan start forceFull=$forceFullScan manual=$manual allowBackup=$allowBackup"
             )
 
             // Sync photo status from server before scanning, so trashed/purged
@@ -336,16 +448,24 @@ class BackgroundScanWorker @AssistedInject constructor(
             // an automatic run either resumes it (app in background) or asks the
             // user to confirm (app in foreground). See [decidePausedResumeAction].
             if (allowBackup) {
-                when (
-                    decidePausedResumeAction(
-                        allowBackup = true,
-                        isManualRun = manual,
-                        userPaused = settingsPreferences.getUserPausedBackup(),
-                        isForeground = AppForegroundState.isForeground
-                    )
-                ) {
+                val action = decidePausedResumeAction(
+                    allowBackup = true,
+                    isManualRun = manual,
+                    userPaused = settingsPreferences.getUserPausedBackup(),
+                    isForeground = AppForegroundState.isForeground
+                )
+                com.photovault.util.FileLogger.log(
+                    "Scan",
+                    "decision fg=${AppForegroundState.isForeground} " +
+                        "paused=${settingsPreferences.getUserPausedBackup()} " +
+                        "queue=${backupQueue.size()} action=$action"
+                )
+                when (action) {
                     PausedScanAction.RESUME ->
-                        BackupForegroundService.resume(applicationContext)
+                        // Delegate to an expedited, FGS-capable worker so the
+                        // foreground service can be (re)started even from the
+                        // background (a plain background worker cannot on API 31+).
+                        resumePausedBackup(applicationContext)
                     PausedScanAction.PROMPT ->
                         BackupResumePrompt.request()
                     PausedScanAction.NONE ->
@@ -354,15 +474,20 @@ class BackgroundScanWorker @AssistedInject constructor(
             }
 
             android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
+            com.photovault.util.FileLogger.log("Scan", "doWork SUCCESS")
             Result.success()
         } catch (e: Exception) {
             android.util.Log.e("PhotoVaultScan", "BackgroundScanWorker failed: ${e.message}", e)
+            com.photovault.util.FileLogger.log(
+                "Scan",
+                "doWork FAILED ${e.javaClass.simpleName}: ${e.message}"
+            )
             Result.retry()
         }
 
-        // Debug-only: keep the ~10-second test chain going while it is still the
-        // selected interval. Switching to a real interval cancels the unique work,
-        // and this guard stops re-enqueuing so the chain terminates.
+        // Test interval only: keep the ~10-second scan chain going while it is
+        // still the selected interval. Switching to a real interval cancels the
+        // unique work, and this guard stops re-enqueuing so the chain terminates.
         if (isTestRun &&
             settingsPreferences.getScanIntervalMinutes() ==
             com.photovault.data.local.SettingsPreferences.SCAN_INTERVAL_TEST_10S
@@ -481,11 +606,19 @@ class BackgroundScanWorker @AssistedInject constructor(
      * idempotent — a redundant call while running is a no-op.
      */
     private fun maybeStartBackupForQueuedWork(manual: Boolean) {
-        if (backupQueue.size() > 0 &&
-            !BackupForegroundService.isRunning &&
-            backupConditionChecker.shouldStartBackup()
-        ) {
-            android.util.Log.i("PhotoVaultScan", "Starting backup service for ${backupQueue.size()} queued file(s)")
+        val queued = backupQueue.size()
+        val running = BackupForegroundService.isRunning
+        val condOk = backupConditionChecker.shouldStartBackup()
+        com.photovault.util.FileLogger.log(
+            "Scan",
+            "maybeStart queued=$queued running=$running condOk=$condOk manual=$manual"
+        )
+        if (queued > 0 && !running && condOk) {
+            android.util.Log.i(
+                "PhotoVaultScan",
+                "Starting backup service for $queued queued file(s)"
+            )
+            com.photovault.util.FileLogger.log("Scan", "-> start() dispatched (queued=$queued)")
             BackupForegroundService.start(applicationContext, manual = manual)
         }
     }
@@ -523,6 +656,27 @@ class BackgroundScanWorker @AssistedInject constructor(
         val allStatuses = photoStatusDao.getAll()
         val statusMap = allStatuses.associateBy { it.fileUri }
 
+        // Prior FAILED backups → per-file failure count + latest failure time,
+        // used for a lightweight retry backoff so a permanently-failing file is
+        // not re-enqueued on every scan. Reused from history (no extra storage);
+        // a forceFullScan (user tapped "立即备份") ignores the backoff below.
+        val failedHistory = try {
+            backupHistoryDao.getByStatusOnce(BackupStatus.FAILED)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val failureCountByUri: Map<String, Int> =
+            failedHistory.groupingBy { it.fileUri }.eachCount()
+        val lastFailureAtByUri: Map<String, Long> =
+            failedHistory.groupBy { it.fileUri }
+                .mapValues { (_, rows) -> rows.maxOf { it.completedAt } }
+
+        // Files already queued or currently uploading — never enqueue a duplicate
+        // (the periodic scan now re-examines ALL files each run, so without this a
+        // queued-but-not-yet-uploaded file would be added again every scan).
+        val queuedUris = backupQueue.getAll().mapTo(HashSet()) { it.uri }
+        val inFlightUri = BackupForegroundService.currentFileUri
+
         for (folder in folders) {
             // Count ALL images in folder (for accurate total)
             val totalImages = countImagesInFolder(folder.folderUri)
@@ -559,34 +713,46 @@ class BackgroundScanWorker @AssistedInject constructor(
                 "Folder '${folder.folderName}': total=$totalImages, backedUp=$folderBackedUp, trashed=$folderTrashed, purged=$folderPurged"
             )
 
-            // Scan for newly modified files (for incremental backup)
-            val effectiveScanTime = if (forceFullScan) 0L else folder.lastScanTime
-            val folderNewFiles = scanFolder(folder.folderUri, effectiveScanTime)
-            // DATE_MODIFIED (epoch ms) of files skipped this round because they are within
-            // the quiet period (camera may still be writing). Used to roll back lastScanTime
-            // so they are re-discovered next scan (R1.2). Applies to both forceFullScan and
-            // periodic scans since both share this result-layer path (R1.4).
+            // Enqueue EVERY not-yet-backed-up file, not just files newer than
+            // lastScanTime. A file has no local status (`status == null`) until it
+            // is successfully backed up, so this makes the "未备份" set self-heal:
+            // previously-missed / failed / interrupted files get picked up on a
+            // later scan instead of only by a manual "立即备份". `allPhotosInFolder`
+            // was already enumerated above for counting, so this adds no scan cost.
+            //
+            // DATE_MODIFIED (epoch ms) of files skipped because they are within the
+            // quiet period (camera may still be writing); used to roll lastScanTime
+            // back so they are re-examined next scan (R1.1/R1.2).
             val skippedModifiedTimes = mutableListOf<Long>()
-            for (fileInfo in folderNewFiles) {
-                val status = statusMap[fileInfo.uri]
-                if (status == null) {
-                    // No record = truly new file. Skip it this round if it was modified so
-                    // recently it may still be being written/finalized (R1.1). A skipped file
-                    // is neither enqueued nor treated as "seen" (R1.3). createdTime == 0 is
-                    // never skipped (handled inside shouldSkipForQuietPeriod, R1.5).
-                    if (QuietPeriodLogic.shouldSkipForQuietPeriod(currentTime, fileInfo.createdTime)) {
-                        val secondsAgo = (currentTime - fileInfo.createdTime) / 1000
-                        android.util.Log.i(
-                            "PhotoVaultScan",
-                            "quiet-period skip '${fileInfo.fileName}' modified ${secondsAgo}s ago"
-                        )
-                        skippedModifiedTimes.add(fileInfo.createdTime)
-                    } else {
-                        // Truly new and stable file, add to backup queue
-                        newFiles.add(fileInfo)
+            for (fileInfo in allPhotosInFolder) {
+                // Only files that have never been backed up (no status record).
+                if (statusMap[fileInfo.uri] != null) continue
+
+                // Skip files modified so recently they may still be being written
+                // (R1.1); recorded so lastScanTime rolls back and re-examines them.
+                if (QuietPeriodLogic.shouldSkipForQuietPeriod(currentTime, fileInfo.createdTime)) {
+                    skippedModifiedTimes.add(fileInfo.createdTime)
+                    continue
+                }
+
+                // Already queued or currently uploading — don't add a duplicate.
+                if (fileInfo.uri in queuedUris || fileInfo.uri == inFlightUri) continue
+
+                // Lightweight retry backoff: a file that has FAILED before waits an
+                // (exponentially growing) window from its last failure before being
+                // retried, so a permanently-failing file isn't re-enqueued every
+                // scan. A manual full scan ("立即备份") bypasses the backoff.
+                if (!forceFullScan) {
+                    val failCount = failureCountByUri[fileInfo.uri] ?: 0
+                    if (failCount > 0) {
+                        val lastFailAt = lastFailureAtByUri[fileInfo.uri] ?: 0L
+                        if (currentTime - lastFailAt < retryBackoffMs(failCount)) {
+                            continue
+                        }
                     }
                 }
-                // Files with existing status (active/trashed/purged) are NOT re-uploaded
+
+                newFiles.add(fileInfo)
             }
 
             // Roll back lastScanTime past the earliest skipped file so it isn't missed

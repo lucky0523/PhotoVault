@@ -79,6 +79,7 @@ class SettingsViewModel @Inject constructor(
     val wifiOnly: StateFlow<Boolean> = settingsPreferences.wifiOnly
     val minBatteryLevel: StateFlow<Int> = settingsPreferences.minBatteryLevel
     val scanIntervalMinutes: StateFlow<Int> = settingsPreferences.scanIntervalMinutes
+    val fileLoggingEnabled: StateFlow<Boolean> = settingsPreferences.fileLoggingEnabled
 
     // Storage strategy management
     val backupFolders: StateFlow<List<BackupFolder>> = backupFolderRepository.getAllFolders()
@@ -258,6 +259,23 @@ class SettingsViewModel @Inject constructor(
                 useYearMonthLayer = useYearMonthLayer
             )
             dismissPolicySheet()
+        }
+    }
+
+    /**
+     * Toggle diagnostic file logging. Enabling clears the previous log so each
+     * capture starts fresh; the live [com.photovault.util.FileLogger.enabled] flag
+     * is updated immediately so background workers pick it up without a restart.
+     */
+    fun setFileLoggingEnabled(enabled: Boolean) {
+        settingsPreferences.setFileLoggingEnabled(enabled)
+        if (enabled) {
+            com.photovault.util.FileLogger.clear()
+            com.photovault.util.FileLogger.enabled = true
+            com.photovault.util.FileLogger.log("Settings", "file logging enabled")
+        } else {
+            com.photovault.util.FileLogger.log("Settings", "file logging disabled")
+            com.photovault.util.FileLogger.enabled = false
         }
     }
 
