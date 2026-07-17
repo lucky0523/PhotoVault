@@ -213,11 +213,11 @@
             </div>
 
             <!-- List view -->
-            <div v-show="viewMode === 'list'" class="list-view-container">
+            <div v-show="viewMode === 'list'" ref="listContainerRef" class="list-view-container">
               <el-table
                 ref="fileTableRef"
                 :data="files"
-                height="500"
+                :height="tableHeight"
                 style="width: 100%"
                 row-key="id"
                 @row-click="(row: FileInfo, column: any) => handleRowClick(row, column)"
@@ -337,7 +337,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   FolderOpened,
   Folder,
@@ -399,8 +399,28 @@ const pageSize = ref(50)
 const sortBy = ref('name')
 const viewMode = ref<'grid' | 'list'>('grid')
 
+// List-view table sizing: the el-table needs an explicit pixel height, so we
+// measure the container's distance from the viewport top and let the table fill
+// the remaining space instead of using a fixed height.
+const listContainerRef = ref<HTMLElement | null>(null)
+const tableHeight = ref(500)
+
+function updateTableHeight() {
+  nextTick(() => {
+    const el = listContainerRef.value
+    if (!el) return
+    const top = el.getBoundingClientRect().top
+    // In grid mode the container is display:none (top === 0); skip then.
+    if (top <= 0) return
+    // Reserve space for bottom padding, plus the pager when it's shown.
+    const reserved = totalFiles.value > pageSize.value ? 84 : 24
+    tableHeight.value = Math.max(window.innerHeight - top - reserved, 200)
+  })
+}
+
 function setViewMode(mode: 'grid' | 'list') {
   viewMode.value = mode
+  if (mode === 'list') updateTableHeight()
 }
 
 const contentLoading = ref(false)
@@ -591,6 +611,9 @@ async function loadContent() {
     totalFiles.value = 0
   } finally {
     contentLoading.value = false
+    // Directory count/pagination can change the table's top offset, so
+    // recompute the fill height once the new content is rendered.
+    updateTableHeight()
   }
 }
 
@@ -794,6 +817,12 @@ function handleThumbnailError(e: Event) {
 onMounted(() => {
   configStore.ensureLoaded()
   loadContent()
+  window.addEventListener('resize', updateTableHeight)
+  updateTableHeight()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateTableHeight)
 })
 </script>
 
