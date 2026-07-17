@@ -459,7 +459,6 @@ class FileBrowseService:
                 if subdir_name:
                     dir_info = directories[subdir_name]
                     dir_info.file_count += 1
-                    dir_info.size += file_size
                     # Bucket the file into backed_up / trashed / purged.
                     # Use effective_file_status so an "active but physically in
                     # .trash" zombie record doesn't inflate backed_up_count.
@@ -470,6 +469,11 @@ class FileBrowseService:
                         dir_info.trashed_count += 1
                     else:
                         dir_info.backed_up_count += 1
+                        # Only active (backed_up) files count toward the folder's
+                        # size, so it stays consistent with backed_up_count (the
+                        # "文件数" shown in the UI). Trashed/purged files must not
+                        # inflate the reported disk usage.
+                        dir_info.size += file_size
                         # Update latest_file_time from backed_up files only, so
                         # the "latest" semantics stay active-only (unchanged).
                         file_time = exif_time or created_at

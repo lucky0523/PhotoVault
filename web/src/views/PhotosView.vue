@@ -156,11 +156,13 @@
                   {{ formatDate(row.latest_file_time) }}
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="80" fixed="right">
+              <el-table-column label="操作" width="120" fixed="right">
                 <template #default="{ row }">
-                  <el-button type="danger" link size="small" @click.stop="handleDeleteDirectory(row)">
-                    移入回收站
-                  </el-button>
+                  <div class="row-actions">
+                    <el-button type="danger" link size="small" @click.stop="handleDeleteDirectory(row)">
+                      移入回收站
+                    </el-button>
+                  </div>
                 </template>
               </el-table-column>
             </el-table>
