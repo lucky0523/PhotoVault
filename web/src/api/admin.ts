@@ -36,6 +36,19 @@ export async function deleteUser(userId: number): Promise<void> {
   await http.delete(`/admin/users/${userId}`)
 }
 
+export interface ClearPurgedRecordsResponse {
+  success: boolean
+  count: number
+}
+
+/**
+ * Remove a user's already-purged file records and their associated analysis data (admin only)
+ */
+export async function clearPurgedRecords(userId: number): Promise<ClearPurgedRecordsResponse> {
+  const response = await http.delete(`/admin/users/${userId}/purged-records`)
+  return response.data
+}
+
 /**
  * Change a user's password (admin only)
  */

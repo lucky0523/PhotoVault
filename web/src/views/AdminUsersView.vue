@@ -26,11 +26,28 @@
             {{ formatCreatedAt(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openResetPasswordDialog(row)">
               重置密码
             </el-button>
+            <el-popconfirm
+              :width="360"
+              :title="`确定要清除用户“${row.username}”的删除记录吗？仅移除已彻底删除文件的同步记录，此操作不可恢复。`"
+              confirm-button-text="确定"
+              cancel-button-text="取消"
+              @confirm="handleClearPurgedRecords(row)"
+            >
+              <template #reference>
+                <el-button
+                  size="small"
+                  type="warning"
+                  :loading="clearingUserId === row.id"
+                >
+                  清除“删除记录”
+                </el-button>
+              </template>
+            </el-popconfirm>
             <el-popconfirm
               title="确定要删除该用户吗？此操作不可恢复。"
               confirm-button-text="确定"
@@ -121,11 +138,18 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
-import { listUsers, createUser, deleteUser, changePassword } from '@/api/admin'
+import {
+  listUsers,
+  createUser,
+  deleteUser,
+  clearPurgedRecords,
+  changePassword,
+} from '@/api/admin'
 import type { UserInfo } from '@/api/admin'
 
 const loading = ref(false)
 const users = ref<UserInfo[]>([])
+const clearingUserId = ref<number | null>(null)
 
 // Create user
 const showCreateDialog = ref(false)
@@ -216,6 +240,20 @@ async function handleDeleteUser(userId: number) {
   } catch (error: any) {
     const msg = error.response?.data?.detail || '删除用户失败'
     ElMessage.error(msg)
+  }
+}
+
+async function handleClearPurgedRecords(user: UserInfo) {
+  clearingUserId.value = user.id
+  try {
+    const response = await clearPurgedRecords(user.id)
+    ElMessage.success(`已清除 ${response.count} 条删除记录`)
+    await loadUsers()
+  } catch (error: any) {
+    const msg = error.response?.data?.detail || '清除删除记录失败'
+    ElMessage.error(msg)
+  } finally {
+    clearingUserId.value = null
   }
 }
 

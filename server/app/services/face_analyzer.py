@@ -523,6 +523,16 @@ class FaceAnalyzer:
         finally:
             await db.close()
 
+    async def clear_file_faces(
+        self, db: Any, user_id: int, file_id: int
+    ) -> None:
+        """Remove a file's faces and keep affected cluster metadata consistent.
+
+        This is used when a file record is permanently removed outside the
+        analysis pipeline, such as when an administrator clears purged records.
+        """
+        await self._clear_file_faces(db, user_id, file_id)
+
     async def _clear_file_faces(
         self, db: Any, user_id: int, file_id: int
     ) -> None:
