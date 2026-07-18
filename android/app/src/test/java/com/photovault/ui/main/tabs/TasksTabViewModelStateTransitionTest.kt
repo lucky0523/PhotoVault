@@ -429,6 +429,7 @@ class TasksTabViewModelStateTransitionTest {
         override suspend fun insert(record: BackupHistoryRecord): Long = 0L
         override fun getAll(): Flow<List<BackupHistoryRecord>> = flowOf(emptyList())
         override fun getByStatus(status: BackupStatus): Flow<List<BackupHistoryRecord>> = flowOf(emptyList())
+        override suspend fun getByStatusOnce(status: BackupStatus): List<BackupHistoryRecord> = emptyList()
         override suspend fun getById(id: Long): BackupHistoryRecord? = null
         override suspend fun updateStatus(id: Long, status: BackupStatus, errorMessage: String?, completedAt: Long) {}
         override suspend fun deleteById(id: Long) {}

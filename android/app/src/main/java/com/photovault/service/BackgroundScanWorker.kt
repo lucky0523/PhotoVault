@@ -469,7 +469,10 @@ class BackgroundScanWorker @AssistedInject constructor(
                     PausedScanAction.PROMPT ->
                         BackupResumePrompt.request()
                     PausedScanAction.NONE ->
-                        maybeStartBackupForQueuedWork(manual)
+                        maybeStartBackupForQueuedWork(
+                            manual = manual,
+                            forceFullScan = forceFullScan
+                        )
                 }
             }
 
@@ -602,13 +605,27 @@ class BackgroundScanWorker @AssistedInject constructor(
 
     /**
      * Starts the backup service if there is queued work (new or resumed) and
-     * conditions allow, but the service isn't already running. [start] is
-     * idempotent — a redundant call while running is a no-op.
+     * conditions allow, but the service isn't already running. This is the sole
+     * automatic-start gate: scanning itself must only enqueue work so a persisted
+     * user pause can be resolved before any service-start request is dispatched.
+     * [start] is idempotent — a redundant call while running is a no-op.
      */
-    private fun maybeStartBackupForQueuedWork(manual: Boolean) {
+    private fun maybeStartBackupForQueuedWork(
+        manual: Boolean,
+        forceFullScan: Boolean
+    ) {
         val queued = backupQueue.size()
         val running = BackupForegroundService.isRunning
-        val condOk = backupConditionChecker.shouldStartBackup()
+        val normalConditionsMet = backupConditionChecker.shouldStartBackup()
+        // Preserve the existing manual full-scan policy: when charging, an
+        // explicit full scan may proceed even if the normal battery threshold is
+        // not met. Ordinary automatic scans retain the normal condition gate.
+        val condOk = if (forceFullScan) {
+            backupConditionChecker.isNetworkAvailableForBackup() &&
+                (backupConditionChecker.isCharging() || normalConditionsMet)
+        } else {
+            normalConditionsMet
+        }
         com.photovault.util.FileLogger.log(
             "Scan",
             "maybeStart queued=$queued running=$running condOk=$condOk manual=$manual"
@@ -794,32 +811,17 @@ class BackgroundScanWorker @AssistedInject constructor(
             return
         }
 
-        // Enqueue new files for backup if conditions are met
+        // Enqueue newly discovered files only. Starting the service is deliberately
+        // deferred to doWork() until after the persisted user-pause decision has
+        // been made; otherwise a foreground scan could show a restore prompt after
+        // it had already started uploading.
         if (newFiles.isNotEmpty()) {
             backupQueue.enqueue(newFiles)
-            val shouldStart = backupConditionChecker.shouldStartBackup()
-            val networkOk = backupConditionChecker.isNetworkAvailableForBackup()
-            val isCharging = backupConditionChecker.isCharging()
             android.util.Log.i(
                 "PhotoVaultScan",
-                "Enqueued ${newFiles.size} file(s). forceFullScan=$forceFullScan, " +
-                    "isCharging=$isCharging, shouldStartBackup=$shouldStart " +
-                    "(battery=${backupConditionChecker.getBatteryLevel()}, networkOk=$networkOk)"
+                "Enqueued ${newFiles.size} file(s). forceFullScan=$forceFullScan; " +
+                    "awaiting post-scan pause/start decision"
             )
-
-            // If backup conditions are met, trigger backup service.
-            // When forceFullScan is true (user tapped "立即备份"), battery limit is ignored if charging.
-            val canStart = if (forceFullScan) {
-                networkOk && (isCharging || backupConditionChecker.shouldStartBackup())
-            } else {
-                shouldStart
-            }
-            if (canStart) {
-                // Propagate the run source: the "立即备份" FAB sets manual=true so
-                // the run is exempt from the auto-backup toggle-off stop (R-3.15);
-                // all other (automatic) triggers pass manual=false (R-3.14).
-                BackupForegroundService.start(applicationContext, manual = manual)
-            }
         } else {
             android.util.Log.i("PhotoVaultScan", "No new files to back up")
         }

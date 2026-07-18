@@ -385,13 +385,27 @@ class BackupForegroundService : Service() {
         )
         when (intent?.action) {
             ACTION_START -> {
+                val manualRun = intent.getBooleanExtra(KEY_MANUAL_RUN, false)
+                // All automatic scan paths must honour a persisted manual pause.
+                // This is a defence-in-depth gate for callers outside
+                // BackgroundScanWorker too: a stale/concurrent automatic START
+                // must never bypass the foreground restore confirmation.
+                if (!manualRun && settingsPreferences.getUserPausedBackup()) {
+                    com.photovault.util.FileLogger.log(
+                        "Service",
+                        "automatic START ignored; persisted user pause is active"
+                    )
+                    if (!isRunning) stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+
                 isRunning = true
                 isPaused = false
                 isUserPaused = false
                 pauseReason = null
                 // Record the run source so a concurrent "自动备份" toggle-off can
                 // decide whether to stop this run (R-3.13). Defaults to automatic.
-                isManualRun = intent.getBooleanExtra(KEY_MANUAL_RUN, false)
+                isManualRun = manualRun
                 startForeground(NOTIFICATION_ID, buildNotification())
                 startBackupProcess()
             }
