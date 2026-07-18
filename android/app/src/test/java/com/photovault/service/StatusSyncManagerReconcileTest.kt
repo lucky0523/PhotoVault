@@ -22,17 +22,17 @@ import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import retrofit2.Response
 
 /**
- * Unit tests for [StatusSyncManager]'s restore-reconciliation path.
+ * Unit tests for [StatusSyncManager]'s omitted-record reconciliation path.
  *
- * Covers the "recover from recycle bin on the server" flow: a local trashed/purged
- * record whose hash is no longer reported by status-sync is flipped back to active
- * only when `POST /backup/check` explicitly confirms the file is active. Any
- * ambiguity (still trashed/purged, not_found, or a failed check) must leave the
- * local record untouched so a later sync can retry.
+ * A locally non-active hash omitted from status-sync is verified through
+ * `POST /backup/check`: `active` restores it locally, while explicit `not_found`
+ * removes only a local `purged` tombstone. Trashed rows and failed checks remain
+ * untouched to preserve conservative deletion semantics.
  */
 class StatusSyncManagerReconcileTest {
 
@@ -93,7 +93,7 @@ class StatusSyncManagerReconcileTest {
     }
 
     @Test
-    fun candidateNotFoundOnServer_isNotFlipped() = runTest {
+    fun trashedCandidateNotFoundOnServer_isRetainedConservatively() = runTest {
         val dao = FakePhotoStatusDao(mutableListOf(trashedRecord("uri://a", "hashA")))
         val mgr = manager(statusSyncItems = emptyList(), dao = dao) {
             successCheck(isDuplicate = false, status = "not_found")
@@ -102,6 +102,27 @@ class StatusSyncManagerReconcileTest {
         mgr.syncStatus()
 
         assertEquals(PhotoStatusValue.TRASHED, dao.get("uri://a")!!.status)
+    }
+
+    @Test
+    fun purgedCandidateNotFoundOnServer_isRemoved() = runTest {
+        val dao = FakePhotoStatusDao(
+            mutableListOf(
+                PhotoStatus(
+                    fileUri = "uri://a",
+                    fileHash = "hashA",
+                    status = PhotoStatusValue.PURGED,
+                    deletedAt = 1_000L
+                )
+            )
+        )
+        val mgr = manager(statusSyncItems = emptyList(), dao = dao) {
+            successCheck(isDuplicate = false, status = "not_found")
+        }
+
+        mgr.syncStatus()
+
+        assertNull(dao.get("uri://a"))
     }
 
     @Test
