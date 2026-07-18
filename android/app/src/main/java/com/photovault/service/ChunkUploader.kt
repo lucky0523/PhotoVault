@@ -313,8 +313,10 @@ class ChunkUploader @Inject constructor(
 
             when {
                 body.isDuplicate && status == PhotoStatusValue.ACTIVE -> {
-                    // File is already active on the server — record locally and skip
+                    // File is already active on the server — record locally and
+                    // clear an obsolete interrupted-upload record before skipping.
                     statusSyncManager.markActive(fileInfo.uri, fileHash)
+                    uploadRecordDao.deleteByFileUri(fileInfo.uri)
                     UploadResult.Duplicate(body.fileId)
                 }
                 status == PhotoStatusValue.TRASHED -> {
@@ -323,9 +325,12 @@ class ChunkUploader @Inject constructor(
                         // so /backup/complete reactivates the trashed record.
                         null
                     } else {
-                        // File was moved to recycle bin on the server — skip and record locally
+                        // A trashed server record is not backed up/active. It is a
+                        // terminal outcome for this queued attempt, so don't let a
+                        // stale resume record re-queue it on every app launch.
                         statusSyncManager.markTrashed(fileInfo.uri, fileHash, body.expiresAt)
-                        UploadResult.Skipped("文件在回收站中")
+                        uploadRecordDao.deleteByFileUri(fileInfo.uri)
+                        UploadResult.Skipped("文件在回收站中", countsAsBackedUp = false)
                     }
                 }
                 status == PhotoStatusValue.PURGED -> {
@@ -334,9 +339,12 @@ class ChunkUploader @Inject constructor(
                         // so /backup/complete reactivates the purged record.
                         null
                     } else {
-                        // File was permanently deleted on the server — skip and record locally
+                        // A purged server record is not active and must remain in
+                        // the 已删除 bucket rather than being counted as backed up.
+                        // Delete the stale resume record so it is not retried.
                         statusSyncManager.markPurged(fileInfo.uri, fileHash)
-                        UploadResult.Skipped("文件已彻底删除")
+                        uploadRecordDao.deleteByFileUri(fileInfo.uri)
+                        UploadResult.Skipped("文件已彻底删除", countsAsBackedUp = false)
                     }
                 }
                 else -> {

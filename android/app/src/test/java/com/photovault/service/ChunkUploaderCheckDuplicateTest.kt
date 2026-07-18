@@ -262,12 +262,13 @@ class ChunkUploaderCheckDuplicateTest {
             throw NotImplementedError()
     }
 
-    /** [UploadRecordDao] stub — not used by checkDuplicate. */
+    /** In-memory [UploadRecordDao] stub. Terminal duplicate/skip outcomes delete
+     * stale resume rows, so deletion is intentionally a successful no-op here. */
     private class FakeUploadRecordDao : UploadRecordDao {
         override suspend fun insertOrUpdate(record: UploadRecord) = throw NotImplementedError()
         override suspend fun getByFileUri(fileUri: String): UploadRecord? = throw NotImplementedError()
         override suspend fun getBySessionId(sessionId: String): UploadRecord? = throw NotImplementedError()
-        override suspend fun deleteByFileUri(fileUri: String) = throw NotImplementedError()
+        override suspend fun deleteByFileUri(fileUri: String) = Unit
         override suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long) = throw NotImplementedError()
         override suspend fun deleteExpired(expiryTime: Long) = throw NotImplementedError()
         override suspend fun deleteByFolderUri(folderUri: String) = throw NotImplementedError()

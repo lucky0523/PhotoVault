@@ -112,10 +112,11 @@ sealed class UploadResult {
      * The file was skipped (not uploaded this round).
      *
      * @param reason human-readable skip reason shown in backup history
-     * @param countsAsBackedUp whether the file already exists on the server and
-     *   should still count toward the folder's backed-up total. False for cases
-     *   like a source file that was deleted from the device before upload.
+     * @param countsAsBackedUp whether the file is confirmed active on the server
+     *   and should count toward the folder's backed-up total. Skip outcomes are
+     *   non-active by default (for example source deleted, trashed, or purged);
+     *   active server duplicates use [Duplicate] instead.
      */
-    data class Skipped(val reason: String, val countsAsBackedUp: Boolean = true) : UploadResult()
+    data class Skipped(val reason: String, val countsAsBackedUp: Boolean = false) : UploadResult()
     data class Failed(val error: String, val shouldRetry: Boolean = true) : UploadResult()
 }

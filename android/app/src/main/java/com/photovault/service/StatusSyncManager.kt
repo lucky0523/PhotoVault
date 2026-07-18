@@ -40,7 +40,10 @@ import kotlinx.coroutines.sync.withLock
 class StatusSyncManager @Inject constructor(
     private val fileApi: FileApi,
     private val backupApi: BackupApi,
-    private val photoStatusDao: PhotoStatusDao
+    private val photoStatusDao: PhotoStatusDao,
+    // Optional default preserves lightweight direct construction in existing JVM tests;
+    // Hilt supplies the refresher in the app process.
+    private val folderStatusCountsRefresher: FolderStatusCountsRefresher? = null
 ) {
 
     companion object {
@@ -127,6 +130,17 @@ class StatusSyncManager @Inject constructor(
             // Reconcile restored files. Runs even when [items] is empty, since a
             // full restore (all files back to active) produces an empty payload.
             val reactivated = reconcileRestored(items)
+
+            // backup_folders stores denormalized per-folder status counts. Keep
+            // that cache aligned even when this sync did not change any rows: an
+            // older interrupted sync may already have left a stale aggregate.
+            // A refresh failure must not discard an otherwise successful status
+            // sync; it will be retried on the next successful sync.
+            try {
+                folderStatusCountsRefresher?.refresh()
+            } catch (e: Exception) {
+                Log.w(TAG, "folder status-count refresh failed: ${e.message}", e)
+            }
 
             // Mark success for throttling only after the whole sync completed, so a
             // failure (which returns early above) lets the next trigger retry sooner.

@@ -616,9 +616,9 @@ class BackupForegroundService : Service() {
                             "PhotoVaultBackup",
                             "Skipped ${fileInfo.fileName}: ${result.reason}"
                         )
-                        // Record the skip with its reason. Files skipped because they
-                        // already exist on the server (recycle bin / purged) still count
-                        // as backed up; a deleted source file does not.
+                        // Record the skip with its reason. A skipped trashed or
+                        // purged record is not active on the server, so it must stay
+                        // in its existing status bucket instead of increasing 已备份.
                         saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
                         if (result.countsAsBackedUp) {
                             incrementBackedUpCount(fileInfo.folderUri, priorStatus)
