@@ -65,6 +65,14 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- WorkManager uses this internal service for a Worker promoted with
+             ForegroundInfo(FOREGROUND_SERVICE_TYPE_DATA_SYNC). The declaration
+             merges the required type into WorkManager's library manifest. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
         <!-- Condition Broadcast Receiver (static registration for BOOT_COMPLETED) -->
         <receiver
             android:name=".service.BootCompletedReceiver"
