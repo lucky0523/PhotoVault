@@ -88,12 +88,17 @@ fun SettingsTab(
     val minBatteryLevel by viewModel.minBatteryLevel.collectAsState()
     val scanIntervalMinutes by viewModel.scanIntervalMinutes.collectAsState()
     val fileLoggingEnabled by viewModel.fileLoggingEnabled.collectAsState()
+    val diagnosticLogHasContent by viewModel.diagnosticLogHasContent.collectAsState()
     val backupFolders by viewModel.backupFolders.collectAsState()
     val showPolicySheet by viewModel.showPolicySheet.collectAsState()
     val selectedFolder by viewModel.selectedFolder.collectAsState()
     val username by viewModel.username.collectAsState()
     val serverAddress by viewModel.serverAddress.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.refreshDiagnosticLogStatus()
+    }
 
     var showLogoutDialog by remember { mutableStateOf(false) }
     // While the user is operating an interactive control (dragging the battery
@@ -161,7 +166,10 @@ fun SettingsTab(
         // 诊断 group（把日志写入文件，绕过部分 ROM 屏蔽 logcat）
         DiagnosticsGroup(
             fileLoggingEnabled = fileLoggingEnabled,
-            onFileLoggingChanged = { viewModel.setFileLoggingEnabled(it) }
+            diagnosticLogPath = viewModel.diagnosticLogPath,
+            diagnosticLogHasContent = diagnosticLogHasContent,
+            onFileLoggingChanged = { viewModel.setFileLoggingEnabled(it) },
+            onClearLogs = viewModel::clearDiagnosticLogs
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -270,7 +278,10 @@ private fun BackupConditionsGroup(
 @Composable
 private fun DiagnosticsGroup(
     fileLoggingEnabled: Boolean,
-    onFileLoggingChanged: (Boolean) -> Unit
+    diagnosticLogPath: String?,
+    diagnosticLogHasContent: Boolean,
+    onFileLoggingChanged: (Boolean) -> Unit,
+    onClearLogs: () -> Unit
 ) {
     SettingsGroupCard(title = "诊断") {
         Row(
@@ -293,12 +304,40 @@ private fun DiagnosticsGroup(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     minLines = 2
                 )
+                Text(
+                    text = "日志路径：${diagnosticLogPath ?: "尚未初始化"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             Spacer(modifier = Modifier.width(12.dp))
-            Switch(
-                checked = fileLoggingEnabled,
-                onCheckedChange = onFileLoggingChanged
-            )
+            val glassBackdrop = LocalGlassBackdrop.current
+            if (glassBackdrop != null) {
+                LiquidToggle(
+                    selected = { fileLoggingEnabled },
+                    onSelect = onFileLoggingChanged,
+                    backdrop = glassBackdrop
+                )
+            } else {
+                Switch(
+                    checked = fileLoggingEnabled,
+                    onCheckedChange = onFileLoggingChanged
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(
+                onClick = onClearLogs,
+                enabled = diagnosticLogHasContent
+            ) {
+                Text("清空日志")
+            }
         }
     }
 }

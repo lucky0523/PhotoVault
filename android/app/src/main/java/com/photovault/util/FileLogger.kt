@@ -1,6 +1,9 @@
 package com.photovault.util
 
 import android.content.Context
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -34,6 +37,10 @@ object FileLogger {
     @Volatile
     private var logFile: File? = null
 
+    private val _logFileHasContent = MutableStateFlow(false)
+    /** Whether the diagnostic log file exists and contains data that can be cleared. */
+    val logFileHasContent: StateFlow<Boolean> = _logFileHasContent.asStateFlow()
+
     private val lock = Any()
     private val timestamp = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
@@ -43,10 +50,17 @@ object FileLogger {
         val dir = app.getExternalFilesDir(null) ?: app.filesDir
         logFile = File(dir, FILE_NAME)
         this.enabled = enabled
+        refreshLogFileState()
     }
 
     /** Absolute path of the log file, for surfacing in the UI. Null if not initialized. */
     fun currentPath(): String? = logFile?.absolutePath
+
+    /** Re-check whether the diagnostic log contains data, including after external deletion. */
+    fun refreshLogFileState() {
+        val file = logFile
+        _logFileHasContent.value = file?.isFile == true && file.length() > 0L
+    }
 
     /** Append one timestamped line. No-op when disabled or not initialized. */
     fun log(tag: String, message: String) {
@@ -59,19 +73,25 @@ object FileLogger {
                     file.writeText(text.substring(text.length / 2))
                 }
                 file.appendText("${timestamp.format(Date())}  [$tag] $message\n")
+                _logFileHasContent.value = true
             } catch (_: Exception) {
                 // Never let diagnostics break the app.
+                refreshLogFileState()
             }
         }
     }
 
-    /** Truncate the log (e.g. when the user re-enables logging to start fresh). */
+    /** Removes the log file without changing whether future diagnostics are recorded. */
     fun clear() {
         val file = logFile ?: return
         synchronized(lock) {
             try {
-                file.writeText("")
+                if (file.exists() && !file.delete()) {
+                    file.writeText("")
+                }
             } catch (_: Exception) {
+            } finally {
+                refreshLogFileState()
             }
         }
     }

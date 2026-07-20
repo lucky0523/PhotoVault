@@ -80,6 +80,9 @@ class SettingsViewModel @Inject constructor(
     val minBatteryLevel: StateFlow<Int> = settingsPreferences.minBatteryLevel
     val scanIntervalMinutes: StateFlow<Int> = settingsPreferences.scanIntervalMinutes
     val fileLoggingEnabled: StateFlow<Boolean> = settingsPreferences.fileLoggingEnabled
+    val diagnosticLogPath: String? = com.photovault.util.FileLogger.currentPath()
+    val diagnosticLogHasContent: StateFlow<Boolean> =
+        com.photovault.util.FileLogger.logFileHasContent
 
     // Storage strategy management
     val backupFolders: StateFlow<List<BackupFolder>> = backupFolderRepository.getAllFolders()
@@ -96,6 +99,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         loadAccountInfo()
+        refreshDiagnosticLogStatus()
     }
 
     private fun loadAccountInfo() {
@@ -277,6 +281,16 @@ class SettingsViewModel @Inject constructor(
             com.photovault.util.FileLogger.log("Settings", "file logging disabled")
             com.photovault.util.FileLogger.enabled = false
         }
+    }
+
+    /** Re-checks the diagnostic log file after returning to the settings screen. */
+    fun refreshDiagnosticLogStatus() {
+        com.photovault.util.FileLogger.refreshLogFileState()
+    }
+
+    /** Clear the diagnostic log without changing the logging toggle state. */
+    fun clearDiagnosticLogs() {
+        com.photovault.util.FileLogger.clear()
     }
 
     /**
