@@ -636,6 +636,15 @@ class BackgroundScanWorker @AssistedInject constructor(
     ) {
         val queued = backupQueue.size()
         val running = BackupForegroundService.isRunning
+        // A backup paused because the server became unreachable stays "running"
+        // (isRunning == true) but idle, so the plain !running gate below can't
+        // revive it — it would otherwise wait for a battery/network broadcast
+        // (ConditionCheckWorker) or a manual "立即备份". This method only runs when
+        // the server was already found reachable this scan (allowBackup gates on
+        // the preflight), so a CONDITION-paused service can be resumed right here,
+        // letting a recovered server self-heal on the next periodic scan.
+        val conditionPaused = BackupForegroundService.isPaused &&
+            BackupForegroundService.pauseReason == PauseReason.CONDITION
         val normalConditionsMet = backupConditionChecker.shouldStartBackup()
         // Preserve the existing manual full-scan policy: when charging, an
         // explicit full scan may proceed even if the normal battery threshold is
@@ -648,14 +657,23 @@ class BackgroundScanWorker @AssistedInject constructor(
         }
         com.photovault.util.FileLogger.log(
             "Scan",
-            "maybeStart queued=$queued running=$running condOk=$condOk manual=$manual"
+            "maybeStart queued=$queued running=$running conditionPaused=$conditionPaused condOk=$condOk manual=$manual"
         )
-        if (queued > 0 && !running && condOk) {
+        // Start when idle, or resume when only a CONDITION pause is holding an
+        // otherwise-running service. A user pause never reaches here (the caller
+        // routes it to the RESUME/PROMPT paths), so this can't override it.
+        // start() is the same mechanism ConditionCheckWorker uses to revive a
+        // running-but-paused service: it clears the pause and continues from the
+        // persisted 断点续传 progress.
+        if (queued > 0 && condOk && (!running || conditionPaused)) {
             android.util.Log.i(
                 "PhotoVaultScan",
-                "Starting backup service for $queued queued file(s)"
+                "Starting backup service for $queued queued file(s) (conditionPaused=$conditionPaused)"
             )
-            com.photovault.util.FileLogger.log("Scan", "-> start() dispatched (queued=$queued)")
+            com.photovault.util.FileLogger.log(
+                "Scan",
+                "-> start() dispatched (queued=$queued, conditionPaused=$conditionPaused)"
+            )
             BackupForegroundService.start(applicationContext, manual = manual)
         }
     }
