@@ -18,6 +18,7 @@ import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.BackupStatus
 import com.photovault.data.local.entity.PhotoStatusValue
+import com.photovault.data.repository.AuthRepository
 import com.photovault.util.AppForegroundState
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -48,7 +49,8 @@ class BackgroundScanWorker @AssistedInject constructor(
     private val credentialManager: CredentialManager,
     private val uploadRecordDao: UploadRecordDao,
     private val backupHistoryDao: BackupHistoryDao,
-    private val settingsPreferences: SettingsPreferences
+    private val settingsPreferences: SettingsPreferences,
+    private val authRepository: AuthRepository
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -408,20 +410,38 @@ class BackgroundScanWorker @AssistedInject constructor(
             // or when automatic backup is enabled. When auto-backup is off, an
             // automatic trigger still scans (for status/count refresh) but never
             // uploads on its own. (R-AUTO-BACKUP)
-            val allowBackup = manual || settingsPreferences.getAutoBackupEnabled()
+            val backupAllowedBySettings = manual || settingsPreferences.getAutoBackupEnabled()
+            // Server-reachability preflight. Most deployments run on a home LAN
+            // that is unreachable while the user is away, so an automatic run that
+            // would otherwise upload first probes the actual server (not just the
+            // network interface). If it's unreachable we downgrade this run to
+            // scan-only: folder counts still refresh, but no file is enqueued or
+            // uploaded. This is what prevents every queued file from failing and
+            // being recorded FAILED, which would grow the per-file retry backoff to
+            // 24h and block backup even after the user gets home. Manual runs skip
+            // the probe: they already passed a connectivity pre-check in startScan
+            // and must honor the user's explicit request.
+            val serverReachable = if (backupAllowedBySettings && !manual) {
+                authRepository.isServerReachable()
+            } else {
+                true
+            }
+            val allowBackup = backupAllowedBySettings && serverReachable
             android.util.Log.i(
                 "PhotoVaultScan",
-                "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, allowBackup=$allowBackup)"
+                "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, allowBackup=$allowBackup, serverReachable=$serverReachable)"
             )
             com.photovault.util.FileLogger.log(
                 "Scan",
-                "scan start forceFull=$forceFullScan manual=$manual allowBackup=$allowBackup"
+                "scan start forceFull=$forceFullScan manual=$manual allowBackup=$allowBackup " +
+                    "serverReachable=$serverReachable"
             )
 
             // Sync photo status from server before scanning, so trashed/purged
-            // files (deleted via web UI) are skipped. Only attempt sync when
-            // the user has a valid auth token.
-            if (credentialManager.hasValidToken()) {
+            // files (deleted via web UI) are skipped. Only attempt sync when the
+            // user has a valid auth token AND the server is reachable (skip the
+            // doomed call when the preflight already found it unreachable).
+            if (serverReachable && credentialManager.hasValidToken()) {
                 val synced = statusSyncManager.syncStatus()
                 android.util.Log.i("PhotoVaultScan", "Status sync result: $synced records updated")
             }

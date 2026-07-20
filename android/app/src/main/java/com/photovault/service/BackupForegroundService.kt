@@ -23,6 +23,7 @@ import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.entity.BackupHistoryRecord
 import com.photovault.data.local.entity.BackupStatus
 import com.photovault.data.local.entity.UploadRecord
+import com.photovault.data.repository.AuthRepository
 import com.photovault.ui.main.tabs.applyBackedUpCountDelta
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -365,6 +366,9 @@ class BackupForegroundService : Service() {
     @Inject
     lateinit var settingsPreferences: com.photovault.data.local.SettingsPreferences
 
+    @Inject
+    lateinit var authRepository: AuthRepository
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var backupJob: Job? = null
 
@@ -640,6 +644,32 @@ class BackupForegroundService : Service() {
                                 "Upload of ${fileInfo.fileName} interrupted by conditions; re-queued for resume"
                             )
                             updateNotification("备份已暂停", "等待条件恢复...")
+                            currentFileUri = null
+                            break
+                        }
+                        // A retryable failure while battery + network are still fine
+                        // usually means the (home-LAN) server became unreachable
+                        // mid-batch. Treat it like a condition pause — re-queue this
+                        // file and stop — instead of recording it (and then every
+                        // following file) as FAILED. Recording FAILED here would
+                        // poison the per-file retry backoff (up to 24h) and block
+                        // backup even after the server returns / the user gets home.
+                        // Pausing with CONDITION lets it auto-resume once conditions
+                        // change (e.g. joining home WiFi) or on the next reachable
+                        // scan / manual "立即备份".
+                        if (result.shouldRetry && !authRepository.isServerReachable()) {
+                            backupQueue.enqueue(listOf(fileInfo))
+                            isPaused = true
+                            pauseReason = PauseReason.CONDITION
+                            com.photovault.util.FileLogger.log(
+                                "Service",
+                                "server unreachable mid-backup; paused and re-queued ${fileInfo.fileName}"
+                            )
+                            android.util.Log.i(
+                                "PhotoVaultBackup",
+                                "Server unreachable; re-queued ${fileInfo.fileName} and paused for resume"
+                            )
+                            updateNotification("备份已暂停", "服务器连接已断开，恢复后继续")
                             currentFileUri = null
                             break
                         }

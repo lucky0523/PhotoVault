@@ -51,6 +51,21 @@ class AuthRepository @Inject constructor(
         return retrofit.create(AuthApi::class.java)
     }
 
+    /**
+     * Lightweight probe of whether the configured backup server is reachable
+     * right now. Reuses [testConnection] against the stored server address and
+     * returns false when no address is stored or the probe fails/times out (10s).
+     *
+     * Used by the backup pipeline to avoid attempting uploads — and burning files
+     * into the per-file retry backoff — when the (typically home-LAN) server is
+     * unreachable. Runs a real request to the server, unlike a mere network-
+     * interface check, so "手机有网但家里服务器连不上" is detected correctly.
+     */
+    suspend fun isServerReachable(): Boolean {
+        val serverAddress = credentialManager.getServerAddress() ?: return false
+        return testConnection(serverAddress).isSuccess
+    }
+
     suspend fun testConnection(serverAddress: String): Result<ConnectionTestResponse> {
         return try {
             val api = createApiForServer(serverAddress, timeoutSeconds = 10)
