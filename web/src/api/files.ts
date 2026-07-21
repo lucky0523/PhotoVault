@@ -243,11 +243,39 @@ export function formatFileSize(bytes: number): string {
 }
 
 /**
- * Format date string to locale display
+ * Normalize a backend timestamp string before handing it to `Date`.
+ *
+ * `created_at` comes from SQLite's `CURRENT_TIMESTAMP`, which is documented to
+ * be UTC but is formatted as "YYYY-MM-DD HH:MM:SS" (space-separated) with no
+ * timezone marker. The JS `Date` constructor treats a marker-less string as
+ * *local* time, so parsing it as-is silently shifts the displayed time by the
+ * browser's UTC offset.
+ *
+ * `exif_time`, by contrast, is written by the client as "yyyy-MM-ddTHH:mm:ss"
+ * (T-separated) and represents the photo's local wall-clock time at capture
+ * with no reliable timezone info of its own — it must NOT be reinterpreted as
+ * UTC, so it's left untouched and continues to be parsed as local time.
+ *
+ * This only tags strings that (a) have no explicit timezone/offset and
+ * (b) use the space-separated SQLite format, so `Date` — and therefore
+ * `toLocaleDateString` — converts and displays them in the browser's local
+ * timezone correctly.
+ */
+function normalizeTimestamp(dateStr: string): string {
+  const hasTimezone = /[Zz]|[+-]\d{2}:?\d{2}$/.test(dateStr)
+  const isSqliteUtcFormat = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(dateStr)
+  if (!hasTimezone && isSqliteUtcFormat) {
+    return dateStr.replace(' ', 'T') + 'Z'
+  }
+  return dateStr
+}
+
+/**
+ * Format date string to locale display (using the browser's local timezone).
  */
 export function formatDate(dateStr: string | undefined | null): string {
   if (!dateStr) return '-'
-  const date = new Date(dateStr)
+  const date = new Date(normalizeTimestamp(dateStr))
   return date.toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
