@@ -36,14 +36,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
+import com.photovault.ui.theme.liquid.LiquidProgressBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -505,15 +504,12 @@ internal fun FolderRow(
 
             Spacer(modifier = Modifier.height(6.dp))
             // Progress bar spans the full row width (below both the chips and the
-            // fixed-width status label).
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(CircleShape),
-                color = statusColor,
-                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            // fixed-width status label). Uses LiquidProgressBar for the liquid-glass
+            // capsule track style consistent with TasksTab.
+            LiquidProgressBar(
+                progress = progress,
+                modifier = Modifier.fillMaxWidth(),
+                color = statusColor
             )
         }
 
