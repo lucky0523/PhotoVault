@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
 from app.core.security import require_admin
+from app.core.validators import validate_password
 from app.models.auth import (
     ChangePasswordRequest,
     CreateUserRequest,
@@ -50,6 +51,13 @@ async def create_user(
 
     Returns 400 if max users reached or username already exists.
     """
+    password_error = validate_password(body.password)
+    if password_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=password_error,
+        )
+
     auth_service = AuthService(db)
     try:
         user = await auth_service.create_user(
@@ -96,6 +104,13 @@ async def change_password(
 
     Returns 404 if user not found.
     """
+    password_error = validate_password(body.new_password)
+    if password_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=password_error,
+        )
+
     auth_service = AuthService(db)
     changed = await auth_service.change_password(user_id, body.new_password)
     if not changed:

@@ -84,6 +84,8 @@ def _flatten_yaml(data: dict[str, Any]) -> dict[str, Any]:
             flat["max_users"] = auth["max_users"]
         if "jwt_secret_key" in auth:
             flat["jwt_secret_key"] = auth["jwt_secret_key"]
+        if "allow_registration" in auth:
+            flat["allow_registration"] = auth["allow_registration"]
 
     backup = data.get("backup", {})
     if backup:
@@ -166,6 +168,7 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     max_users: int = 20
     jwt_secret_key: str = "change-me-in-production"
+    allow_registration: bool = False
 
     # Backup
     chunk_size_mb: int = 2

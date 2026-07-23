@@ -17,6 +17,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: false },
   },
   {
+    path: '/register',
+    name: 'Register',
+    component: () => import('@/views/RegisterView.vue'),
+    meta: { requiresAuth: false },
+  },
+  {
     path: '/',
     component: () => import('@/views/MainLayout.vue'),
     meta: { requiresAuth: true },
@@ -134,8 +140,8 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
-  // If already authenticated and going to login, redirect to photos
-  if (to.name === 'Login' && authStore.isAuthenticated) {
+  // If already authenticated and going to login or register, redirect to photos
+  if ((to.name === 'Login' || to.name === 'Register') && authStore.isAuthenticated) {
     next({ name: 'Photos' })
     return
   }

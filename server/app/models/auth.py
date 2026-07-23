@@ -44,6 +44,13 @@ class CreateUserRequest(BaseModel):
     is_admin: bool = False
 
 
+class RegisterRequest(BaseModel):
+    """Public registration request."""
+
+    username: str
+    password: str
+
+
 class ChangePasswordRequest(BaseModel):
     """Admin request to change a user's password."""
 

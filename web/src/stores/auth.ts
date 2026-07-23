@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import http from '@/api/http'
 import router from '@/router'
+import { register as apiRegister } from '@/api/auth'
 
 interface UserInfo {
   id: number
@@ -85,6 +86,33 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function register(usernameInput: string, password: string) {
+    const data = await apiRegister({ username: usernameInput, password })
+
+    const { access_token, refresh_token } = data
+
+    // Store tokens
+    accessToken.value = access_token
+    refreshToken.value = refresh_token
+    localStorage.setItem('access_token', access_token)
+    localStorage.setItem('refresh_token', refresh_token)
+
+    // Decode user info from token payload (JWT)
+    try {
+      const payload = JSON.parse(atob(access_token.split('.')[1]))
+      const info: UserInfo = {
+        id: payload.sub || payload.user_id,
+        username: payload.username || usernameInput,
+        is_admin: payload.is_admin || false,
+      }
+      userInfo.value = info
+      localStorage.setItem('user_info', JSON.stringify(info))
+    } catch {
+      userInfo.value = { id: 0, username: usernameInput, is_admin: false }
+      localStorage.setItem('user_info', JSON.stringify(userInfo.value))
+    }
+  }
+
   return {
     accessToken,
     refreshToken,
@@ -93,6 +121,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     username,
     login,
+    register,
     logout,
     refreshAccessToken,
   }

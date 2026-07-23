@@ -123,6 +123,14 @@
             show-password
           />
         </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input
+            v-model="resetForm.confirmPassword"
+            type="password"
+            placeholder="请再次输入新密码"
+            show-password
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showResetPasswordDialog = false">取消</el-button>
@@ -145,6 +153,7 @@ import {
   clearPurgedRecords,
   changePassword,
 } from '@/api/admin'
+import { validatePasswordChars } from '@/utils/validators'
 import type { UserInfo } from '@/api/admin'
 
 const loading = ref(false)
@@ -166,7 +175,7 @@ const createRules: FormRules = {
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 8, message: '密码长度不少于8位', trigger: 'blur' },
+    { validator: validatePasswordChars, trigger: 'blur' },
   ],
 }
 
@@ -177,11 +186,23 @@ const resetTarget = ref<UserInfo | null>(null)
 const resetFormRef = ref<FormInstance>()
 const resetForm = reactive({
   newPassword: '',
+  confirmPassword: '',
 })
+const validateResetConfirmPassword = (_rule: any, value: string, callback: any) => {
+  if (value !== resetForm.newPassword) {
+    callback(new Error('两次输入的密码不一致'))
+  } else {
+    callback()
+  }
+}
 const resetRules: FormRules = {
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 8, message: '密码长度不少于8位', trigger: 'blur' },
+    { validator: validatePasswordChars, trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请确认新密码', trigger: 'blur' },
+    { validator: validateResetConfirmPassword, trigger: 'blur' },
   ],
 }
 
@@ -291,6 +312,7 @@ function resetCreateForm() {
 
 function resetPasswordForm() {
   resetForm.newPassword = ''
+  resetForm.confirmPassword = ''
   resetTarget.value = null
   resetFormRef.value?.resetFields()
 }
@@ -317,5 +339,13 @@ onMounted(() => {
 .reset-hint {
   margin-bottom: 16px;
   color: #606266;
+}
+
+/* Allow long password validation messages to wrap and display fully */
+:deep(.el-form-item__error) {
+  position: static;
+  white-space: normal;
+  line-height: 1.4;
+  margin-top: 2px;
 }
 </style>
