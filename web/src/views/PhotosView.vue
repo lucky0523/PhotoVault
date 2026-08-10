@@ -33,269 +33,271 @@
 
       <!-- Right content area -->
       <el-main class="content-area">
-        <!-- Toolbar -->
-        <div class="toolbar">
-          <div class="toolbar-left">
-            <!-- Breadcrumb -->
-            <el-breadcrumb separator="/">
-              <el-breadcrumb-item @click="navigateTo('')">
-                <el-icon><HomeFilled /></el-icon>
-              </el-breadcrumb-item>
-              <el-breadcrumb-item
-                v-for="(segment, index) in pathSegments"
-                :key="index"
-                @click="navigateTo(pathSegments.slice(0, index + 1).join('/'))"
-              >
-                {{ segment }}
-              </el-breadcrumb-item>
-            </el-breadcrumb>
-          </div>
-
-          <div class="toolbar-right">
-            <!-- Batch actions: shown whenever there's a selection -->
-            <template v-if="selectedIds.size > 0">
-              <span class="selection-count">已选择 {{ selectedIds.size }} 项</span>
-              <el-button size="small" @click="selectAllFiles">全选</el-button>
-              <el-button size="small" @click="clearSelection">取消选择</el-button>
-              <el-button type="primary" size="small" @click="handleBatchDownload">
-                <el-icon><Download /></el-icon>
-                下载
-              </el-button>
-              <el-button type="danger" size="small" @click="handleBatchDelete">
-                <el-icon><Delete /></el-icon>
-                移入回收站
-              </el-button>
+        <div class="pv-page-head">
+          <!-- Toolbar -->
+          <PageHeader title="图片浏览" :icon="Picture">
+            <template #subtitle>
+              <!-- Breadcrumb：当前路径作为标题的副信息 -->
+              <el-breadcrumb separator="/" class="path-breadcrumb">
+                <el-breadcrumb-item @click="navigateTo('')">
+                  <el-icon><HomeFilled /></el-icon>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item
+                  v-for="(segment, index) in pathSegments"
+                  :key="index"
+                  @click="navigateTo(pathSegments.slice(0, index + 1).join('/'))"
+                >
+                  {{ segment }}
+                </el-breadcrumb-item>
+              </el-breadcrumb>
             </template>
 
-            <!-- Sort dropdown -->
-            <el-select v-model="sortBy" size="small" style="width: 120px" @change="loadContent">
-              <el-option label="名称" value="name" />
-              <el-option label="大小" value="size" />
-              <el-option label="时间" value="time" />
-            </el-select>
+            <template #extra>
+              <!-- Batch actions: shown whenever there's a selection -->
+              <template v-if="selectedIds.size > 0">
+                <span class="pv-muted">已选择 {{ selectedIds.size }} 项</span>
+                <el-button @click="selectAllFiles">全选</el-button>
+                <el-button @click="clearSelection">取消选择</el-button>
+                <el-button type="primary" @click="handleBatchDownload">
+                  <el-icon><Download /></el-icon>
+                  下载
+                </el-button>
+                <el-button type="danger" @click="handleBatchDelete">
+                  <el-icon><Delete /></el-icon>
+                  移入回收站
+                </el-button>
+              </template>
 
-            <!-- View toggle -->
-            <el-button-group>
-              <el-button
-                :type="viewMode === 'grid' ? 'primary' : 'default'"
-                size="small"
-                @click="setViewMode('grid')"
-              >
-                <el-icon><Grid /></el-icon>
-              </el-button>
-              <el-button
-                :type="viewMode === 'list' ? 'primary' : 'default'"
-                size="small"
-                @click="setViewMode('list')"
-              >
-                <el-icon><List /></el-icon>
-              </el-button>
-            </el-button-group>
-          </div>
-        </div>
+              <!-- Sort dropdown -->
+              <el-select v-model="sortBy" style="width: 120px" @change="loadContent">
+                <el-option label="名称" value="name" />
+                <el-option label="大小" value="size" />
+                <el-option label="时间" value="time" />
+              </el-select>
 
-        <!-- Loading state -->
-        <div v-if="contentLoading" class="loading-container">
-          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-          <span>加载中...</span>
-        </div>
-
-        <!-- Empty state -->
-        <el-empty
-          v-else-if="directories.length === 0 && files.length === 0"
-          description="当前目录为空"
-        />
-
-        <!-- Content -->
-        <template v-else>
-          <!-- Directories section -->
-          <div v-if="directories.length > 0" class="directories-section">
-            <div class="section-title">文件夹</div>
-            <!-- Grid view -->
-            <div v-if="viewMode === 'grid'" class="directories-grid">
-              <div
-                v-for="dir in directories"
-                :key="dir.path"
-                class="directory-card"
-                @click="navigateTo(dir.path)"
-                @contextmenu="showContextMenu($event, 'directory', undefined, dir)"
-              >
-                <el-icon :size="32" color="var(--el-color-warning)"><Folder /></el-icon>
-                <div class="directory-info">
-                  <span class="directory-name">{{ dir.name }}</span>
-                  <span class="directory-count">{{ dir.backed_up_count }} 个文件</span>
-                </div>
-              </div>
-            </div>
-            <!-- List view -->
-            <el-table
-              v-else
-              :data="directories"
-              style="width: 100%"
-              @row-click="(row: DirectoryInfo) => navigateTo(row.path)"
-              @row-contextmenu="(row: DirectoryInfo, event: MouseEvent) => showContextMenu(event, 'directory', undefined, row)"
-            >
-              <el-table-column width="50">
-                <template #default>
-                  <el-icon :size="20" color="var(--el-color-warning)"><Folder /></el-icon>
-                </template>
-              </el-table-column>
-              <el-table-column prop="name" label="名称" min-width="200" />
-              <el-table-column label="文件数" width="100">
-                <template #default="{ row }">
-                  {{ row.backed_up_count }}
-                </template>
-              </el-table-column>
-              <el-table-column label="大小" width="120">
-                <template #default="{ row }">
-                  {{ formatFileSize(row.size) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="最后更新" width="160">
-                <template #default="{ row }">
-                  {{ formatDate(row.latest_file_time) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="120" fixed="right">
-                <template #default="{ row }">
-                  <div class="row-actions">
-                    <el-button type="danger" link size="small" @click.stop="handleDeleteDirectory(row)">
-                      移入回收站
-                    </el-button>
-                  </div>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- Files section -->
-          <div v-if="files.length > 0" class="files-section">
-            <div class="section-title">文件</div>
-            
-            <!-- Grid view -->
-            <div v-show="viewMode === 'grid'" class="files-grid">
-              <div
-                v-for="(file, index) in files"
-                :key="file.id"
-                class="file-card"
-                :class="{ 'is-selected': selectedIds.has(file.id) }"
-                @click="handleCardClick(file, index)"
-                @contextmenu="showContextMenu($event, 'file', file)"
-              >
-                <div
-                  class="file-checkbox"
-                  :class="{ 'is-checked': selectedIds.has(file.id) }"
-                  @click.stop="toggleSelect(file.id)"
+              <!-- View toggle -->
+              <el-button-group>
+                <el-button
+                  :type="viewMode === 'grid' ? 'primary' : 'default'"
+                  @click="setViewMode('grid')"
                 >
-                  <el-icon v-if="selectedIds.has(file.id)"><Check /></el-icon>
-                </div>
-                <div class="file-thumbnail">
-                  <img
-                    :src="getThumbnailUrl(file.id, 'small')"
-                    :alt="file.file_name"
-                    loading="lazy"
-                    @error="handleThumbnailError"
-                  />
-                  <div v-if="isVideo(file)" class="video-badge">
-                    <el-icon :size="28"><VideoPlay /></el-icon>
+                  <el-icon><Grid /></el-icon>
+                </el-button>
+                <el-button
+                  :type="viewMode === 'list' ? 'primary' : 'default'"
+                  @click="setViewMode('list')"
+                >
+                  <el-icon><List /></el-icon>
+                </el-button>
+              </el-button-group>
+            </template>
+          </PageHeader>
+        </div>
+
+        <div class="pv-page-body">
+          <!-- Loading state -->
+          <div v-if="contentLoading" class="pv-loading">
+            <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+            <span>加载中...</span>
+          </div>
+
+          <!-- Empty state -->
+          <el-empty
+            v-else-if="directories.length === 0 && files.length === 0"
+            description="当前目录为空"
+          />
+
+          <!-- Content -->
+          <template v-else>
+            <!-- Directories section -->
+            <div v-if="directories.length > 0" class="directories-section">
+              <div class="pv-section-title">文件夹</div>
+              <!-- Grid view -->
+              <div v-if="viewMode === 'grid'" class="directories-grid">
+                <div
+                  v-for="dir in directories"
+                  :key="dir.path"
+                  class="directory-card"
+                  @click="navigateTo(dir.path)"
+                  @contextmenu="showContextMenu($event, 'directory', undefined, dir)"
+                >
+                  <el-icon :size="32" color="var(--el-color-warning)"><Folder /></el-icon>
+                  <div class="directory-info">
+                    <span class="directory-name">{{ dir.name }}</span>
+                    <span class="directory-count">{{ dir.backed_up_count }} 个文件</span>
                   </div>
-                  <div v-else-if="isMotionPhoto(file)" class="live-badge">
-                    <LivePhotoIcon class="live-icon" />
-                    <span>LIVE</span>
-                  </div>
-                  <div v-if="file.is_ultra_hdr" class="hdr-badge" title="Ultra HDR">HDR</div>
-                </div>
-                <div class="file-overlay">
-                  <span class="file-name">{{ file.file_name }}</span>
-                  <span class="file-size">{{ formatFileSize(file.file_size) }}</span>
                 </div>
               </div>
+              <!-- List view -->
+              <el-table
+                v-else
+                :data="directories"
+                style="width: 100%"
+                @row-click="(row: DirectoryInfo) => navigateTo(row.path)"
+                @row-contextmenu="(row: DirectoryInfo, event: MouseEvent) => showContextMenu(event, 'directory', undefined, row)"
+              >
+                <el-table-column width="50">
+                  <template #default>
+                    <el-icon :size="20" color="var(--el-color-warning)"><Folder /></el-icon>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="name" label="名称" min-width="200" />
+                <el-table-column label="文件数" width="100">
+                  <template #default="{ row }">
+                    {{ row.backed_up_count }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="大小" width="120">
+                  <template #default="{ row }">
+                    {{ formatFileSize(row.size) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="最后更新" width="160">
+                  <template #default="{ row }">
+                    {{ formatDate(row.latest_file_time) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="120" fixed="right">
+                  <template #default="{ row }">
+                    <div class="row-actions">
+                      <el-button type="danger" link size="small" @click.stop="handleDeleteDirectory(row)">
+                        移入回收站
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
             </div>
 
-            <!-- List view -->
-            <div v-show="viewMode === 'list'" ref="listContainerRef" class="list-view-container">
-              <el-table
-                ref="fileTableRef"
-                :data="files"
-                :height="tableHeight"
-                style="width: 100%"
-                row-key="id"
-                @row-click="(row: FileInfo, column: any) => handleRowClick(row, column)"
-                @row-contextmenu="(row: FileInfo, event: MouseEvent) => showContextMenu(event, 'file', row)"
-                @selection-change="handleTableSelectionChange"
-              >
-              <el-table-column type="selection" width="50" :selectable="() => true" />
-              <el-table-column width="60">
-                <template #default="{ row }">
-                  <div class="list-thumbnail-wrap">
+            <!-- Files section -->
+            <div v-if="files.length > 0" class="files-section">
+              <div class="pv-section-title">文件</div>
+
+              <!-- Grid view -->
+              <div v-show="viewMode === 'grid'" class="pv-photo-grid">
+                <div
+                  v-for="(file, index) in files"
+                  :key="file.id"
+                  class="pv-tile"
+                  :class="{ 'is-selected': selectedIds.has(file.id) }"
+                  @click="handleCardClick(file, index)"
+                  @contextmenu="showContextMenu($event, 'file', file)"
+                >
+                  <div
+                    class="pv-tile__check"
+                    :class="{ 'is-checked': selectedIds.has(file.id) }"
+                    @click.stop="toggleSelect(file.id)"
+                  >
+                    <el-icon v-if="selectedIds.has(file.id)"><Check /></el-icon>
+                  </div>
+                  <div class="pv-tile__media">
                     <img
-                      :src="getThumbnailUrl(row.id, 'small')"
-                      class="list-thumbnail"
-                      :alt="row.file_name"
+                      :src="getThumbnailUrl(file.id, 'small')"
+                      :alt="file.file_name"
+                      loading="lazy"
                       @error="handleThumbnailError"
                     />
-                    <el-icon v-if="isVideo(row)" class="list-video-badge" :size="16"><VideoPlay /></el-icon>
+                    <div v-if="isVideo(file)" class="pv-tile__video">
+                      <el-icon :size="28"><VideoPlay /></el-icon>
+                    </div>
+                    <div v-else-if="isMotionPhoto(file)" class="pv-tile__live">
+                      <LivePhotoIcon class="pv-tile__live-icon" />
+                      <span>LIVE</span>
+                    </div>
+                    <div v-if="file.is_ultra_hdr" class="pv-tile__hdr" title="Ultra HDR">HDR</div>
                   </div>
-                </template>
-              </el-table-column>
-              <el-table-column prop="file_name" label="文件名" min-width="200" />
-              <el-table-column label="大小" width="100">
-                <template #default="{ row }">
-                  {{ formatFileSize(row.file_size) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="拍摄时间" width="160">
-                <template #default="{ row }">
-                  {{ row.exif_time ? formatDate(row.exif_time) : '—' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="上传时间" width="160">
-                <template #default="{ row }">
-                  {{ formatDate(row.created_at) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="类型" width="80">
-                <template #default="{ row }">
-                  {{ getFileType(row.file_name) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="150" fixed="right">
-                <template #default="{ row }">
-                  <div class="row-actions">
-                    <el-button
-                      type="primary"
-                      link
-                      size="small"
-                      @click.stop="handleDownloadClick(row)"
-                    >
-                      下载
-                    </el-button>
-                    <el-button
-                      type="danger"
-                      link
-                      size="small"
-                      @click.stop="handleDeleteFile(row)"
-                    >
-                      移入回收站
-                    </el-button>
+                  <div class="pv-tile__overlay">
+                    <span class="pv-tile__name">{{ file.file_name }}</span>
+                    <span class="pv-tile__meta">{{ formatFileSize(file.file_size) }}</span>
                   </div>
-                </template>
-              </el-table-column>
-            </el-table>
-            </div>
-          </div>
+                </div>
+              </div>
 
-          <!-- Pagination -->
-          <div v-if="totalFiles > pageSize" class="pagination-container">
-            <el-pagination
-              v-model:current-page="currentPage"
-              :page-size="pageSize"
-              :total="totalFiles"
-              layout="prev, pager, next, total"
-              @current-change="handlePageChange"
-            />
-          </div>
-        </template>
+              <!-- List view -->
+              <div v-show="viewMode === 'list'" ref="listContainerRef" class="list-view-container">
+                <el-table
+                  ref="fileTableRef"
+                  :data="files"
+                  :height="tableHeight"
+                  style="width: 100%"
+                  row-key="id"
+                  @row-click="(row: FileInfo, column: any) => handleRowClick(row, column)"
+                  @row-contextmenu="(row: FileInfo, event: MouseEvent) => showContextMenu(event, 'file', row)"
+                  @selection-change="handleTableSelectionChange"
+                >
+                <el-table-column type="selection" width="50" :selectable="() => true" />
+                <el-table-column width="60">
+                  <template #default="{ row }">
+                    <div class="list-thumbnail-wrap">
+                      <img
+                        :src="getThumbnailUrl(row.id, 'small')"
+                        class="list-thumbnail"
+                        :alt="row.file_name"
+                        @error="handleThumbnailError"
+                      />
+                      <el-icon v-if="isVideo(row)" class="list-video-badge" :size="16"><VideoPlay /></el-icon>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="file_name" label="文件名" min-width="200" />
+                <el-table-column label="大小" width="100">
+                  <template #default="{ row }">
+                    {{ formatFileSize(row.file_size) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="拍摄时间" width="160">
+                  <template #default="{ row }">
+                    {{ row.exif_time ? formatDate(row.exif_time) : '—' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="上传时间" width="160">
+                  <template #default="{ row }">
+                    {{ formatDate(row.created_at) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="类型" width="80">
+                  <template #default="{ row }">
+                    {{ getFileType(row.file_name) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="150" fixed="right">
+                  <template #default="{ row }">
+                    <div class="row-actions">
+                      <el-button
+                        type="primary"
+                        link
+                        size="small"
+                        @click.stop="handleDownloadClick(row)"
+                      >
+                        下载
+                      </el-button>
+                      <el-button
+                        type="danger"
+                        link
+                        size="small"
+                        @click.stop="handleDeleteFile(row)"
+                      >
+                        移入回收站
+                      </el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+              </div>
+            </div>
+
+            <!-- Pagination -->
+            <div v-if="totalFiles > pageSize" class="pagination-container">
+              <el-pagination
+                v-model:current-page="currentPage"
+                :page-size="pageSize"
+                :total="totalFiles"
+                layout="prev, pager, next, total"
+                @current-change="handlePageChange"
+              />
+            </div>
+          </template>
+        </div>
       </el-main>
     </el-container>
 
@@ -310,28 +312,28 @@
     <teleport to="body">
       <div
         v-if="contextMenu.visible"
-        class="context-menu"
+        class="pv-context-menu"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
         <template v-if="contextMenu.type === 'file'">
-          <div class="context-menu-item" @click="handleContextDownload">
+          <div class="pv-context-menu__item" @click="handleContextDownload">
             <el-icon><Download /></el-icon>
             下载
           </div>
-          <div class="context-menu-item danger" @click="handleContextDelete">
+          <div class="pv-context-menu__item is-danger" @click="handleContextDelete">
             <el-icon><Delete /></el-icon>
             移入回收站
           </div>
         </template>
         <template v-else-if="contextMenu.type === 'directory'">
-          <div class="context-menu-item danger" @click="handleContextDelete">
+          <div class="pv-context-menu__item is-danger" @click="handleContextDelete">
             <el-icon><Delete /></el-icon>
             移入回收站
           </div>
         </template>
       </div>
-      <div v-if="contextMenu.visible" class="context-menu-overlay" @click="closeContextMenu" />
+      <div v-if="contextMenu.visible" class="pv-context-menu__overlay" @click="closeContextMenu" />
     </teleport>
   </div>
 </template>
@@ -349,6 +351,7 @@ import {
   Delete,
   Download,
   Check,
+  Picture,
   VideoPlay,
 } from '@element-plus/icons-vue'
 import type { ElTree, ElTable } from 'element-plus'
@@ -366,6 +369,8 @@ import type { DirectoryInfo, FileInfo } from '@/api/files'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImagePreview from '@/components/ImagePreview.vue'
 import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import { isVideo, isMotionPhoto, handleThumbnailError } from '@/utils/media'
 import { useTrashStore } from '@/stores/trash'
 import { useConfigStore } from '@/stores/config'
 
@@ -790,29 +795,6 @@ function getFileType(fileName: string): string {
   return typeMap[ext] || ext.toUpperCase()
 }
 
-const VIDEO_EXTENSIONS = [
-  'mp4', 'mov', 'mkv', 'webm', '3gp', 'avi', 'mpeg', 'mpg',
-  'wmv', 'flv', 'm4v', 'ts', 'm2ts', 'mts',
-]
-
-function isVideo(file: FileInfo): boolean {
-  if ((file.media_type || '').toLowerCase() === 'video') return true
-  if (file.mime_type && file.mime_type.toLowerCase().startsWith('video/')) return true
-  const ext = file.file_name.split('.').pop()?.toLowerCase() || ''
-  return VIDEO_EXTENSIONS.includes(ext)
-}
-
-function isMotionPhoto(file: FileInfo): boolean {
-  return !isVideo(file) && !!file.is_motion_photo
-}
-
-function handleThumbnailError(e: Event) {
-  const img = e.target as HTMLImageElement
-  img.src = 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect fill="#f0f0f0" width="200" height="200"/><text x="100" y="100" text-anchor="middle" fill="#999" font-size="14">无缩略图</text></svg>'
-  )
-}
-
 // Initialize
 onMounted(() => {
   configStore.ensureLoaded()
@@ -827,10 +809,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.photos-view {
-  height: 100%;
-}
-
+/* 照片瓦片（pv-tile）、右键菜单（pv-context-menu）、区块标题（pv-section-title）、
+   加载态（pv-loading）均来自 styles/layout.css，本页只保留目录树侧栏与
+   目录卡片、列表视图这些独有的样式。 */
+.photos-view,
 .photos-container {
   height: 100%;
 }
@@ -838,7 +820,7 @@ onBeforeUnmount(() => {
 /* Sidebar */
 .directory-sidebar {
   background: #fff;
-  border-right: 1px solid #e4e7ed;
+  border-right: 1px solid var(--pv-divider-color);
   overflow-y: auto;
 }
 
@@ -846,8 +828,8 @@ onBeforeUnmount(() => {
   padding: 12px 16px;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
-  border-bottom: 1px solid #e4e7ed;
+  color: var(--el-text-color-primary);
+  border-bottom: 1px solid var(--pv-divider-color);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -885,19 +867,8 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: nowrap;
-}
-
-.row-actions .el-button {
-  margin: 0;
-}
-
 .tree-node-count {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   padding: 0 6px;
   min-width: 18px;
@@ -909,66 +880,26 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-/* Content area */
+/* 右侧内容区：标题栏固定，内容自己滚动（pv-page-head / pv-page-body），
+   与探索页、分类照片页的行为一致。 */
 .content-area {
-  padding: 16px;
-  overflow-y: auto;
-}
-
-/* Toolbar */
-.toolbar {
+  padding: 0;
+  overflow: hidden;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-  padding: 8px 12px;
-  background: #fff;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  flex-direction: column;
 }
 
-.toolbar-left {
-  display: flex;
-  align-items: center;
-}
-
-.toolbar-left :deep(.el-breadcrumb__item) {
+/* 面包屑在标题栏里作为副信息展示 */
+.path-breadcrumb :deep(.el-breadcrumb__item),
+.path-breadcrumb :deep(.el-breadcrumb__inner) {
   cursor: pointer;
 }
 
-.toolbar-left :deep(.el-breadcrumb__inner) {
-  cursor: pointer;
-}
-
-.toolbar-left :deep(.el-breadcrumb__inner:hover) {
+.path-breadcrumb :deep(.el-breadcrumb__inner:hover) {
   color: var(--el-color-primary);
 }
 
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-/* Loading */
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 12px;
-  color: #909399;
-}
-
 /* Directories */
-.section-title {
-  font-size: 13px;
-  color: #909399;
-  margin-bottom: 12px;
-  font-weight: 500;
-}
-
 .directories-section {
   margin-bottom: 24px;
 }
@@ -976,7 +907,7 @@ onBeforeUnmount(() => {
 .directories-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  gap: var(--pv-gap);
 }
 
 .directory-card {
@@ -985,16 +916,16 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 12px 16px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: var(--pv-radius);
   cursor: pointer;
-  transition: all 0.2s;
-  border: 1px solid #e4e7ed;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  border: 1px solid var(--pv-divider-color);
   position: relative;
 }
 
 .directory-card:hover {
   border-color: var(--el-color-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--pv-hover-shadow);
 }
 
 .directory-info {
@@ -1006,7 +937,7 @@ onBeforeUnmount(() => {
 
 .directory-name {
   font-size: 14px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1014,183 +945,26 @@ onBeforeUnmount(() => {
 
 .directory-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
-/* Files grid */
+/* Files */
 .files-section {
-  margin-bottom: 16px;
-}
-
-.files-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
-}
-
-.file-card {
-  position: relative;
-  border-radius: 8px;
-  overflow: hidden;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e4e7ed;
-  transition: all 0.2s;
-  aspect-ratio: 1;
-}
-
-.file-card:hover {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.file-card:hover .file-overlay {
-  opacity: 1;
-}
-
-.file-card.is-selected {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 0 0 2px var(--el-color-primary);
-}
-
-.file-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 2;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.9);
-  background: rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 13px;
-  opacity: 0;
-  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s;
-  cursor: pointer;
-}
-
-.file-card:hover .file-checkbox,
-.file-checkbox.is-checked {
-  opacity: 1;
-}
-
-.file-checkbox:hover {
-  background: rgba(0, 0, 0, 0.4);
-}
-
-.file-checkbox.is-checked {
-  background: var(--el-color-primary);
-  border-color: var(--el-color-primary);
-}
-
-.selection-count {
-  font-size: 13px;
-  color: #606266;
-  margin-right: 4px;
-  white-space: nowrap;
-}
-
-.file-thumbnail {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f5f7fa;
-  position: relative;
-}
-
-.file-thumbnail img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.video-badge {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.live-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  pointer-events: none;
-}
-
-.live-badge .live-icon {
-  font-size: 13px;
-}
-
-.hdr-badge {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  padding: 0 3px;
-  border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  background: rgba(0, 0, 0, 0.4);
-  color: #fff;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  line-height: 1.5;
-  pointer-events: none;
-}
-
-.file-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 8px 10px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
-  color: #fff;
-  opacity: 0;
-  transition: opacity 0.2s;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.file-name {
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-size {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: var(--pv-page-gutter);
 }
 
 /* List view */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.row-actions .el-button {
+  margin: 0;
+}
+
 .list-thumbnail {
   width: 40px;
   height: 40px;
@@ -1219,48 +993,5 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   padding: 20px 0;
-}
-
-/* Context Menu */
-.context-menu-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 999;
-}
-
-.context-menu {
-  position: fixed;
-  z-index: 1000;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 6px 0;
-  min-width: 140px;
-}
-
-.context-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  font-size: 14px;
-  color: #303133;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.context-menu-item:hover {
-  background: #f5f7fa;
-}
-
-.context-menu-item.danger {
-  color: var(--el-color-danger);
-}
-
-.context-menu-item.danger:hover {
-  background: var(--el-color-danger-light-9);
 }
 </style>

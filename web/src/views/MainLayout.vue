@@ -166,17 +166,23 @@ function handleLogout() {
 </script>
 
 <style scoped>
+/* --pv-topbar-height 与 --pv-divider-color 是全局 token（styles/layout.css）：
+   logo 底边线与顶栏底边线共用同一高度，保证两条线严格对齐；
+   所有分隔线共用同一颜色与 1px 宽度，避免粗细/深浅不一致。 */
 .main-layout {
   height: 100vh;
 }
 
 .logo {
-  padding: 16px;
+  height: var(--pv-topbar-height);
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-bottom: 1px solid #e6e6e6;
+  border-bottom: 1px solid var(--pv-divider-color);
 }
 
 .logo-icon {
@@ -193,16 +199,31 @@ function handleLogout() {
 }
 
 .el-aside {
+  display: flex;
+  flex-direction: column;
+  /* 菜单区域内部滚动，避免整个侧栏滚动时分隔线被滚动条打断 */
+  overflow: hidden;
   background: #fff;
-  border-right: 1px solid #e6e6e6;
+  border-right: 1px solid var(--pv-divider-color);
+}
+
+/* Element Plus 的 el-menu 自带 border-right，与 el-aside 的右边框叠加会形成
+   2px 且颜色更深的“双线”，只在菜单区域出现，导致上下粗细不一。这里去掉，
+   侧栏右侧只保留 el-aside 的一条 1px 分隔线，从上到下完全一致。 */
+.el-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: none;
 }
 
 .el-header {
+  height: var(--pv-topbar-height);
   display: flex;
   align-items: center;
   justify-content: flex-end;
   background: #fff;
-  border-bottom: 1px solid #e6e6e6;
+  border-bottom: 1px solid var(--pv-divider-color);
 }
 
 .header-content {
@@ -220,7 +241,11 @@ function handleLogout() {
   font-size: 14px;
 }
 
+/* 内边距归零，改由各页面自己用统一的 --pv-page-gutter 控制。
+   此前 el-main 的 20px 会和「页面自己又写了一份 padding」叠加，
+   导致设备管理/用户管理/回收站是 40px，而图片浏览/时间线是 20px。 */
 .el-main {
+  padding: 0;
   background: #f5f7fa;
 }
 

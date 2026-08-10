@@ -1,38 +1,37 @@
 <template>
-  <div class="explore-view">
+  <div class="pv-page--fill">
     <!-- Top bar: title + library filter + manage entry -->
-    <div class="explore-toolbar">
-      <div class="toolbar-left">
-        <el-icon :size="20"><Compass /></el-icon>
-        <span class="toolbar-title">探索</span>
-        <span class="library-label">图库：</span>
-        <el-select
-          v-model="library"
-          size="default"
-          class="library-filter"
-          placeholder="全部图库"
-          @change="reloadAll"
-        >
-          <el-option label="全部图库" value="" />
-          <el-option
-            v-for="dev in devices"
-            :key="dev.name"
-            :label="dev.name"
-            :value="dev.name"
-          />
-        </el-select>
-        <el-button @click="goManage">
-          <el-icon><Setting /></el-icon>
-          管理
-        </el-button>
-      </div>
+    <div class="pv-page-head">
+      <PageHeader title="探索" :icon="Compass">
+        <template #extra>
+          <span class="library-label">图库</span>
+          <el-select
+            v-model="library"
+            class="library-filter"
+            placeholder="全部图库"
+            @change="reloadAll"
+          >
+            <el-option label="全部图库" value="" />
+            <el-option
+              v-for="dev in devices"
+              :key="dev.name"
+              :label="dev.name"
+              :value="dev.name"
+            />
+          </el-select>
+          <el-button @click="goManage">
+            <el-icon><Setting /></el-icon>
+            管理
+          </el-button>
+        </template>
+      </PageHeader>
     </div>
 
-    <div class="explore-content">
+    <div class="pv-page-body">
       <!-- People section: circular avatars -->
       <section class="explore-section">
-        <div class="section-title">人物</div>
-        <div v-if="people.loading" class="section-loading">
+        <div class="pv-section-title">人物</div>
+        <div v-if="people.loading" class="pv-loading pv-loading--inline">
           <el-icon class="is-loading" :size="24"><Loading /></el-icon>
           <span>加载中...</span>
         </div>
@@ -54,7 +53,7 @@
                 :src="getThumbnailUrl(person.cover_file_id, 'small')"
                 :alt="person.name"
                 loading="lazy"
-                @error="handleThumbError"
+                @error="handleThumbnailError"
               />
               <el-icon v-else :size="32" class="person-placeholder"><User /></el-icon>
             </div>
@@ -65,8 +64,8 @@
 
       <!-- Places section: map entry + city cards -->
       <section class="explore-section">
-        <div class="section-title">地点</div>
-        <div v-if="places.loading" class="section-loading">
+        <div class="pv-section-title">地点</div>
+        <div v-if="places.loading" class="pv-loading pv-loading--inline">
           <el-icon class="is-loading" :size="24"><Loading /></el-icon>
           <span>加载中...</span>
         </div>
@@ -94,7 +93,7 @@
                   :src="getThumbnailUrl(place.cover_file_id, 'small')"
                   :alt="place.city"
                   loading="lazy"
-                  @error="handleThumbError"
+                  @error="handleThumbnailError"
                 />
                 <el-icon v-else :size="28" class="cover-placeholder"><Picture /></el-icon>
               </div>
@@ -111,8 +110,8 @@
 
       <!-- Scenes section: rectangular cards -->
       <section class="explore-section">
-        <div class="section-title">场景</div>
-        <div v-if="scenes.loading" class="section-loading">
+        <div class="pv-section-title">场景</div>
+        <div v-if="scenes.loading" class="pv-loading pv-loading--inline">
           <el-icon class="is-loading" :size="24"><Loading /></el-icon>
           <span>加载中...</span>
         </div>
@@ -134,7 +133,7 @@
                 :src="getThumbnailUrl(scene.cover_file_id, 'small')"
                 :alt="scene.name_zh"
                 loading="lazy"
-                @error="handleThumbError"
+                @error="handleThumbnailError"
               />
               <el-icon v-else :size="28" class="cover-placeholder"><Picture /></el-icon>
             </div>
@@ -168,6 +167,8 @@ import {
   type SceneGroup,
 } from '@/api/explore'
 import { getDeviceStats, type DeviceStats } from '@/api/files'
+import PageHeader from '@/components/PageHeader.vue'
+import { handleThumbnailError } from '@/utils/media'
 
 const router = useRouter()
 
@@ -269,15 +270,6 @@ function openScene(scene: SceneGroup) {
   router.push({ name: 'ExploreScenes', params: { label: scene.label } })
 }
 
-function handleThumbError(e: Event) {
-  const img = e.target as HTMLImageElement
-  img.src =
-    'data:image/svg+xml,' +
-    encodeURIComponent(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect fill="#f0f0f0" width="200" height="200"/><text x="100" y="100" text-anchor="middle" fill="#999" font-size="14">无缩略图</text></svg>'
-    )
-}
-
 onMounted(() => {
   loadDevices()
   reloadAll()
@@ -285,78 +277,24 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.explore-view {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* Toolbar */
-.explore-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  background: #fff;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  margin: 16px 16px 0;
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+/* 页面骨架（pv-page--fill / pv-page-head / pv-page-body）、区块标题
+   （pv-section-title）与加载态（pv-loading）来自 styles/layout.css。 */
 
 .library-label {
   font-size: 14px;
-  color: #606266;
-  margin-left: 8px;
+  color: var(--el-text-color-regular);
 }
 
 .library-filter {
   width: 160px;
 }
 
-/* Content */
-.explore-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
 .explore-section {
   margin-bottom: 28px;
 }
 
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-  margin-bottom: 12px;
-}
-
-.section-loading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #909399;
-  padding: 24px 0;
-}
-
 .section-hint {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
   margin-top: 8px;
 }
@@ -389,7 +327,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--pv-divider-color);
   transition: box-shadow 0.2s;
 }
 
@@ -404,12 +342,12 @@ onMounted(() => {
 }
 
 .person-placeholder {
-  color: #c0c4cc;
+  color: var(--el-text-color-disabled);
 }
 
 .person-name {
   font-size: 13px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   max-width: 88px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -430,18 +368,18 @@ onMounted(() => {
 .place-cover {
   width: 140px;
   height: 100px;
-  border-radius: 8px;
+  border-radius: var(--pv-radius);
   overflow: hidden;
   background: #f0f0f0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--pv-divider-color);
   transition: box-shadow 0.2s;
 }
 
 .place-card:hover .place-cover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--pv-hover-shadow);
   border-color: var(--el-color-primary);
 }
 
@@ -452,7 +390,7 @@ onMounted(() => {
 }
 
 .cover-placeholder {
-  color: #c0c4cc;
+  color: var(--el-text-color-disabled);
 }
 
 .map-card .map-cover {
@@ -462,7 +400,7 @@ onMounted(() => {
 
 .place-name {
   font-size: 13px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -470,6 +408,6 @@ onMounted(() => {
 
 .place-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 </style>

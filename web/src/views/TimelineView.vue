@@ -45,151 +45,161 @@
 
       <!-- Right content area -->
       <el-main class="content-area">
-        <!-- Top toolbar: Date range filter -->
-        <div class="toolbar">
-          <div class="toolbar-left">
-            <el-icon><Calendar /></el-icon>
-            <span class="toolbar-title">时间线</span>
-            <span v-if="hasActiveFilters" class="filter-badge">
-              <el-icon><Filter /></el-icon>
-              已筛选 {{ activeFilterCount }} 项 · {{ totalPhotos }}/{{ allFiles.length }} 张
-            </span>
-            <span v-else-if="totalPhotos > 0" class="photo-total">共 {{ totalPhotos }} 张照片</span>
-          </div>
-          <div class="toolbar-right">
-            <el-button
-              v-if="hasActiveFilters"
-              type="primary"
-              :icon="RefreshLeft"
-              text
-              class="clear-filter-btn"
-              @click="resetFilters"
-            >
-              清除筛选
-            </el-button>
-            <el-select
-              v-model="selectedDevices"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              clearable
-              placeholder="设备"
-              :class="['filter-select', { 'filter-active': selectedDevices.length > 0 }]"
-              size="default"
-              @change="handleFilterChange"
-            >
-              <el-option
-                v-for="d in deviceOptions"
-                :key="d"
-                :label="d"
-                :value="d"
-              />
-            </el-select>
-            <el-select
-              v-model="selectedFormats"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              clearable
-              placeholder="文件格式"
-              :class="['filter-select', { 'filter-active': selectedFormats.length > 0 }]"
-              size="default"
-              @change="handleFilterChange"
-            >
-              <el-option
-                v-for="fmt in formatOptions"
-                :key="fmt"
-                :label="fmt"
-                :value="fmt"
-              />
-            </el-select>
-            <el-select
-              v-model="selectedFocals"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              clearable
-              placeholder="焦段"
-              :class="['filter-select', { 'filter-active': selectedFocals.length > 0 }]"
-              size="default"
-              @change="handleFilterChange"
-            >
-              <el-option
-                v-for="b in focalOptions"
-                :key="b.key"
-                :label="b.label"
-                :value="b.key"
-              />
-            </el-select>
-            <el-date-picker
-              v-model="dateRange"
-              type="daterange"
-              range-separator="至"
-              start-placeholder="开始日期"
-              end-placeholder="结束日期"
-              format="YYYY-MM-DD"
-              value-format="YYYY-MM-DD"
-              :clearable="true"
-              size="default"
-              popper-class="tl-date-popper"
-              :cell-class-name="dateCellClass"
-              :class="{ 'filter-active': !!(dateRange && dateRange[0]) }"
-              @change="handleFilterChange"
-            />
-          </div>
-        </div>
-
-        <!-- Loading state -->
-        <div v-if="loading" class="loading-container">
-          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-          <span>加载中...</span>
-        </div>
-
-        <!-- Empty state -->
-        <el-empty
-          v-else-if="groupedPhotos.length === 0"
-          description="暂无备份图片"
-        />
-
-        <!-- Grouped photos by year/month -->
-        <div v-else class="photos-content" ref="photosContentRef">
-          <div
-            v-for="group in groupedPhotos"
-            :key="`${group.year}-${group.month}`"
-            :ref="(el) => setSectionRef(group.year, group.month, el as HTMLElement)"
-            class="photo-group"
-          >
-            <div class="group-header">
-              <h3 class="group-title">{{ group.year }}年{{ group.month }}月</h3>
-              <span class="group-count">{{ group.files.length }} 张</span>
-            </div>
-            <div class="photos-grid">
-              <div
-                v-for="(file, fileIndex) in group.files"
-                :key="file.id"
-                class="photo-card"
-                @click="openPreview(group, fileIndex)"
-                @contextmenu="showContextMenu($event, file)"
+        <div class="pv-page-head">
+          <!-- Top toolbar: Date range filter -->
+          <PageHeader title="时间线" :icon="Timer">
+            <template #subtitle>
+              <span v-if="hasActiveFilters" class="filter-badge">
+                <el-icon><Filter /></el-icon>
+                已筛选 {{ activeFilterCount }} 项 · {{ totalPhotos }}/{{ allFiles.length }} 张
+              </span>
+              <span v-else-if="totalPhotos > 0" class="pv-muted">共 {{ totalPhotos }} 张照片</span>
+            </template>
+            <template #extra>
+              <el-button
+                v-if="hasActiveFilters"
+                type="primary"
+                :icon="RefreshLeft"
+                text
+                class="clear-filter-btn"
+                @click="resetFilters"
               >
-                <div class="photo-thumbnail">
-                  <img
-                    :src="getThumbnailUrl(file.id, 'small')"
-                    :alt="file.file_name"
-                    loading="lazy"
-                    @error="handleThumbnailError"
-                  />
-                  <div v-if="isVideo(file)" class="video-badge">
-                    <el-icon :size="28"><VideoPlay /></el-icon>
+                清除筛选
+              </el-button>
+              <el-select
+                v-model="selectedDevices"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                clearable
+                placeholder="设备"
+                :class="['filter-select', { 'filter-active': selectedDevices.length > 0 }]"
+                size="default"
+                @change="handleFilterChange"
+              >
+                <el-option
+                  v-for="d in deviceOptions"
+                  :key="d"
+                  :label="d"
+                  :value="d"
+                />
+              </el-select>
+              <el-select
+                v-model="selectedFormats"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                clearable
+                placeholder="文件格式"
+                :class="['filter-select', { 'filter-active': selectedFormats.length > 0 }]"
+                size="default"
+                @change="handleFilterChange"
+              >
+                <el-option
+                  v-for="fmt in formatOptions"
+                  :key="fmt"
+                  :label="fmt"
+                  :value="fmt"
+                />
+              </el-select>
+              <el-select
+                v-model="selectedFocals"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                clearable
+                placeholder="焦段"
+                :class="['filter-select', { 'filter-active': selectedFocals.length > 0 }]"
+                size="default"
+                @change="handleFilterChange"
+              >
+                <el-option
+                  v-for="b in focalOptions"
+                  :key="b.key"
+                  :label="b.label"
+                  :value="b.key"
+                />
+              </el-select>
+              <!-- el-date-picker 的根元素是它内部 el-tooltip 渲染出来的，拿不到
+                   本组件的 scoped 属性（所以此前直接写 .el-date-editor 的样式一直
+                   没生效）。这里套一层自己的 div，再用 :deep() 定宽和加高亮，
+                   否则 Element 的 flex-grow 会把控件拉满整行。 -->
+              <div
+                class="date-filter"
+                :class="{ 'is-active': !!(dateRange && dateRange[0]) }"
+              >
+                <el-date-picker
+                  v-model="dateRange"
+                  type="daterange"
+                  range-separator="至"
+                  start-placeholder="开始日期"
+                  end-placeholder="结束日期"
+                  format="YYYY-MM-DD"
+                  value-format="YYYY-MM-DD"
+                  :clearable="true"
+                  size="default"
+                  popper-class="tl-date-popper"
+                  :cell-class-name="dateCellClass"
+                  @change="handleFilterChange"
+                />
+              </div>
+            </template>
+          </PageHeader>
+        </div>
+
+        <div class="pv-page-body">
+          <!-- Loading state -->
+          <div v-if="loading" class="pv-loading">
+            <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+            <span>加载中...</span>
+          </div>
+
+          <!-- Empty state -->
+          <el-empty
+            v-else-if="groupedPhotos.length === 0"
+            description="暂无备份图片"
+          />
+
+          <!-- Grouped photos by year/month -->
+          <div v-else class="photos-content" ref="photosContentRef">
+            <div
+              v-for="group in groupedPhotos"
+              :key="`${group.year}-${group.month}`"
+              :ref="(el) => setSectionRef(group.year, group.month, el as HTMLElement)"
+              class="photo-group"
+            >
+              <div class="group-header">
+                <h3 class="pv-group-title">{{ group.year }}年{{ group.month }}月</h3>
+                <span class="pv-muted">{{ group.files.length }} 张</span>
+              </div>
+              <div class="pv-photo-grid">
+                <div
+                  v-for="(file, fileIndex) in group.files"
+                  :key="file.id"
+                  class="pv-tile"
+                  @click="openPreview(group, fileIndex)"
+                  @contextmenu="showContextMenu($event, file)"
+                >
+                  <div class="pv-tile__media">
+                    <img
+                      :src="getThumbnailUrl(file.id, 'small')"
+                      :alt="file.file_name"
+                      loading="lazy"
+                      @error="handleThumbnailError"
+                    />
+                    <div v-if="isVideo(file)" class="pv-tile__video">
+                      <el-icon :size="28"><VideoPlay /></el-icon>
+                    </div>
+                    <div v-else-if="isMotionPhoto(file)" class="pv-tile__live">
+                      <LivePhotoIcon class="pv-tile__live-icon" />
+                      <span>LIVE</span>
+                    </div>
+                    <div v-if="file.is_ultra_hdr" class="pv-tile__hdr" title="Ultra HDR">HDR</div>
                   </div>
-                  <div v-else-if="isMotionPhoto(file)" class="live-badge">
-                    <LivePhotoIcon class="live-icon" />
-                    <span>LIVE</span>
+                  <div class="pv-tile__overlay">
+                    <span class="pv-tile__name">{{ file.file_name }}</span>
+                    <span class="pv-tile__meta">{{ formatShortDate(file.exif_time || file.created_at) }}</span>
                   </div>
-                  <div v-if="file.is_ultra_hdr" class="hdr-badge" title="Ultra HDR">HDR</div>
-                </div>
-                <div class="photo-overlay">
-                  <span class="photo-name">{{ file.file_name }}</span>
-                  <span class="photo-date">{{ formatShortDate(file.exif_time || file.created_at) }}</span>
                 </div>
               </div>
             </div>
@@ -202,20 +212,20 @@
     <teleport to="body">
       <div
         v-if="contextMenu.visible"
-        class="context-menu"
+        class="pv-context-menu"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
-        <div class="context-menu-item" @click="handleContextDownload">
+        <div class="pv-context-menu__item" @click="handleContextDownload">
           <el-icon><Download /></el-icon>
           下载
         </div>
-        <div class="context-menu-item danger" @click="handleContextDelete">
+        <div class="pv-context-menu__item is-danger" @click="handleContextDelete">
           <el-icon><Delete /></el-icon>
           移入回收站
         </div>
       </div>
-      <div v-if="contextMenu.visible" class="context-menu-overlay" @click="closeContextMenu" />
+      <div v-if="contextMenu.visible" class="pv-context-menu__overlay" @click="closeContextMenu" />
     </teleport>
 
     <!-- Image Preview Lightbox -->
@@ -229,12 +239,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { Timer, ArrowRight, Calendar, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay } from '@element-plus/icons-vue'
+import { Timer, ArrowRight, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listAllFiles, getThumbnailUrl, downloadFile, deleteFile } from '@/api/files'
 import type { FileInfo } from '@/api/files'
 import ImagePreview from '@/components/ImagePreview.vue'
 import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import { isVideo, isMotionPhoto, handleThumbnailError } from '@/utils/media'
 import { useTrashStore } from '@/stores/trash'
 import { useConfigStore } from '@/stores/config'
 
@@ -540,31 +552,6 @@ function formatShortDate(dateStr: string | undefined | null): string {
   return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
-const VIDEO_EXTENSIONS = [
-  'mp4', 'mov', 'mkv', 'webm', '3gp', 'avi', 'mpeg', 'mpg',
-  'wmv', 'flv', 'm4v', 'ts', 'm2ts', 'mts',
-]
-
-function isVideo(file: FileInfo): boolean {
-  if ((file.media_type || '').toLowerCase() === 'video') return true
-  if (file.mime_type && file.mime_type.toLowerCase().startsWith('video/')) return true
-  const ext = file.file_name.split('.').pop()?.toLowerCase() || ''
-  return VIDEO_EXTENSIONS.includes(ext)
-}
-
-function isMotionPhoto(file: FileInfo): boolean {
-  return !isVideo(file) && !!file.is_motion_photo
-}
-
-function handleThumbnailError(e: Event) {
-  const img = e.target as HTMLImageElement
-  img.src =
-    'data:image/svg+xml,' +
-    encodeURIComponent(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect fill="#f0f0f0" width="200" height="200"/><text x="100" y="100" text-anchor="middle" fill="#999" font-size="14">无缩略图</text></svg>'
-    )
-}
-
 function showContextMenu(event: MouseEvent, file: FileInfo) {
   event.preventDefault()
   event.stopPropagation()
@@ -655,10 +642,10 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.timeline-view {
-  height: 100%;
-}
-
+/* 照片瓦片（pv-tile）、右键菜单（pv-context-menu）、加载态（pv-loading）、
+   分组标题（pv-group-title）均来自 styles/layout.css，本页只保留时间轴侧栏
+   与筛选器这些独有的样式。 */
+.timeline-view,
 .timeline-container {
   height: 100%;
 }
@@ -666,7 +653,7 @@ onMounted(() => {
 /* Time sidebar */
 .time-sidebar {
   background: #fff;
-  border-right: 1px solid #e4e7ed;
+  border-right: 1px solid var(--pv-divider-color);
   overflow-y: auto;
 }
 
@@ -674,8 +661,8 @@ onMounted(() => {
   padding: 12px 16px;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
-  border-bottom: 1px solid #e4e7ed;
+  color: var(--el-text-color-primary);
+  border-bottom: 1px solid var(--pv-divider-color);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -711,7 +698,7 @@ onMounted(() => {
   font-size: 12px;
   transition: transform 0.2s;
   margin-right: 6px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .expand-icon.expanded {
@@ -726,7 +713,7 @@ onMounted(() => {
 
 .year-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   background: #f0f2f5;
   padding: 1px 6px;
   border-radius: 10px;
@@ -762,7 +749,7 @@ onMounted(() => {
 
 .month-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 /* Expand transition */
@@ -784,54 +771,18 @@ onMounted(() => {
   max-height: 500px;
 }
 
-/* Content area */
+/* 右侧内容区：标题栏固定，照片自己滚动（pv-page-head / pv-page-body） */
 .content-area {
-  padding: 16px;
-  overflow-y: auto;
-}
-
-/* Toolbar */
-.toolbar {
+  padding: 0;
+  overflow: hidden;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-  padding: 10px 16px;
-  background: #fff;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  flex-wrap: wrap;
-  gap: 12px;
+  flex-direction: column;
 }
 
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toolbar-title {
-  font-size: 15px;
-  font-weight: 500;
-  color: #303133;
-}
-
-.photo-total {
-  font-size: 13px;
-  color: #909399;
-  margin-left: 8px;
-}
-
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
+/* Filters：宽度取到「1400px 视口下标题栏仍是一行」的上限，
+   更窄的窗口再靠 flex-wrap 换行降级。 */
 .filter-select {
-  width: 160px;
+  width: 140px;
 }
 
 /* Bright-blue selected tags inside the filter dropdowns */
@@ -857,8 +808,19 @@ onMounted(() => {
   background-color: #fff;
 }
 
+/* 日期区间控件：Element 的 .el-input__wrapper 带 flex-grow:1，在标题栏的
+   flex 容器里会被拉满整行，这里固定宽度让四个筛选器排成一行。 */
+.date-filter {
+  flex: 0 0 auto;
+  width: 280px;
+}
+
+.date-filter :deep(.el-date-editor) {
+  width: 100%;
+}
+
 /* Highlight the date range picker when a range is set */
-.el-date-editor.filter-active {
+.date-filter.is-active :deep(.el-date-editor) {
   box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
   background-color: var(--el-color-primary-light-9);
   border-radius: var(--el-border-radius-base);
@@ -868,12 +830,11 @@ onMounted(() => {
   font-weight: 500;
 }
 
-/* Active-filter badge in the toolbar header */
+/* Active-filter badge in the page header */
 .filter-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: 8px;
   padding: 2px 10px;
   font-size: 13px;
   font-weight: 500;
@@ -881,17 +842,6 @@ onMounted(() => {
   background: var(--el-color-primary-light-9);
   border: 1px solid var(--el-color-primary-light-5);
   border-radius: 12px;
-}
-
-/* Loading */
-.loading-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 0;
-  gap: 12px;
-  color: #909399;
 }
 
 /* Photo groups */
@@ -902,7 +852,7 @@ onMounted(() => {
 }
 
 .photo-group {
-  scroll-margin-top: 16px;
+  scroll-margin-top: var(--pv-page-gutter);
 }
 
 .group-header {
@@ -911,185 +861,7 @@ onMounted(() => {
   gap: 12px;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.group-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0;
-}
-
-.group-count {
-  font-size: 13px;
-  color: #909399;
-}
-
-/* Photos grid */
-.photos-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 10px;
-}
-
-.photo-card {
-  position: relative;
-  border-radius: 8px;
-  overflow: hidden;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e4e7ed;
-  transition: all 0.2s;
-  aspect-ratio: 1;
-}
-
-.photo-card:hover {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.photo-card:hover .photo-overlay {
-  opacity: 1;
-}
-
-.photo-thumbnail {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f5f7fa;
-  position: relative;
-}
-
-.photo-thumbnail img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.video-badge {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.live-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  pointer-events: none;
-}
-
-.live-badge .live-icon {
-  font-size: 13px;
-}
-
-.hdr-badge {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  padding: 0 3px;
-  border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  background: rgba(0, 0, 0, 0.4);
-  color: #fff;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  line-height: 1.5;
-  pointer-events: none;
-}
-
-.photo-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 8px 10px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
-  color: #fff;
-  opacity: 0;
-  transition: opacity 0.2s;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.photo-name {
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.photo-date {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.8);
-}
-
-/* Context menu */
-.context-menu-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 999;
-}
-
-.context-menu {
-  position: fixed;
-  z-index: 1000;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 6px 0;
-  min-width: 140px;
-}
-
-.context-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  font-size: 14px;
-  color: #303133;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.context-menu-item:hover {
-  background: #f5f7fa;
-}
-
-.context-menu-item.danger {
-  color: var(--el-color-danger);
-}
-
-.context-menu-item.danger:hover {
-  background: var(--el-color-danger-light-9);
+  border-bottom: 1px solid var(--pv-divider-color);
 }
 </style>
 

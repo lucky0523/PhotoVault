@@ -1,11 +1,11 @@
 <template>
-  <div class="trash-view">
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <h3>回收站</h3>
-        <span class="hint">文件将在 {{ configStore.trashRetentionDays }} 天后自动彻底删除</span>
-      </div>
-      <div class="toolbar-right">
+  <div class="trash-view pv-page">
+    <PageHeader
+      title="回收站"
+      :subtitle="`文件将在 ${configStore.trashRetentionDays} 天后自动彻底删除`"
+      :icon="DeleteFilled"
+    >
+      <template #extra>
         <el-button
           type="primary"
           :disabled="selectedItems.length === 0"
@@ -39,70 +39,75 @@
         >
           清空回收站
         </el-button>
+      </template>
+    </PageHeader>
+
+    <div class="trash-table-wrapper pv-panel">
+      <el-table
+        v-loading="loading"
+        :data="items"
+        style="width: 100%"
+        @selection-change="handleSelectionChange"
+      >
+        <el-table-column type="selection" width="40" />
+        <el-table-column label="预览" width="80">
+          <template #default="{ row }">
+            <img
+              :src="getThumbnailUrl(row.id, 'small')"
+              class="thumbnail"
+              @error="handleThumbnailError"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column prop="file_name" label="文件名" min-width="200" show-overflow-tooltip />
+        <el-table-column label="大小" width="100">
+          <template #default="{ row }">
+            {{ formatFileSize(row.file_size) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="display_path" label="原始路径" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="device_name" label="设备" width="120" />
+        <el-table-column label="删除时间" width="170">
+          <template #default="{ row }">
+            {{ formatDate(row.deleted_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="剩余时间" width="120">
+          <template #default="{ row }">
+            {{ formatRemainingTime(row.expires_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link @click="handleRestore(row)">恢复</el-button>
+            <el-button type="danger" link @click="handlePurge(row)">彻底删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div v-if="items.length === 0 && !loading" class="empty-state">
+        <el-empty description="回收站为空" />
       </div>
+
+      <el-pagination
+        v-if="total > pageSize"
+        class="pagination"
+        :current-page="currentPage"
+        :page-size="pageSize"
+        :total="total"
+        layout="prev, pager, next, total"
+        @current-change="handlePageChange"
+      />
     </div>
-
-    <el-table
-      v-loading="loading"
-      :data="items"
-      style="width: 100%"
-      @selection-change="handleSelectionChange"
-    >
-      <el-table-column type="selection" width="40" />
-      <el-table-column label="预览" width="80">
-        <template #default="{ row }">
-          <img
-            :src="getThumbnailUrl(row.id, 'small')"
-            class="thumbnail"
-            @error="handleImageError"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column prop="file_name" label="文件名" min-width="200" show-overflow-tooltip />
-      <el-table-column label="大小" width="100">
-        <template #default="{ row }">
-          {{ formatFileSize(row.file_size) }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="display_path" label="原始路径" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="device_name" label="设备" width="120" />
-      <el-table-column label="删除时间" width="170">
-        <template #default="{ row }">
-          {{ formatDate(row.deleted_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="剩余时间" width="120">
-        <template #default="{ row }">
-          {{ formatRemainingTime(row.expires_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
-        <template #default="{ row }">
-          <el-button type="primary" link @click="handleRestore(row)">恢复</el-button>
-          <el-button type="danger" link @click="handlePurge(row)">彻底删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-
-    <div v-if="items.length === 0 && !loading" class="empty-state">
-      <el-empty description="回收站为空" />
-    </div>
-
-    <el-pagination
-      v-if="total > pageSize"
-      class="pagination"
-      :current-page="currentPage"
-      :page-size="pageSize"
-      :total="total"
-      layout="prev, pager, next, total"
-      @current-change="handlePageChange"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { DeleteFilled } from '@element-plus/icons-vue'
+import PageHeader from '@/components/PageHeader.vue'
+import { handleThumbnailError } from '@/utils/media'
 import {
   listTrash,
   restoreFile,
@@ -148,11 +153,6 @@ async function loadTrash() {
 
 function handleSelectionChange(selection: TrashItem[]) {
   selectedItems.value = selection
-}
-
-function handleImageError(e: Event) {
-  const img = e.target as HTMLImageElement
-  img.style.display = 'none'
 }
 
 async function handleRestore(row: TrashItem) {
@@ -314,30 +314,11 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.trash-view {
-  padding: 20px;
-}
-
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.toolbar-left h3 {
-  margin: 0;
-}
-
-.hint {
-  color: #909399;
-  font-size: 13px;
+/* 表格放进白色面板，与用户管理页的表格保持同一层级语言 */
+.trash-table-wrapper {
+  margin-top: var(--pv-page-gutter);
+  padding: 4px 12px 12px;
+  overflow: hidden;
 }
 
 .thumbnail {

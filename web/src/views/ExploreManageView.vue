@@ -1,20 +1,23 @@
 <template>
-  <div class="explore-manage-view">
-    <el-page-header title="返回探索" @back="goBack">
-      <template #content>
-        <span class="header-content">
-          分析资源管理
-          <el-button
-            v-if="authStore.isAdmin"
-            type="primary"
-            :loading="reanalyzing"
-            @click="handleReanalyze"
-          >
-            重新分析
-          </el-button>
-        </span>
+  <div class="explore-manage-view pv-page">
+    <PageHeader
+      title="分析资源管理"
+      :icon="Setting"
+      back
+      back-text="返回探索"
+      @back="goBack"
+    >
+      <template #extra>
+        <el-button
+          v-if="authStore.isAdmin"
+          type="primary"
+          :loading="reanalyzing"
+          @click="handleReanalyze"
+        >
+          重新分析
+        </el-button>
       </template>
-    </el-page-header>
+    </PageHeader>
 
     <el-alert
       v-if="!authStore.isAdmin"
@@ -179,6 +182,8 @@ import { computed, reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
+import { Setting } from '@element-plus/icons-vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
   getResources,
@@ -479,26 +484,15 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.explore-manage-view {
-  padding: 20px;
-}
-
-.header-content {
-  display: inline-flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.admin-hint {
-  margin-top: 16px;
-}
-
-.runtime-warn {
-  margin-top: 16px;
-}
-
+.admin-hint,
+.runtime-warn,
 .status-card {
-  margin-top: 20px;
+  margin-top: var(--pv-page-gutter);
+}
+
+.status-card,
+.resource-card {
+  border-radius: var(--pv-radius);
 }
 
 .status-header {
@@ -526,7 +520,7 @@ onMounted(() => {
 .status-item {
   padding: 12px 16px;
   background: #f5f7fa;
-  border-radius: 8px;
+  border-radius: var(--pv-radius);
 }
 
 .status-title {
@@ -552,14 +546,15 @@ onMounted(() => {
 .status-warn {
   margin-top: 4px;
   font-size: 12px;
-  color: #e6a23c;
+  /* 用主题里的 Archive Amber，而不是 Element 默认的 #e6a23c */
+  color: var(--el-color-warning);
 }
 
 .resource-cards {
-  margin-top: 24px;
+  margin-top: var(--pv-page-gutter);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 20px;
+  gap: 16px;
   min-height: 200px;
 }
 

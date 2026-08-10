@@ -1,58 +1,51 @@
 <template>
-  <div class="devices-view">
-    <el-page-header title="设备管理">
-      <template #content>
-        <span>管理已备份的设备</span>
-      </template>
-    </el-page-header>
+  <div class="devices-view pv-page">
+    <PageHeader
+      title="设备管理"
+      subtitle="管理已备份的设备"
+      :icon="Monitor"
+    />
 
     <div v-loading="loading" class="devices-grid">
       <el-empty v-if="!loading && devices.length === 0" description="暂无备份设备" />
 
-      <el-row :gutter="20" v-if="devices.length > 0">
-        <el-col
+      <div v-else class="pv-card-grid">
+        <el-card
           v-for="device in devices"
           :key="device.path"
-          :xs="24"
-          :sm="12"
-          :md="8"
-          :lg="6"
+          class="device-card"
+          shadow="hover"
+          @click="navigateToDevice(device)"
         >
-          <el-card
-            class="device-card"
-            shadow="hover"
-            @click="navigateToDevice(device)"
-          >
-            <div class="device-header">
-              <el-icon :size="32" class="device-icon"><Monitor /></el-icon>
-              <span class="device-name">{{ device.name }}</span>
-            </div>
-            <div class="device-info">
-              <div class="status-row">
-                <div class="status-item">
-                  <span class="status-dot status-backed-up"></span>
-                  <span class="status-label">已备份</span>
-                  <span class="status-value">{{ device.backed_up_count }}</span>
-                </div>
-                <div class="status-item">
-                  <span class="status-dot status-trashed"></span>
-                  <span class="status-label">回收站</span>
-                  <span class="status-value">{{ device.trashed_count }}</span>
-                </div>
-                <div class="status-item">
-                  <span class="status-dot status-purged"></span>
-                  <span class="status-label">已删除</span>
-                  <span class="status-value">{{ device.purged_count }}</span>
-                </div>
+          <div class="device-header">
+            <el-icon :size="32" class="device-icon"><Monitor /></el-icon>
+            <span class="device-name">{{ device.name }}</span>
+          </div>
+          <div class="device-info">
+            <div class="status-row">
+              <div class="status-item">
+                <span class="status-dot status-backed-up"></span>
+                <span class="status-label">已备份</span>
+                <span class="status-value">{{ device.backed_up_count }}</span>
               </div>
-              <div class="info-item">
-                <span class="info-label">最后备份</span>
-                <span class="info-value">{{ formatDate(device.latest_file_time) }}</span>
+              <div class="status-item">
+                <span class="status-dot status-trashed"></span>
+                <span class="status-label">回收站</span>
+                <span class="status-value">{{ device.trashed_count }}</span>
+              </div>
+              <div class="status-item">
+                <span class="status-dot status-purged"></span>
+                <span class="status-label">已删除</span>
+                <span class="status-value">{{ device.purged_count }}</span>
               </div>
             </div>
-          </el-card>
-        </el-col>
-      </el-row>
+            <div class="info-item">
+              <span class="info-label">最后备份</span>
+              <span class="info-value">{{ formatDate(device.latest_file_time) }}</span>
+            </div>
+          </div>
+        </el-card>
+      </div>
     </div>
   </div>
 </template>
@@ -61,6 +54,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Monitor } from '@element-plus/icons-vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { getDeviceStats, formatDate } from '@/api/files'
 import type { DeviceStats } from '@/api/files'
 
@@ -89,18 +83,14 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.devices-view {
-  padding: 20px;
-}
-
 .devices-grid {
-  margin-top: 24px;
+  margin-top: var(--pv-page-gutter);
   min-height: 200px;
 }
 
 .device-card {
-  margin-bottom: 20px;
   cursor: pointer;
+  border-radius: var(--pv-radius);
   transition: transform 0.2s;
 }
 
@@ -140,7 +130,7 @@ onMounted(() => {
   gap: 8px;
   padding: 8px 0;
   margin-bottom: 4px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--pv-divider-color);
 }
 
 .status-item {
@@ -172,7 +162,9 @@ onMounted(() => {
 
 .status-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
+  /* 卡片较窄时「已备份」不要被折成两行 */
+  white-space: nowrap;
 }
 
 .status-value {

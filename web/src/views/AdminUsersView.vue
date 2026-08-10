@@ -1,17 +1,18 @@
 <template>
-  <div class="admin-users-view">
-    <el-page-header title="用户管理">
-      <template #content>
-        <span>管理系统用户（仅管理员可见）</span>
-      </template>
+  <div class="admin-users-view pv-page">
+    <PageHeader
+      title="用户管理"
+      subtitle="管理系统用户（仅管理员可见）"
+      :icon="UserFilled"
+    >
       <template #extra>
         <el-button type="primary" @click="showCreateDialog = true">
           创建用户
         </el-button>
       </template>
-    </el-page-header>
+    </PageHeader>
 
-    <div class="users-table-wrapper" v-loading="loading">
+    <div class="users-table-wrapper pv-panel" v-loading="loading">
       <el-table :data="users" stripe style="width: 100%">
         <el-table-column prop="username" label="用户名" min-width="120">
           <template #default="{ row }">
@@ -146,6 +147,8 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
+import { UserFilled } from '@element-plus/icons-vue'
+import PageHeader from '@/components/PageHeader.vue'
 import {
   listUsers,
   createUser,
@@ -323,13 +326,12 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.admin-users-view {
-  padding: 20px;
-}
-
+/* 表格放进白色面板里，和其他页面的卡片/面板保持同一层级语言 */
 .users-table-wrapper {
-  margin-top: 24px;
+  margin-top: var(--pv-page-gutter);
   min-height: 200px;
+  padding: 4px 12px 12px;
+  overflow: hidden;
 }
 
 .admin-badge {

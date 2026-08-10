@@ -1,0 +1,339 @@
+/**
+ * PhotoVault Web —— 布局与组件骨架的统一规范。
+ *
+ * theme.css 只负责「颜色语言」，本文件负责「尺寸语言」：
+ * 页面外边距、圆角、阴影、分隔线、标题层级、照片瓦片与卡片网格。
+ *
+ * 为什么放在全局而不是各视图的 scoped style 里：
+ * 这些类需要在所有页面里表现完全一致，一旦分散到 8 个 .vue 的 scoped 样式中，
+ * 就会像重构前那样出现「同一个元素在三个页面有三种圆角/间距/徽标位置」的问题。
+ * 全局类作用在带 scope 属性的元素上同样生效，所以视图侧只需写 class 名。
+ */
+:root {
+  /* ---------- 间距 ---------- */
+  --pv-page-gutter: 16px; /* 页面统一外边距（所有页面唯一取值） */
+  --pv-gap: 12px; /* 网格 / 卡片间距 */
+  --pv-topbar-height: 60px; /* 顶栏与侧栏 logo 区共用高度 */
+
+  /* ---------- 形状与描边 ---------- */
+  --pv-radius: 8px; /* 面板 / 卡片 / 瓦片统一圆角 */
+  --pv-divider-color: var(--el-border-color-light); /* 所有 1px 分隔线与卡片描边 */
+  --pv-panel-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); /* 静态面板 */
+  --pv-hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); /* 悬停抬起 */
+
+  /* ---------- 照片网格 ---------- */
+  --pv-tile-min: 180px; /* 照片瓦片最小列宽 */
+  --pv-card-min: 260px; /* 信息卡片最小列宽（设备 / 城市） */
+}
+
+/* =========================================================================
+   页面骨架
+   ---------------------------------------------------------------------- */
+
+/* 普通滚动型页面（设备管理 / 用户管理 / 回收站 / 分析资源管理）。 */
+.pv-page {
+  box-sizing: border-box;
+  padding: var(--pv-page-gutter);
+}
+
+/* 满高型页面（图片浏览 / 时间线 / 探索 / 分类照片）：自身不滚动，
+   由内部的 .pv-page-body 滚动，这样页面标题栏在四个页面里都能保持吸顶。 */
+.pv-page--fill {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* 标题栏所在的固定区。padding-bottom 交给 .pv-page-body 的 padding-top，
+   两者相加正好是一个 gutter，标题栏与内容的间距因此和页面边距一致。 */
+.pv-page-head {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: var(--pv-page-gutter) var(--pv-page-gutter) 0;
+}
+
+.pv-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: var(--pv-page-gutter);
+}
+
+/* =========================================================================
+   面板 / 区块标题
+   ---------------------------------------------------------------------- */
+
+.pv-panel {
+  background: #fff;
+  border-radius: var(--pv-radius);
+  box-shadow: var(--pv-panel-shadow);
+}
+
+/* 页面内的区块标签（文件夹 / 文件 / 人物 / 地点 / 场景）。 */
+.pv-section-title {
+  margin: 0 0 var(--pv-gap);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+/* 内容分组标题（时间线的「2026年8月」这类）。 */
+.pv-group-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.pv-muted {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+/* 统一的居中加载态。 */
+.pv-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 0;
+  color: var(--el-text-color-secondary);
+}
+
+/* 区块内的加载态：横排、占位更小（探索页三个分区各自加载时用）。 */
+.pv-loading--inline {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 24px 0;
+}
+
+/* =========================================================================
+   卡片网格（设备卡片 / 城市卡片）
+   ---------------------------------------------------------------------- */
+
+.pv-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--pv-card-min), 1fr));
+  gap: 16px;
+}
+
+/* =========================================================================
+   照片瓦片
+   图片浏览 / 时间线 / 分类照片三处此前各写了一套，圆角、徽标位置、遮罩
+   渐变都不一样。现在统一到这里，视图只负责决定显示哪些徽标。
+   ---------------------------------------------------------------------- */
+
+.pv-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--pv-tile-min), 1fr));
+  gap: var(--pv-gap);
+}
+
+.pv-tile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: var(--pv-radius);
+  border: 1px solid var(--pv-divider-color);
+  background: #fff;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pv-tile:hover {
+  border-color: var(--el-color-primary);
+  box-shadow: var(--pv-hover-shadow);
+}
+
+.pv-tile.is-selected {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px var(--el-color-primary);
+}
+
+.pv-tile__media {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f7fa;
+}
+
+.pv-tile__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 视频：居中播放键 */
+.pv-tile__video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* 动态照片：右上角 LIVE */
+.pv-tile__live {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.pv-tile__live-icon {
+  font-size: 13px;
+}
+
+/* Ultra HDR：右下角小标 */
+.pv-tile__hdr {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* 悬停时浮出的文件信息 */
+.pv-tile__overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.pv-tile:hover .pv-tile__overlay {
+  opacity: 1;
+}
+
+.pv-tile__name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-tile__meta {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* 多选圆勾（图片浏览的网格视图） */
+.pv-tile__check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+
+.pv-tile:hover .pv-tile__check,
+.pv-tile__check.is-checked {
+  opacity: 1;
+}
+
+.pv-tile__check:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.pv-tile__check.is-checked {
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+}
+
+/* =========================================================================
+   右键菜单（图片浏览 / 时间线共用，且被 teleport 到 body，
+   scoped 样式本就够不到，正好收敛到全局）
+   ---------------------------------------------------------------------- */
+
+.pv-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 140px;
+  padding: 6px 0;
+  background: #fff;
+  border-radius: var(--pv-radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.pv-context-menu__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+}
+
+.pv-context-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.pv-context-menu__item:hover {
+  background: #f5f7fa;
+}
+
+.pv-context-menu__item.is-danger {
+  color: var(--el-color-danger);
+}
+
+.pv-context-menu__item.is-danger:hover {
+  background: var(--el-color-danger-light-9);
+}
