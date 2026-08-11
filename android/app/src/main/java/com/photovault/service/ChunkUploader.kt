@@ -14,6 +14,7 @@ import com.photovault.data.api.model.UploadState
 import com.photovault.data.local.dao.UploadRecordDao
 import com.photovault.data.local.entity.PhotoStatusValue
 import com.photovault.data.local.entity.UploadRecord
+import com.photovault.util.DeviceNameProvider
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -301,9 +302,9 @@ class ChunkUploader @Inject constructor(
                 DuplicateCheckRequest(
                     fileHash = fileHash,
                     filePath = fileInfo.uri,
-                    // deviceName is unused by the hash-based check; fall back to a
-                    // constant so a null Build.MODEL can't break the request.
-                    deviceName = android.os.Build.MODEL ?: "android"
+                    // deviceName is unused by the hash-based check, but send the
+                    // same value as the upload path for log consistency.
+                    deviceName = DeviceNameProvider.deviceName
                 )
             )
             if (!response.isSuccessful) return null
@@ -462,7 +463,9 @@ class ChunkUploader @Inject constructor(
                     fileName = fileInfo.fileName,
                     fileSize = fileInfo.fileSize,
                     filePath = fileInfo.uri,
-                    deviceName = android.os.Build.MODEL,
+                    // Marketing name where the OEM publishes one, else Build.MODEL.
+                    // The server uses this verbatim as a storage directory segment.
+                    deviceName = DeviceNameProvider.deviceName,
                     sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
                     storagePolicy = storagePolicy,
                     exifTime = exifTime,

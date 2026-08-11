@@ -8,6 +8,7 @@ import com.photovault.data.api.model.StatusSyncItem
 import com.photovault.data.local.dao.PhotoStatusDao
 import com.photovault.data.local.entity.PhotoStatus
 import com.photovault.data.local.entity.PhotoStatusValue
+import com.photovault.util.DeviceNameProvider
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -220,9 +221,9 @@ class StatusSyncManager @Inject constructor(
                 DuplicateCheckRequest(
                     fileHash = fileHash,
                     filePath = filePath,
-                    // deviceName is unused by the hash-based check; fall back to a
-                    // constant so a null Build.MODEL can't break the request.
-                    deviceName = android.os.Build.MODEL ?: "android"
+                    // deviceName is unused by the hash-based check, but send the
+                    // same value as the upload path for log consistency.
+                    deviceName = DeviceNameProvider.deviceName
                 )
             )
             if (!response.isSuccessful) return null
