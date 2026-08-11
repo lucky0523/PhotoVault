@@ -5,10 +5,10 @@
 # 用法:
 #   ./run.sh                 # 默认 0.0.0.0:8000，开发模式（热重载）
 #   ./run.sh --prod          # 生产模式（无热重载，多 worker）
-#   HOST=127.0.0.1 PORT=9000 ./run.sh
+#   PHOTOVAULT_BIND_HOST=127.0.0.1 PORT=9000 ./run.sh
 #
 # 可通过环境变量覆盖:
-#   HOST                  监听地址      (默认 0.0.0.0)
+#   PHOTOVAULT_BIND_HOST  监听地址      (默认 0.0.0.0)
 #   PORT                  监听端口      (默认 8000)
 #   PHOTOVAULT_STORAGE_ROOT  存储根目录 (默认 ./dev_data)
 #
@@ -20,7 +20,9 @@ cd "$(dirname "$0")"
 # ---------------------------------------------------------------------------
 # 配置（可被环境变量覆盖）
 # ---------------------------------------------------------------------------
-HOST="${HOST:-0.0.0.0}"
+# 不使用通用的 HOST 环境变量：它常被终端或系统设为本机主机名，
+# 这会使 Uvicorn 不再监听全部网卡，导致局域网 IP 无法访问。
+BIND_HOST="${PHOTOVAULT_BIND_HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 VENV_DIR=".venv"
 export PHOTOVAULT_STORAGE_ROOT="${PHOTOVAULT_STORAGE_ROOT:-$(pwd)/dev_data}"
@@ -60,12 +62,34 @@ mkdir -p "$PHOTOVAULT_STORAGE_ROOT"
 # ---------------------------------------------------------------------------
 # 局域网 IP 提示
 # ---------------------------------------------------------------------------
-LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo '')"
+# 优先使用默认路由所走的网卡，避免在 VPN、多网卡环境中显示不可达地址。
+get_lan_ip() {
+    local interface ip
+    interface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+    if [ -n "$interface" ]; then
+        ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+        if [ -n "$ip" ]; then
+            printf '%s' "$ip"
+            return
+        fi
+    fi
+
+    for interface in en0 en1; do
+        ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+        if [ -n "$ip" ]; then
+            printf '%s' "$ip"
+            return
+        fi
+    done
+}
+
+LAN_IP="$(get_lan_ip)"
 
 echo "================================================================"
 echo " PhotoVault 服务端启动中 ($MODE 模式)"
 echo "----------------------------------------------------------------"
 echo " 存储目录 : $PHOTOVAULT_STORAGE_ROOT"
+echo " 监听地址 : $BIND_HOST:$PORT"
 echo " 本机访问 : http://localhost:$PORT"
 if [ -n "$LAN_IP" ]; then
     echo " 局域网/手机 : http://$LAN_IP:$PORT"
@@ -77,7 +101,7 @@ echo "================================================================"
 # 启动
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "prod" ]; then
-    exec uvicorn app.main:app --host "$HOST" --port "$PORT" --workers 4
+    exec uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --workers 4
 else
-    exec uvicorn app.main:app --host "$HOST" --port "$PORT" --reload
+    exec uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --reload
 fi
