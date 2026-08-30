@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# 卸载「前」执行。
+#
+# 刻意不做任何删除。PhotoVault 管的是用户的照片原件和绑定它们的 SQLite 元数据库
+# （去重记录、回收站状态、人脸聚类），这些都在共享目录里，属于用户资产。
+# 文档也要求卸载逻辑尊重用户数据。
+#
+# 这里只把数据位置写进日志，方便用户之后找回或重装后复用。
+#
+set -u
+
+LOG_FILE="${TRIM_PKGVAR}/app.log"
+DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+
+mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+{
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-UNINSTALL}] Uninstalling ${TRIM_APPVER:-?}"
+  echo "  照片与数据库保留在: ${DATA_DIR}"
+} >>"$LOG_FILE" 2>/dev/null
+
+exit 0

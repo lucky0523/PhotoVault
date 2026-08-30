@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# 安装文件应用「前」执行。
+#
+# 此时 $TRIM_APPDEST 下的应用文件还没就位，所以不能 source app/lib/env.sh，
+# 也不能假设任何应用文件存在。这里只做能提前发现、且能给出明确提示的检查。
+#
+set -u
+
+FAILLOG="${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+
+# 架构自检。manifest 的 platform 只能声明 x86 / arm / all，粒度比实际需要的粗：
+# 包里自带的 CPython 和 pip 下载的 manylinux wheel 都是按 x86_64 / aarch64 精确
+# 编译的。如果哪天 platform=arm 的包被装到 32 位 armv7 设备上，这里能提前拦住，
+# 而不是等到启动时报一个难懂的 ELF 加载错误。
+# manifest 的兼容类别用 x86 / arm；TRIM_SYS_ARCH 的具体字符串由系统提供，
+# 不同 fnOS 版本可能给 x86、x86_64 或 amd64。此前只接受后两种，若某个 x86_64
+# NAS 回传简写 x86，会在真正解包前被误判为不支持而安装失败。
+case "${TRIM_SYS_ARCH:-}" in
+  ""|x86|i386|i686|x86_64|amd64|aarch64|arm64)
+    ;;
+  *)
+    echo "PhotoVault 不支持当前设备架构: ${TRIM_SYS_ARCH}（仅支持 x86/x86_64 或 arm64/aarch64）" >"$FAILLOG"
+    exit 1
+    ;;
+esac
+
+exit 0

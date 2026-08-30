@@ -1,0 +1,17 @@
+#!/bin/bash
+#
+# 升级「前」执行。旧版本的应用文件还在。
+#
+# PhotoVault 的表结构迁移是服务端自己在启动时做的（core/database.py 的 init_db
+# 里一串幂等的 PRAGMA table_info + ALTER TABLE ADD COLUMN），所以这里不需要动
+# 数据库。只留一条版本变更记录，便于出问题时对照日志。
+#
+# 注意 init_db 只有加列、没有降级路径，所以降级安装旧版本是不安全的。
+#
+set -u
+
+LOG_FILE="${TRIM_PKGVAR}/app.log"
+mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-UPGRADE}] Upgrading ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?}" >>"$LOG_FILE" 2>/dev/null
+
+exit 0

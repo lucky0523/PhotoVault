@@ -1,0 +1,38 @@
+#!/bin/bash
+#
+# 用户在应用设置页修改配置「后」执行。
+#
+# PhotoVault 的这几项配置（allow_registration / max_users / trash_retention_days
+# / log_level）都是进程启动时一次性读入的，改完必须重启才生效。所以这里在应用
+# 原本处于运行状态时做一次重启；原本没运行就什么都不做，避免把用户没启动的应用
+# 悄悄拉起来。
+#
+set -u
+
+MAIN="$(dirname "$0")/main"
+LOG_FILE="${TRIM_PKGVAR}/app.log"
+
+log() {
+  mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-CONFIG}] $1" >>"$LOG_FILE" 2>/dev/null
+}
+
+if [ ! -x "$MAIN" ]; then
+  log "WARN: cmd/main not executable, skipping restart."
+  exit 0
+fi
+
+if "$MAIN" status >/dev/null 2>&1; then
+  log "Config changed, restarting to apply."
+  "$MAIN" stop  >/dev/null 2>&1
+  if ! "$MAIN" start; then
+    # main 已经把用户可见的原因写进了 TRIM_TEMP_LOGFILE
+    log "ERROR: restart after config change failed."
+    exit 1
+  fi
+  log "Restarted with new configuration."
+else
+  log "Config changed while stopped; new values apply on next start."
+fi
+
+exit 0

@@ -36,6 +36,11 @@ caddy_config
 config
 certs
 
+# Build output (scripts/build.sh 的产物；不排除的话上百 MB 的 fpk 包目录会被
+# 塞进 docker build context)
+build
+packaging
+
 # Environment files
 .env
 *.env.local

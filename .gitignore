@@ -34,6 +34,12 @@ ios/*.xcworkspace/
 ios/*.xcuserdata/
 ios/*.xcassets/*.xcasset/Contents.json
 
+# kmp
+kmp
+
+# Example
+AndroidLiquidGlass-Example
+
 # IDE
 .idea/
 .vscode/
@@ -55,6 +61,10 @@ logs/
 
 # Docker
 docker-compose.override.yml
+
+# Build output (Docker / 飞牛 fnOS fpk)
+build/
+*.fpk
 
 # OS
 .DS_Store

@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+# 卸载清理「后」执行。
+#
+# 同样不删任何用户数据，只做一次善后提示。TRIM_PKGETC / TRIM_PKGVAR 由系统按自己
+# 的策略处理；共享目录里的照片和数据库不属于本脚本的职责范围。
+#
+set -u
+
+DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+if [ -n "$DATA_DIR" ]; then
+  echo "PhotoVault 已卸载。照片与数据库仍保留在: ${DATA_DIR}" >"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+fi
+
+exit 0

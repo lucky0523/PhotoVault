@@ -41,6 +41,16 @@ WORKDIR /app
 COPY server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional analysis dependencies (onnxruntime / pillow-heif) for the
+# people / scenes dimensions. Off by default: it adds ~130MB to the image and
+# both features ship disabled (enable_scene / enable_face default to False).
+# Enable with: docker build --build-arg WITH_ANALYSIS=1 ...
+ARG WITH_ANALYSIS=0
+COPY server/requirements-analysis.txt ./
+RUN if [ "$WITH_ANALYSIS" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-analysis.txt; \
+    fi
+
 # Copy server application code
 COPY server/ ./
 

@@ -1,0 +1,59 @@
+[
+  {
+    "stepTitle": "PhotoVault 设置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "修改后会自动重启 PhotoVault。人物、地点、场景的识别开关请在 PhotoVault 网页端的「探索 - 管理」页调整。"
+      },
+      {
+        "type": "select",
+        "field": "wizard_allow_registration",
+        "label": "允许自助注册",
+        "initValue": "false",
+        "options": [
+          { "label": "关闭（仅管理员创建账号）", "value": "false" },
+          { "label": "开启", "value": "true" }
+        ],
+        "rules": [
+          { "required": true, "message": "请选择是否允许自助注册" }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_max_users",
+        "label": "最大用户数",
+        "initValue": "20",
+        "rules": [
+          { "required": true, "message": "请填写最大用户数" },
+          { "pattern": "^[1-9][0-9]*$", "message": "请填写大于 0 的整数" }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_trash_retention_days",
+        "label": "回收站保留天数",
+        "initValue": "30",
+        "rules": [
+          { "required": true, "message": "请填写回收站保留天数" },
+          { "pattern": "^[1-9][0-9]*$", "message": "请填写大于 0 的整数" }
+        ]
+      },
+      {
+        "type": "select",
+        "field": "wizard_log_level",
+        "label": "日志级别",
+        "initValue": "INFO",
+        "options": [
+          { "label": "DEBUG", "value": "DEBUG" },
+          { "label": "INFO", "value": "INFO" },
+          { "label": "WARNING", "value": "WARNING" },
+          { "label": "ERROR", "value": "ERROR" }
+        ],
+        "rules": [
+          { "required": true, "message": "请选择日志级别" }
+        ]
+      }
+    ]
+  }
+]

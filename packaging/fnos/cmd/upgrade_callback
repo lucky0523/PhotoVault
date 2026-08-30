@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# 升级「后」执行。新版本的应用文件已就位。
+#
+# 与 install_callback 做同样的幂等准备，外加一次密钥位置迁移：早期版本把
+# jwt_secret 放在 TRIM_PKGVAR，现在统一放 TRIM_PKGETC。不迁移的话升级后密钥会被
+# 重新生成，所有已登录的手机端和 Web 端 token 会一起失效。
+#
+set -u
+
+# shellcheck source=../app/lib/env.sh
+. "${TRIM_APPDEST}/lib/env.sh"
+
+pv_ensure_dirs
+pv_migrate_secret
+
+if ! pv_ensure_secret; then
+  pv_fail "升级后无法准备 JWT 密钥（Python 运行时: ${PV_PYTHON}）"
+  exit 1
+fi
+
+pv_log "Upgrade completed: ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?} (runtime=${PV_RUNTIME_MODE})"
+exit 0

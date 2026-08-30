@@ -1,0 +1,16 @@
+appname=photovault
+version=@@VERSION@@
+display_name=PhotoVault
+desc=手机图片备份系统，支持多设备备份、秒传去重、回收站与探索（人物/地点/场景）。
+source=thirdparty
+platform=all
+maintainer=PhotoVault
+distributor=PhotoVault
+install_dep_apps=python312
+service_port=@@PORT@@
+checkport=true
+ctl_stop=true
+desktop_uidir=ui
+desktop_applaunchname=photovault.main
+disable_authorization_path=true
+changelog=首个飞牛 fnOS Native 版本。

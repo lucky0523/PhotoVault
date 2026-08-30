@@ -1,0 +1,38 @@
+#!/bin/bash
+#
+# 用户在应用设置页修改配置「前」执行。
+#
+# wizard/config 里已经用 rules 做了一层前端校验，但文档明确要求把向导值当作不可信
+# 输入再校验一次，所以这里做服务端侧的兜底：非法值直接拒绝，并给出用户能看懂的
+# 原因，而不是让一个坏值进到启动命令里。
+#
+set -u
+
+FAILLOG="${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+
+reject() {
+  echo "$1" >"$FAILLOG"
+  exit 1
+}
+
+case "${wizard_allow_registration:-false}" in
+  true|false) ;;
+  *) reject "「允许自助注册」的取值无效: ${wizard_allow_registration}" ;;
+esac
+
+case "${wizard_max_users:-20}" in
+  ""|*[!0-9]*) reject "「最大用户数」必须是数字: ${wizard_max_users}" ;;
+  *) [ "$wizard_max_users" -ge 1 ] 2>/dev/null || reject "「最大用户数」必须大于 0" ;;
+esac
+
+case "${wizard_trash_retention_days:-30}" in
+  ""|*[!0-9]*) reject "「回收站保留天数」必须是数字: ${wizard_trash_retention_days}" ;;
+  *) [ "$wizard_trash_retention_days" -ge 1 ] 2>/dev/null || reject "「回收站保留天数」必须大于 0" ;;
+esac
+
+case "${wizard_log_level:-INFO}" in
+  DEBUG|INFO|WARNING|ERROR) ;;
+  *) reject "「日志级别」的取值无效: ${wizard_log_level}" ;;
+esac
+
+exit 0

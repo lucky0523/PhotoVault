@@ -1,0 +1,34 @@
+#!/bin/bash
+#
+# 安装文件应用「后」执行。应用文件此时已经就位。
+#
+# 把目录准备和密钥生成放在这里，而不是留给每次 start：
+#   - 安装失败能立刻通过 TRIM_TEMP_LOGFILE 反馈给用户，而不是表现为"装好了但启动不了"
+#   - cmd/main 里仍然保留同样的调用，因为文档要求脚本可重复执行，也为了兼容
+#     手工恢复、跨版本升级等 install_callback 没跑过的场景
+#
+set -u
+
+# shellcheck source=../app/lib/env.sh
+. "${TRIM_APPDEST}/lib/env.sh"
+
+pv_ensure_dirs
+
+if ! pv_ensure_secret; then
+  pv_fail "无法生成 JWT 密钥（Python 运行时: ${PV_PYTHON}）。请确认运行时依赖已正确安装。"
+  exit 1
+fi
+
+# 共享目录由系统在安装时创建并授予 ACL 权限。这里只验证，不创建。
+if [ -z "$PV_STORAGE_ROOT" ] || [ ! -d "$PV_STORAGE_ROOT" ]; then
+  pv_fail "共享数据目录未创建成功: '${PV_STORAGE_ROOT}'"
+  exit 1
+fi
+
+if ! pv_storage_writable; then
+  pv_fail "共享数据目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
+  exit 1
+fi
+
+pv_log "Install completed. runtime=${PV_RUNTIME_MODE} storage=${PV_STORAGE_ROOT} etc=${TRIM_PKGETC} var=${TRIM_PKGVAR}"
+exit 0

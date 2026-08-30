@@ -1,0 +1,184 @@
+#!/bin/bash
+#
+# PhotoVault 运行控制：start / stop / status
+#
+# 退出码约定（飞牛文档）：
+#   0  成功；在 status 中表示正在运行
+#   1  失败
+#   3  在 status 中表示未运行
+#
+# 安装后的包内布局（app/ 的内容会落到 ${TRIM_APPDEST}）:
+#
+#   /var/apps/python312/target/bin/python3  飞牛官方 Python 运行时（manifest 依赖）
+#   $TRIM_APPDEST/pylibs/                  pip install --target 的应用依赖
+#   $TRIM_APPDEST/server/app/main.py    FastAPI 应用
+#   $TRIM_APPDEST/web/dist/index.html   Vue 构建产物
+#   $TRIM_APPDEST/lib/env.sh            环境映射（本脚本 source 它）
+#
+# web/dist 的位置不能挪：server/app/main.py 从自身位置往上退三层再拼 "web/dist"
+# 来定位前端（app/main.py -> server/app -> server -> ${TRIM_APPDEST}），没有任何
+# 环境变量能覆盖这个路径。放错位置的表现是 Web UI 返回 404 "Frontend not found"。
+#
+set -u
+
+# shellcheck source=../app/lib/env.sh
+. "${TRIM_APPDEST}/lib/env.sh"
+
+is_running() {
+  [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+}
+
+read_pid() {
+  [ -f "$PV_PID_FILE" ] || return 1
+  head -n 1 "$PV_PID_FILE" 2>/dev/null | tr -d '[:space:]'
+}
+
+status_app() {
+  local pid
+  pid="$(read_pid)" || return 1
+  if is_running "$pid"; then
+    return 0
+  fi
+  # 有 PID 文件但进程已不在，清掉残留
+  rm -f "$PV_PID_FILE"
+  return 1
+}
+
+preflight() {
+  local missing=""
+  [ -x "$PV_PYTHON" ]                  || missing="${missing} Python 运行时 ($PV_PYTHON)"
+  [ -d "$PV_PYLIBS" ]                  || missing="${missing} 依赖目录 ($PV_PYLIBS)"
+  [ -f "$PV_SERVER_DIR/app/main.py" ]  || missing="${missing} 服务端代码 ($PV_SERVER_DIR/app/main.py)"
+  [ -f "$PV_WEB_DIR/index.html" ]      || missing="${missing} 前端资源 ($PV_WEB_DIR)"
+
+  if [ -n "$missing" ]; then
+    pv_fail "应用包不完整，缺少:${missing}"
+    return 1
+  fi
+
+  if [ -z "$PV_STORAGE_ROOT" ] || [ ! -d "$PV_STORAGE_ROOT" ]; then
+    pv_fail "共享数据目录不可用: '${PV_STORAGE_ROOT}'。请检查应用资源声明或重新安装。"
+    return 1
+  fi
+
+  if ! pv_storage_writable; then
+    pv_fail "共享数据目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
+    return 1
+  fi
+
+  if ! pv_ensure_secret; then
+    pv_fail "无法生成 JWT 密钥，详见 ${PV_LOG_FILE}"
+    return 1
+  fi
+
+  return 0
+}
+
+start_app() {
+  if status_app; then
+    pv_log "Already running (pid $(read_pid))."
+    return 0
+  fi
+
+  pv_ensure_dirs
+  pv_migrate_secret
+  preflight || return 1
+  pv_export_settings
+
+  # 视频封面是可选能力：服务端用 shutil.which("ffmpeg") 探测，缺失时只记一条
+  # 警告并跳过视频缩略图，不影响启动。
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    pv_log "WARN: ffmpeg not found on PATH, video thumbnails will be skipped."
+  fi
+
+  # CWD 必须是 server 目录：uvicorn 的 "app.main:app" 依赖它来导入模块，
+  # config.py 查找 .env / config.yaml 也基于 CWD。
+  cd "$PV_SERVER_DIR" || {
+    pv_fail "无法进入服务端目录: $PV_SERVER_DIR"
+    return 1
+  }
+
+  pv_log "Starting ${PV_APPNAME} ${TRIM_APPVER:-?} (runtime=${PV_RUNTIME_MODE}, port=${PV_PORT}, storage=${PV_STORAGE_ROOT})"
+
+  # --workers 1 是硬要求，不是保守设置：
+  #   - 图片分析队列是进程内的 asyncio.Queue（services/analysis_queue.py）
+  #   - 5 个周期性后台任务全在进程内（services/background_tasks.py）
+  # 多 worker 会得到多份互不相干的队列、多份重复的清理任务，并让多个进程同时写
+  # 同一个 SQLite 库。
+  "$PV_PYTHON" -m uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port "$PV_PORT" \
+    --workers 1 \
+    >>"$PV_LOG_FILE" 2>&1 &
+
+  local pid=$!
+  echo "$pid" >"$PV_PID_FILE"
+
+  # 端口被占、依赖缺失这类问题会让进程立刻退出。这里快速失败，让应用中心能拿到
+  # 明确的错误，而不是显示"已启动"然后页面打不开。
+  sleep 2
+  if ! is_running "$pid"; then
+    rm -f "$PV_PID_FILE"
+    pv_fail "PhotoVault 启动后立即退出，详见 ${PV_LOG_FILE}"
+    return 1
+  fi
+
+  pv_log "Started successfully (pid=${pid})."
+  return 0
+}
+
+stop_app() {
+  local pid
+  pid="$(read_pid)" || {
+    pv_log "No PID file, nothing to stop."
+    return 0
+  }
+
+  if [ -z "$pid" ] || ! is_running "$pid"; then
+    rm -f "$PV_PID_FILE"
+    pv_log "Process not running, cleaned up stale PID file."
+    return 0
+  fi
+
+  pv_log "Stopping (pid=${pid})..."
+  kill -TERM "$pid" 2>>"$PV_LOG_FILE" || true
+
+  # 关停时 FastAPI 的 lifespan 会 cancel 5 个后台任务并等它们收尾，给足时间。
+  local count=0
+  while is_running "$pid" && [ "$count" -lt 20 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+
+  if is_running "$pid"; then
+    pv_log "Did not exit on SIGTERM after ${count}s, sending SIGKILL."
+    kill -KILL "$pid" 2>>"$PV_LOG_FILE" || true
+    sleep 1
+  fi
+
+  rm -f "$PV_PID_FILE"
+  pv_log "Stopped."
+  return 0
+}
+
+case "${1:-}" in
+  start)
+    start_app
+    ;;
+  stop)
+    stop_app
+    ;;
+  restart)
+    stop_app && start_app
+    ;;
+  status)
+    if status_app; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    echo "Unknown command: ${1:-} (expected start|stop|status)" >"$PV_FAILLOG"
+    exit 1
+    ;;
+esac
