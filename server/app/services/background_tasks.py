@@ -51,6 +51,24 @@ def get_disk_stats() -> dict[str, float]:
     return _disk_stats.copy()
 
 
+def refresh_disk_stats(storage_root: Optional[str] = None) -> dict[str, float]:
+    """Recompute disk usage statistics immediately and return them.
+
+    The periodic monitor only refreshes once an hour, and it has not run at all
+    when the background tasks were never started (tests, or the first moments
+    after boot). The "关于服务端" page needs a real number rather than the
+    all-zeros initial state, so it can ask for a fresh reading.
+
+    Args:
+        storage_root: Directory to measure. Defaults to the configured root.
+
+    Returns:
+        Dictionary with keys: total_gb, used_gb, available_gb.
+    """
+    root = storage_root if storage_root is not None else get_settings().storage_root
+    return _check_disk_space(root)
+
+
 async def cleanup_expired_sessions_task(
     interval_seconds: int = CLEANUP_INTERVAL_SECONDS,
 ) -> None:

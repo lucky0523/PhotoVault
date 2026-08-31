@@ -19,6 +19,8 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import __version__
+
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -108,10 +110,12 @@ async def lifespan(app: FastAPI):
     """
     from app.core.database import startup_db, shutdown_db
     from app.core.logging import setup_logging
+    from app.core.runtime import mark_started
     from app.services.background_tasks import start_background_tasks, stop_background_tasks
 
     # --- Startup ---
     setup_logging()
+    mark_started()
     logger.info("PhotoVault server starting up...")
     await startup_db()
     background_tasks = await start_background_tasks()
@@ -133,7 +137,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="PhotoVault",
         description="手机图片备份系统服务端",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 

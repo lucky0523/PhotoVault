@@ -1,19 +1,26 @@
 """Server info API endpoints.
 
 Endpoints:
-- GET /api/v1/server/info  (LAN IP + port for QR code generation)
+- GET /api/v1/server/info   (LAN IP + port for QR code generation)
+- GET /api/v1/server/about  (version / runtime / storage info for 设置 → 关于服务端)
 """
 
 from __future__ import annotations
 
 import logging
+import platform
 import socket
-from typing import List
+import sys
+from typing import List, Optional
 
+import fastapi
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app import __version__
 from app.core.config import get_settings
+from app.core.network import detect_lan_ips
+from app.core.runtime import get_started_at, get_uptime_seconds
 from app.models.auth import UserInfo
 from app.core.security import get_current_user
 
@@ -39,6 +46,80 @@ class ServerInfoResponse(BaseModel):
     port: int
 
 
+class StorageInfo(BaseModel):
+    """Storage paths and disk usage. Admin-only."""
+
+    storage_root: str
+    database_path: str
+    log_dir: str
+    models_root: str
+    total_gb: float
+    used_gb: float
+    available_gb: float
+
+
+class ConfigInfo(BaseModel):
+    """Effective runtime configuration. Admin-only."""
+
+    max_users: int
+    allow_registration: bool
+    chunk_size_mb: int
+    session_expire_days: int
+    trash_retention_days: int
+    access_token_expire_hours: int
+    refresh_token_expire_days: int
+    log_level: str
+    enable_place: bool
+    enable_scene: bool
+    enable_face: bool
+
+
+class ServerAboutResponse(BaseModel):
+    """Everything the 关于服务端 page shows.
+
+    Split into "everyone" fields (version, runtime, host platform) and two
+    optional admin-only blocks. Absolute paths and the effective configuration
+    are infrastructure details a regular user has no reason to see, so
+    ``storage`` and ``config`` are ``None`` for non-admins and the page simply
+    omits those sections.
+    """
+
+    # Identity
+    name: str
+    version: str
+    api_version: str
+
+    # Runtime
+    started_at: str
+    uptime_seconds: float
+    python_version: str
+    fastapi_version: str
+    platform: str
+    machine: str
+    hostname: str
+
+    # Network
+    port: int
+    lan_ips: List[str]
+
+    # Admin-only detail
+    storage: Optional[StorageInfo] = None
+    config: Optional[ConfigInfo] = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_sqlite_scheme(database_url: str) -> str:
+    """Turn a SQLite URL into a plain filesystem path for display."""
+    for prefix in ("sqlite+aiosqlite://", "sqlite://"):
+        if database_url.startswith(prefix):
+            return database_url[len(prefix):]
+    return database_url
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -51,28 +132,73 @@ async def get_server_info(
     """Return the server's LAN IP addresses and port.
 
     Used by the web UI to render a QR code that mobile clients can scan.
-    Uses a UDP socket probe: connecting a UDP socket to a remote address
-    does not send any packets — it only lets the kernel pick the source
-    address for that route, which is the primary LAN IP.
     """
-    lan_ips: List[str] = []
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1.0)
-        try:
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            lan_ips.append(ip)
-        finally:
-            s.close()
-    except Exception:
-        pass
+    settings = get_settings()
+    return ServerInfoResponse(lan_ips=detect_lan_ips(), port=settings.server_port)
 
-    lan_ips = [
-        ip
-        for ip in lan_ips
-        if not ip.startswith("127.") and not ip.startswith("169.254.")
-    ]
+
+@router.get("/server/about", response_model=ServerAboutResponse)
+async def get_server_about(
+    current_user: UserInfo = Depends(get_current_user),
+) -> ServerAboutResponse:
+    """Return version, runtime and host information about this server.
+
+    Backs the 设置 → 关于服务端 page. Storage paths and the effective
+    configuration are only included for admin users.
+    """
+    from app.services.background_tasks import get_disk_stats, refresh_disk_stats
 
     settings = get_settings()
-    return ServerInfoResponse(lan_ips=lan_ips, port=settings.server_port)
+
+    storage: Optional[StorageInfo] = None
+    config: Optional[ConfigInfo] = None
+
+    if current_user.is_admin:
+        # The periodic monitor refreshes hourly and starts at all-zeros, so read
+        # the disk directly here and fall back to the cached values if that
+        # fails (unmounted volume, permission error).
+        try:
+            disk = refresh_disk_stats(settings.storage_root)
+        except Exception:
+            logger.warning("Could not refresh disk stats for /server/about", exc_info=True)
+            disk = get_disk_stats()
+
+        storage = StorageInfo(
+            storage_root=settings.storage_root,
+            database_path=_strip_sqlite_scheme(settings.database_url),
+            log_dir=settings.log_dir,
+            models_root=settings.models_root,
+            total_gb=disk.get("total_gb", 0.0),
+            used_gb=disk.get("used_gb", 0.0),
+            available_gb=disk.get("available_gb", 0.0),
+        )
+        config = ConfigInfo(
+            max_users=settings.max_users,
+            allow_registration=settings.allow_registration,
+            chunk_size_mb=settings.chunk_size_mb,
+            session_expire_days=settings.session_expire_days,
+            trash_retention_days=settings.trash_retention_days,
+            access_token_expire_hours=settings.access_token_expire_hours,
+            refresh_token_expire_days=settings.refresh_token_expire_days,
+            log_level=settings.log_level,
+            enable_place=settings.enable_place,
+            enable_scene=settings.enable_scene,
+            enable_face=settings.enable_face,
+        )
+
+    return ServerAboutResponse(
+        name="PhotoVault",
+        version=__version__,
+        api_version="v1",
+        started_at=get_started_at().isoformat(),
+        uptime_seconds=round(get_uptime_seconds(), 1),
+        python_version=platform.python_version() or sys.version.split()[0],
+        fastapi_version=fastapi.__version__,
+        platform=f"{platform.system()} {platform.release()}".strip(),
+        machine=platform.machine(),
+        hostname=socket.gethostname(),
+        port=settings.server_port,
+        lan_ips=detect_lan_ips(),
+        storage=storage,
+        config=config,
+    )

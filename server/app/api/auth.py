@@ -15,6 +15,7 @@ import logging
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app import __version__
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.validators import validate_password
@@ -136,4 +137,4 @@ async def connection_test() -> dict:
 
     Used by clients to verify server reachability.
     """
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": __version__}

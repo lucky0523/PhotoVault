@@ -34,9 +34,6 @@ ios/*.xcworkspace/
 ios/*.xcuserdata/
 ios/*.xcassets/*.xcasset/Contents.json
 
-# kmp
-kmp
-
 # Example
 AndroidLiquidGlass-Example
 

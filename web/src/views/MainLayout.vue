@@ -21,10 +21,6 @@
           <el-icon><Compass /></el-icon>
           <span>探索</span>
         </el-menu-item>
-        <el-menu-item index="/devices">
-          <el-icon><Monitor /></el-icon>
-          <span>设备管理</span>
-        </el-menu-item>
         <el-menu-item index="/trash">
           <el-icon><DeleteFilled /></el-icon>
           <span class="trash-menu-label">
@@ -34,10 +30,28 @@
             </span>
           </span>
         </el-menu-item>
-        <el-menu-item v-if="authStore.isAdmin" index="/admin/users">
-          <el-icon><UserFilled /></el-icon>
-          <span>用户管理</span>
-        </el-menu-item>
+
+        <!-- 设置：设备管理 / 用户管理 / 关于服务端。
+             el-sub-menu 的 index 只是分组标识，不参与路由；子项的 index 仍是
+             真实路径，所以进入任一子页面时父级会自动展开并高亮。 -->
+        <el-sub-menu index="settings">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>设置</span>
+          </template>
+          <el-menu-item index="/settings/devices">
+            <el-icon><Monitor /></el-icon>
+            <span>设备管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="authStore.isAdmin" index="/settings/users">
+            <el-icon><UserFilled /></el-icon>
+            <span>用户管理</span>
+          </el-menu-item>
+          <el-menu-item index="/settings/about">
+            <el-icon><InfoFilled /></el-icon>
+            <span>关于服务端</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 

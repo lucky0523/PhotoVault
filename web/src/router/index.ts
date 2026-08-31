@@ -64,21 +64,37 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/CategoryPhotosView.vue'),
       },
       {
-        path: 'devices',
-        name: 'Devices',
-        component: () => import('@/views/DevicesView.vue'),
-      },
-      {
         path: 'trash',
         name: 'Trash',
         component: () => import('@/views/TrashView.vue'),
       },
+
+      // --- 设置 ---------------------------------------------------------
+      // 设备管理与用户管理原本是侧边栏一级入口（/devices、/admin/users），
+      // 现在收敛到「设置」分组下。旧路径保留为重定向，这样已被收藏或写进
+      // 文档的链接不会失效。
       {
-        path: 'admin/users',
+        path: 'settings',
+        redirect: { name: 'Devices' },
+      },
+      {
+        path: 'settings/devices',
+        name: 'Devices',
+        component: () => import('@/views/DevicesView.vue'),
+      },
+      {
+        path: 'settings/users',
         name: 'AdminUsers',
         component: () => import('@/views/AdminUsersView.vue'),
         meta: { requiresAdmin: true },
       },
+      {
+        path: 'settings/about',
+        name: 'AboutServer',
+        component: () => import('@/views/AboutServerView.vue'),
+      },
+      { path: 'devices', redirect: { name: 'Devices' } },
+      { path: 'admin/users', redirect: { name: 'AdminUsers' } },
     ],
   },
 ]
