@@ -290,11 +290,13 @@ stage_fpk() {
     "$TPL_DIR/manifest" >"$pkg/manifest"
 
   # --- 2. 生命周期脚本（全部 9 个）---
+  # install_init 需要知道本包的目标架构：manifest 的 platform 固定为 all，只有
+  # 这里能在安装前判断「x86_64 的包被下到 ARM 设备上」并给出明确提示。
   local f
   for f in main install_init install_callback upgrade_init upgrade_callback \
            uninstall_init uninstall_callback config_init config_callback; do
     [ -f "$TPL_DIR/cmd/$f" ] || die "缺少生命周期脚本模板: packaging/fnos/cmd/$f"
-    cp "$TPL_DIR/cmd/$f" "$pkg/cmd/$f"
+    sed -e "s/@@BUILD_ARCH@@/$arch/g" "$TPL_DIR/cmd/$f" >"$pkg/cmd/$f"
     chmod 755 "$pkg/cmd/$f"
   done
 
@@ -460,7 +462,7 @@ verify_fpk() {
   assert "manifest.platform 固定为 all" test "$mf_platform" = "$fn_platform"
   assert "manifest.service_port 与 ui/config.port 一致 ($PORT)" \
          test "$mf_port" = "$PORT" -a "$ui_port" = "$PORT"
-  assert "没有残留未替换的 @@占位符@@" test -z "$(grep -l '@@' "$pkg/manifest" "$pkg/app/ui/config" "$pkg/app/lib/env.sh" 2>/dev/null || true)"
+  assert "没有残留未替换的 @@占位符@@" test -z "$(grep -l '@@' "$pkg/manifest" "$pkg/app/ui/config" "$pkg/app/lib/env.sh" "$pkg"/cmd/* 2>/dev/null || true)"
 
   assert "manifest 声明 install_dep_apps=${PYTHON_DEP_APP}" test "$mf_dep" = "$PYTHON_DEP_APP"
 
@@ -472,6 +474,12 @@ verify_fpk() {
     assert "cmd/$sc 语法正确"     bash -n "$pkg/cmd/$sc"
   done
   assert "app/lib/env.sh 语法正确" bash -n "$pkg/app/lib/env.sh"
+
+  # 安装前架构自检必须认得包自己的架构，否则要么误拦真机、要么放过错架构的包。
+  local ii_arch
+  ii_arch="$(sed -n 's/^BUILD_ARCH="\(.*\)"$/\1/p' "$pkg/cmd/install_init" | head -1)"
+  assert "cmd/install_init 记录的构建架构是 ${arch}（实际 ${ii_arch:-空}）" \
+         test "$ii_arch" = "$arch"
 
   # === 源码与前端 ===
   assert "服务端入口存在" test -f "$pkg/app/server/app/main.py"
@@ -594,6 +602,9 @@ verify_fpk_artifact() {
     assert "归档内 cmd/$sc 保留了可执行位" test -x "$tmpd/cmd/$sc"
   done
 
+  assert "归档内 cmd/install_init 记录的构建架构是 $arch" \
+         test "$(sed -n 's/^BUILD_ARCH="\(.*\)"$/\1/p' "$tmpd/cmd/install_init" | head -1)" = "$arch"
+
   # fnpack 重写后的 manifest 用 "key = value" 格式，取值时要容忍两侧空格
   mf_get() {
     sed -n "s/^$1[[:space:]]*=[[:space:]]*\(.*\)[[:space:]]*$/\1/p" "$tmpd/manifest" | head -1
@@ -677,9 +688,9 @@ build_fpk() {
     fi
     [ -f "$raw" ] || die "fnpack 返回成功但没生成 $raw ($arch)"
 
-    # 文件名包含版本与 manifest platform；实际 native wheel 的目标架构由上级目录
-    # build/fnos/x86_64 或 build/fnos/aarch64 表示。
-    fpk="$outdir/${APP_NAME}-${VERSION}-${FN_PLATFORM}.fpk"
+    # 文件名带上真实的目标架构。manifest 的 platform 固定为 all，两种架构的包
+    # 曾经同名（…-all.fpk），只靠上级目录区分，很容易把 x86_64 的包发给 ARM 用户。
+    fpk="$outdir/${APP_NAME}-${VERSION}-${arch}.fpk"
     mv -f "$raw" "$fpk"
 
     verify_fpk_artifact "$fpk" "$arch"

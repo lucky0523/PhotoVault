@@ -9,20 +9,61 @@ set -u
 
 FAILLOG="${TRIM_TEMP_LOGFILE:-/dev/stderr}"
 
-# 架构自检。manifest 的 platform 只能声明 x86 / arm / all，粒度比实际需要的粗：
-# 包里自带的 CPython 和 pip 下载的 manylinux wheel 都是按 x86_64 / aarch64 精确
-# 编译的。如果哪天 platform=arm 的包被装到 32 位 armv7 设备上，这里能提前拦住，
-# 而不是等到启动时报一个难懂的 ELF 加载错误。
-# manifest 的兼容类别用 x86 / arm；TRIM_SYS_ARCH 的具体字符串由系统提供，
-# 不同 fnOS 版本可能给 x86、x86_64 或 amd64。此前只接受后两种，若某个 x86_64
-# NAS 回传简写 x86，会在真正解包前被误判为不支持而安装失败。
-case "${TRIM_SYS_ARCH:-}" in
-  ""|x86|i386|i686|x86_64|amd64|aarch64|arm64)
-    ;;
-  *)
-    echo "PhotoVault 不支持当前设备架构: ${TRIM_SYS_ARCH}（仅支持 x86/x86_64 或 arm64/aarch64）" >"$FAILLOG"
-    exit 1
-    ;;
+# 本包实际下载的 CPython ABI 原生 wheel 的架构，由 scripts/build.sh 组装时替换
+# 成 x86_64 或 aarch64。manifest 的 platform 固定为 all（避免应用中心按粗粒度
+# CPU 类别提前拒包），所以「这个包能不能在这台设备上跑」只能靠这里判断。
+BUILD_ARCH="@@BUILD_ARCH@@"
+
+deny() {
+  echo "$1" >"$FAILLOG"
+  exit 1
+}
+
+# --- 设备架构判定 -----------------------------------------------------------
+#
+# uname -m 是唯一可靠的来源：它给的是真实机器类型（x86_64 / aarch64 / armv7l）。
+# TRIM_SYS_ARCH 给的是 manifest 那套兼容类别，不同 fnOS 版本可能回传 x86_64、
+# amd64，也可能只回传家族简写 x86 / arm——简写无法区分 armv7 和 arm64，所以只
+# 当 uname 不可用时才拿它兜底。
+#
+# 判定结果只有三种：x86_64 / aarch64 / 空（识别不出）。识别不出时**不拦**，
+# 让安装继续，避免又一次因为没见过的字符串把能跑的设备挡在门外。
+device_arch=""
+machine="$(uname -m 2>/dev/null || true)"
+
+case "$machine" in
+  x86_64|amd64)
+    device_arch=x86_64 ;;
+  aarch64|arm64)
+    device_arch=aarch64 ;;
+  i[3456]86)
+    deny "PhotoVault 需要 64 位系统，当前设备是 32 位 x86(${machine})。" ;;
+  # armv7l / armv8l 之类带 l 后缀的都是 32 位 ARM ABI（armv8l 是跑在 64 位芯片上
+  # 的 32 位用户态），一样加载不了 aarch64 的 .so。
+  armv*|armhf|armel)
+    deny "PhotoVault 需要 64 位系统，当前设备是 32 位 ARM(${machine})，请使用 arm64/aarch64 设备。" ;;
 esac
+
+if [ -z "$device_arch" ]; then
+  # uname 缺失或给了没见过的字符串，退回粗粒度类别。飞牛的 arm 类别在实际发行
+  # 版里都是 arm64，x86 类别都是 x86_64。
+  case "${TRIM_SYS_ARCH:-}" in
+    x86|x86_64|amd64)   device_arch=x86_64 ;;
+    arm|arm64|aarch64)  device_arch=aarch64 ;;
+  esac
+fi
+
+# --- 包与设备是否匹配 -------------------------------------------------------
+#
+# 两边都识别出来才比较；任一为空就放行（BUILD_ARCH 为空说明这份包目录没经过
+# build.sh 模板替换，属于手工打包，不该在用户设备上报错）。
+case "$BUILD_ARCH" in
+  x86_64|aarch64) ;;
+  *) BUILD_ARCH="" ;;
+esac
+
+if [ -n "$BUILD_ARCH" ] && [ -n "$device_arch" ] && [ "$BUILD_ARCH" != "$device_arch" ]; then
+  deny "安装包架构不匹配：这是 ${BUILD_ARCH} 版本的 PhotoVault，当前设备是 ${device_arch}(${machine:-${TRIM_SYS_ARCH:-未知}})，请下载 ${device_arch} 版本的 .fpk。"
+fi
 
 exit 0

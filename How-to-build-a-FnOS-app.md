@@ -532,7 +532,7 @@ PhotoVault x86_64 包：
 最终产物：
 
 ```text
-build/fnos/x86_64/photovault-<version>-all.fpk
+build/fnos/x86_64/photovault-<version>-x86_64.fpk
 ```
 
 ### 构建后
@@ -540,7 +540,7 @@ build/fnos/x86_64/photovault-<version>-all.fpk
 检查打包后的 manifest：
 
 ```bash
-tar -xOzf build/fnos/x86_64/photovault-<version>-all.fpk manifest
+tar -xOzf build/fnos/x86_64/photovault-<version>-x86_64.fpk manifest
 ```
 
 应包含：
@@ -555,7 +555,7 @@ service_port = 8000
 
 ```bash
 tmp="$(mktemp -d)"
-tar -xzf build/fnos/x86_64/photovault-<version>-all.fpk -C "$tmp" app.tgz
+tar -xzf build/fnos/x86_64/photovault-<version>-x86_64.fpk -C "$tmp" app.tgz
 tar -tzf "$tmp/app.tgz" | grep '^python/'
 ```
 
