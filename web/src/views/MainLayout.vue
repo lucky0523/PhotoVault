@@ -51,6 +51,17 @@
             <el-icon><InfoFilled /></el-icon>
             <span>关于服务端</span>
           </el-menu-item>
+
+          <!-- 飞牛构建专属入口。列表在 script 里按 __FNOS_BUILD__ 生成，普通构建
+               下 fnosMenuItems 为空数组，这一段不渲染。 -->
+          <el-menu-item
+            v-for="item in visibleFnosMenuItems"
+            :key="item.path"
+            :index="item.path"
+          >
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+          </el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -122,6 +133,37 @@ const authStore = useAuthStore()
 const trashStore = useTrashStore()
 
 const activeMenu = computed(() => route.path)
+
+// --- 飞牛（fnOS）专属菜单项 -------------------------------------------------
+// 整个列表（路径、文案、图标名）都写在 __FNOS_BUILD__ 块里，普通构建下这段是
+// `if (false) { ... }`，会被整块删除，dist 里连菜单文案都不会出现。
+//
+// icon 用图标组件名字符串而不是 import 进来的组件：main.ts 已把 Element Plus
+// 图标全量注册为全局组件，模板里 <component :is="名字"> 能直接解析。写成 import
+// 就得放在模块顶层，那条静态依赖会一直留在普通构建里。
+interface FnosMenuItem {
+  path: string
+  label: string
+  icon: string
+  adminOnly?: boolean
+}
+
+const fnosMenuItems: FnosMenuItem[] = []
+
+if (__FNOS_BUILD__) {
+  fnosMenuItems.push({
+    path: '/settings/fnos-shared-access',
+    label: '飞牛目录授权',
+    icon: 'FolderOpened',
+    adminOnly: true,
+  })
+}
+
+// 在这里过滤而不是在模板上写 v-if：同一元素上 v-if 的优先级高于 v-for，
+// v-if 里拿不到 item。
+const visibleFnosMenuItems = computed(() =>
+  fnosMenuItems.filter((item) => !item.adminOnly || authStore.isAdmin)
+)
 
 const showQrcode = ref(false)
 const qrcodeDataUrl = ref('')

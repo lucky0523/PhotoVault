@@ -211,6 +211,24 @@ pv_export_settings() {
   # 默认关闭自助注册：服务暴露在局域网端口上，且不经过 NAS 登录态。
   export PHOTOVAULT_ALLOW_REGISTRATION=false
 
+  # --- 飞牛开放 API（trim.file.sharedAccess）-------------------------------
+  # 后端调用开放 API 时要在请求顶层带 appName，且必须与 manifest 的 appname 一致，
+  # 否则授权会记到别的应用名下、查询也拿不到结果。这里显式导出运行时的真值，
+  # 免得服务端去猜。
+  export PHOTOVAULT_FNOS_APP_NAME="$PV_APPNAME"
+
+  # TRIM_API_TOKEN 由系统在调用本脚本时注入，子进程本来就会继承，这里显式 export
+  # 一次只是把这条依赖写明：server/app/core/fnos.py 每次调用都从环境变量现读它。
+  #
+  # 只在非空时导出。若无条件 export，未注入时会得到一个空值的已导出变量，
+  # 诊断接口就分不清「系统没注入」和「注入了空串」。
+  #
+  # 文档要求不要把该 token 持久化到数据库、文件或配置里：它可能在应用重新注册、
+  # 重新安装或运行环境变化后更新。所以这里只往环境变量传，不落盘。
+  if [ -n "${TRIM_API_TOKEN:-}" ]; then
+    export TRIM_API_TOKEN
+  fi
+
   # 向导值放最后，允许它覆盖上面的默认值。
   pv_export_wizard_settings
 }

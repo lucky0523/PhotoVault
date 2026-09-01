@@ -12,5 +12,6 @@ checkport=true
 ctl_stop=true
 desktop_uidir=ui
 desktop_applaunchname=photovault.main
-disable_authorization_path=true
+micro_app=true
+disable_authorization_path=false
 changelog=首个飞牛 fnOS Native 版本。

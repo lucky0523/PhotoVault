@@ -7,7 +7,7 @@
 #   fpk     ->  飞牛 fnOS Native 应用包 (.fpk)
 #
 # 用法:
-#   ./scripts/build.sh web                              仅构建前端
+#   ./scripts/build.sh web [--fnos]                     仅构建前端
 #   ./scripts/build.sh docker [--tag photovault:0.1.0]  构建 Docker 镜像
 #   ./scripts/build.sh fpk    [--arch x86_64|aarch64]   构建 .fpk
 #   ./scripts/build.sh all                              前端 + Docker + 两种架构的 fpk
@@ -21,6 +21,13 @@
 #   --skip-web         复用已有的 web/dist，不重新构建前端
 #   --tag NAME         Docker 镜像 tag
 #   --arch ARCH        fpk 目标架构: x86_64 | aarch64（可重复指定）
+#   --fnos             仅对 web 目标有效：构建飞牛变体的前端。fpk 目标总是用飞牛
+#                      变体，不需要也不接受这个选项
+#
+# 关于前端的两个变体：飞牛变体额外包含「设置 → 飞牛目录授权」页面（调用
+# 飞牛 JS SDK 的 pickSharedFile / authorizeSharedFile）与授权回调页。这两个页面
+# 由编译期开关 PHOTOVAULT_FNOS_BUILD 控制，普通变体里会被死代码消除整块删除，
+# 因此只有 .fpk 会带上它们。详见 build_web()。
 #
 # fpk 使用飞牛官方 python312 运行时。包内不带 CPython 解释器，但仍包含
 # 按 Python 3.12 ABI 交叉下载的应用依赖 wheel（FastAPI / Pillow / bcrypt 等）。
@@ -85,6 +92,8 @@ VERSION=""
 PORT="8000"
 WITH_ANALYSIS=0
 SKIP_WEB=0
+# 只影响 `web` 目标。fpk 目标无条件使用飞牛变体，不看这个值。
+WEB_FNOS=0
 DOCKER_TAG=""
 ARCHES=()
 
@@ -109,6 +118,7 @@ while [ $# -gt 0 ]; do
     --arch)          ARCHES+=("${2:?--arch 需要一个值}"); shift 2 ;;
     --with-analysis) WITH_ANALYSIS=1; shift ;;
     --skip-web)      SKIP_WEB=1; shift ;;
+    --fnos)          WEB_FNOS=1; shift ;;
     -h|--help)       usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
@@ -142,17 +152,40 @@ check_arch() {
 # 前端
 # ---------------------------------------------------------------------------
 
+# 前端有两个变体，区别只有一个编译期开关 PHOTOVAULT_FNOS_BUILD：
+#
+#   普通变体  ->  Docker / 自建部署
+#   fnos 变体 ->  .fpk，额外包含「设置 → 飞牛目录授权」页面与授权回调页
+#
+# 开关在 web/vite.config.ts 里变成 define 的字面量 __FNOS_BUILD__，普通变体下
+# 那两个页面所在的 if 块是死代码，Rollup 整块删除，对应的 lazy chunk 不会产出。
+# 也就是说「只在编译飞牛应用时才打包进去」是构建期保证，不是运行期判断。
+#
+# 用法: build_web [fnos]
 build_web() {
+  local variant="${1:-plain}"
+  local fnos_flag=0
+  [ "$variant" = "fnos" ] && fnos_flag=1
+
   if [ "$SKIP_WEB" -eq 1 ]; then
     [ -f "$ROOT/web/dist/index.html" ] || die "--skip-web 需要已存在的 web/dist，但没找到"
     log "跳过前端构建，复用 web/dist"
+    # 复用的产物是哪个变体构建的，脚本无从得知。fnos 变体下 verify_fpk 会断言
+    # 飞牛页面的 chunk 存在，所以这里只提醒，让自检去兜底。
+    if [ "$fnos_flag" -eq 1 ]; then
+      warn "--skip-web 复用的 web/dist 必须是飞牛变体（PHOTOVAULT_FNOS_BUILD=1）构建的，否则自检会失败"
+    fi
     return 0
   fi
 
   need_cmd node
   need_cmd npm
 
-  log "构建前端 (web/)"
+  if [ "$fnos_flag" -eq 1 ]; then
+    log "构建前端 (web/, 飞牛变体)"
+  else
+    log "构建前端 (web/)"
+  fi
   cd "$ROOT/web"
   if [ ! -d node_modules ]; then
     # 注意：web/package-lock.json 被 .gitignore 忽略了，全新 clone 里不存在，
@@ -164,9 +197,31 @@ build_web() {
       npm install --no-audit --no-fund
     fi
   fi
-  npm run build
+  # 必须清掉上一次的产物：两个变体的 chunk 文件名不同，增量构建会把上一次飞牛
+  # 变体留下的页面 chunk 原样留在 dist 里，普通包就带上了本该被剔除的页面。
+  rm -rf "$ROOT/web/dist"
+
+  if [ "$fnos_flag" -eq 1 ]; then
+    PHOTOVAULT_FNOS_BUILD=1 npm run build
+  else
+    # 显式置 0 而不是 unset：调用方 shell 里可能已经导出过这个变量，
+    # 那样普通构建会静默变成飞牛构建。
+    PHOTOVAULT_FNOS_BUILD=0 npm run build
+  fi
+
   [ -f "$ROOT/web/dist/index.html" ] || die "前端构建失败：web/dist/index.html 不存在"
-  ok "前端产物: web/dist ($(du -sh "$ROOT/web/dist" | cut -f1))"
+
+  # 自检的镜像面：飞牛变体必须有这个页面，普通变体必须没有。构建期就查掉，
+  # 免得等到 verify_fpk 或者装到设备上才发现开关没生效。
+  local fnos_chunk
+  fnos_chunk="$(find "$ROOT/web/dist" -name 'FnosSharedAccessView-*.js' -print -quit 2>/dev/null || true)"
+  if [ "$fnos_flag" -eq 1 ]; then
+    [ -n "$fnos_chunk" ] || die "飞牛变体产物里找不到飞牛目录授权页面的 chunk，__FNOS_BUILD__ 可能没生效"
+  else
+    [ -z "$fnos_chunk" ] || die "普通变体产物里出现了飞牛页面 chunk (${fnos_chunk#"$ROOT"/})，死代码消除没生效"
+  fi
+
+  ok "前端产物: web/dist ($(du -sh "$ROOT/web/dist" | cut -f1), 变体=${variant})"
 }
 
 # ---------------------------------------------------------------------------
@@ -284,6 +339,24 @@ stage_fpk() {
   # --- 1. manifest ---
   # 每个包都声明飞牛官方 Python 3.12 运行时；运行时依赖会在本应用安装/启动
   # 前由应用中心准备。包内没有 python/ 解释器目录。
+  #
+  # manifest 是逐行 key=value 的格式，没有注释语法，所以两个和飞牛开放能力相关
+  # 的声明在这里解释（改动它们前先看这段）：
+  #
+  #   micro_app=true
+  #     调用前端 JS SDK（@trimjs/web-app）的前提。不声明时应用页面不会按微应用
+  #     环境加载，宿主不注入桥，pickSharedFile / authorizeSharedFile 初始化不了，
+  #     「设置 → 飞牛目录授权」页面会停在「SDK 初始化失败」。
+  #
+  #   disable_authorization_path=false
+  #     原本是 true（本应用只用自己申请的 data-share，不需要授权路径）。接入
+  #     trim.file.sharedAccess 后必须放开：应用共享授权写入的就是「应用设置 →
+  #     授权路径」这份列表，关掉等于声明本应用不使用授权路径，管理员也就没有
+  #     地方查看和撤销 pickSharedFile 授权出来的目录。
+  #
+  # 对应的 Scope 声明在 config/resource 的 api-scope 里（JSON 同样不能写注释）：
+  # 只声明确实用到的 trim.file.sharedAccess，它同时覆盖两个 JS SDK 方法和
+  # getSharedAccessibleFolders / delSharedAccessibleFolder 两个后端 API。
   sed \
     -e "s/@@VERSION@@/$VERSION/g" \
     -e "s/@@PORT@@/$PORT/g" \
@@ -485,6 +558,42 @@ verify_fpk() {
   assert "服务端入口存在" test -f "$pkg/app/server/app/main.py"
   assert "前端入口存在"   test -f "$pkg/app/web/dist/index.html"
 
+  # 飞牛目录授权页面只应存在于 .fpk 里。这条断言同时能抓住两种事故：
+  #   - 前端不是用飞牛变体构建的（例如 --skip-web 复用了普通变体的 web/dist）
+  #   - __FNOS_BUILD__ 开关失效，条件注册的路由被整块删掉了
+  # 两种情况装到设备上的表现都一样：侧边栏没有入口，且直接访问路由是空白页。
+  local fnos_chunk
+  fnos_chunk="$(find "$pkg/app/web/dist" -name 'FnosSharedAccessView-*.js' -print -quit 2>/dev/null || true)"
+  assert "飞牛目录授权页面已打入前端产物" test -n "$fnos_chunk"
+
+  # === 飞牛开放能力声明 ===
+  # 页面能打开但调不通，绝大多数是这三项之一没配好，静态就能查。
+  local manifest_micro_app manifest_auth_path
+  manifest_micro_app="$(sed -n 's/^micro_app=\(.*\)$/\1/p' "$pkg/manifest" | head -1)"
+  assert "manifest 声明 micro_app=true（JS SDK 的前提）" \
+         test "$manifest_micro_app" = "true"
+
+  # 应用共享授权写入的就是「应用设置 → 授权路径」这份列表，声明为 true 会让
+  # 管理员无处查看和撤销授权目录。
+  manifest_auth_path="$(sed -n 's/^disable_authorization_path=\(.*\)$/\1/p' "$pkg/manifest" | head -1)"
+  assert "manifest 没有禁用授权路径（disable_authorization_path=false）" \
+         test "$manifest_auth_path" = "false"
+
+  # 路径走 argv 而不是拼进源码，和上面复刻 web/dist 定位算法的写法保持一致。
+  if python3 - "$pkg/config/resource" <<'PY' 2>/dev/null; then
+import json, sys
+with open(sys.argv[1]) as f:
+    scopes = json.load(f).get("api-scope") or []
+sys.exit(0 if "trim.file.sharedAccess" in scopes else 1)
+PY
+    pass "config/resource 声明 api-scope: trim.file.sharedAccess"
+  else
+    fail_check "config/resource 缺少 api-scope: trim.file.sharedAccess"
+  fi
+
+  assert "env.sh 向服务端导出 PHOTOVAULT_FNOS_APP_NAME" \
+         grep -q 'PHOTOVAULT_FNOS_APP_NAME' "$pkg/app/lib/env.sh"
+
   # 复刻 server/app/main.py 定位 web/dist 的算法：从 app/main.py 往上退三层再拼
   # "web/dist"。这是整个移植里最容易出错、又没有任何环境变量能兜底的一处，所以
   # 用同样的算法反推一遍，而不是硬编码期望路径。
@@ -651,12 +760,33 @@ verify_fpk_artifact() {
 # fpk：打包
 # ---------------------------------------------------------------------------
 
+# 只构建部分架构时，其它架构目录里可能还躺着上一次构建的 .fpk。它的文件名同样带
+# 版本号和架构，和刚出炉的产物看起来一样正规，很容易被一起发布出去——而旧包缺少
+# 本次才加进来的东西。这个坑真实发生过一次：只重建了 x86_64，aarch64 还是几十
+# 分钟前的旧包，装上去没有「飞牛目录授权」页面，manifest 里也没有 micro_app。
+#
+# 只提醒不删除：误删别人刚构建好的产物比留着旧包更糟。
+warn_stale_fpks() {
+  local built=" $* "
+  local other stale
+  for other in x86_64 aarch64; do
+    case "$built" in *" $other "*) continue ;; esac
+    stale="$BUILD_DIR/fnos/$other/${APP_NAME}-${VERSION}-${other}.fpk"
+    [ -f "$stale" ] || continue
+    warn "本次没有构建 ${other}：${stale#"$ROOT"/} 是上一次构建（$(date -r "$stale" '+%m-%d %H:%M')）留下的，内容可能已过期，别直接发布"
+    echo "    重建: ./scripts/build.sh fpk --arch ${other}（或用 ./scripts/build.sh all 一次出齐两种架构）"
+  done
+}
+
 build_fpk() {
   detect_version
-  build_web
+  # fpk 一定用飞牛变体：飞牛目录授权页面只在这里才应该出现。
+  build_web fnos
 
   local archlist=("${ARCHES[@]:-}")
   [ -n "${archlist[0]:-}" ] || archlist=(x86_64)
+
+  warn_stale_fpks "${archlist[@]}"
 
   local arch pkg fpk
   for arch in "${archlist[@]}"; do
@@ -704,7 +834,11 @@ build_fpk() {
 
 case "$TARGET" in
   web)
-    build_web
+    if [ "$WEB_FNOS" -eq 1 ]; then
+      build_web fnos
+    else
+      build_web
+    fi
     ;;
   docker)
     build_docker
@@ -714,8 +848,10 @@ case "$TARGET" in
     ;;
   all)
     detect_version
-    build_web
-    SKIP_WEB=1
+    # 这里刻意不预先构建一次前端再让 fpk 复用（原先是 build_web + SKIP_WEB=1）：
+    #   - docker 用不上 web/dist，server/Dockerfile 自带前端构建阶段；
+    #   - fpk 需要的是飞牛变体，和普通变体不能共用同一份 web/dist。
+    # 所以直接交给 build_fpk 去构建飞牛变体，避免把普通变体的产物打进 .fpk。
     if command -v docker >/dev/null 2>&1; then
       build_docker
     else
