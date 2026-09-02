@@ -184,7 +184,7 @@ class TestResolvePathCombinations:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -200,7 +200,7 @@ class TestResolvePathCombinations:
         metadata = FileMetadata(exif_time=datetime(2026, 3, 15, 10, 30, 0))
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -220,7 +220,7 @@ class TestResolvePathCombinations:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -240,7 +240,7 @@ class TestResolvePathCombinations:
         metadata = FileMetadata(exif_time=datetime(2026, 3, 15, 10, 30, 0))
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -268,7 +268,7 @@ class TestTimeExtractionPriority:
         )
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -288,7 +288,7 @@ class TestTimeExtractionPriority:
         )
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -304,7 +304,7 @@ class TestTimeExtractionPriority:
         metadata = FileMetadata(exif_time=None, file_created_time=None)
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -320,7 +320,7 @@ class TestTimeExtractionPriority:
         metadata = FileMetadata(exif_time=datetime(2024, 1, 5))
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="bob",
             device_name="iPhone15",
             source_folder="Photos",
@@ -336,7 +336,7 @@ class TestTimeExtractionPriority:
         metadata = FileMetadata(exif_time=datetime(999, 6, 15))
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="device",
             source_folder="photos",
@@ -361,7 +361,7 @@ class TestSubFolderHandling:
         metadata = FileMetadata(sub_folder="burst")
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -380,7 +380,7 @@ class TestSubFolderHandling:
         )
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -399,7 +399,7 @@ class TestSubFolderHandling:
         )
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -422,7 +422,7 @@ class TestSubFolderHandling:
         )
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -438,7 +438,7 @@ class TestSubFolderHandling:
         metadata = FileMetadata(sub_folder="")
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -454,7 +454,7 @@ class TestSubFolderHandling:
         metadata = FileMetadata(sub_folder="/burst/")
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -479,7 +479,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="/DCIM/Camera/",
@@ -495,7 +495,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data/",
+            media_root="/data/",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -515,7 +515,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -531,7 +531,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="My Phone (2024)",
             source_folder="DCIM",
@@ -547,7 +547,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="",
@@ -567,7 +567,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM",
@@ -584,7 +584,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata()
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="Pixel9Pro",
             source_folder="DCIM/Camera",
@@ -600,7 +600,7 @@ class TestResolvePathEdgeCases:
         metadata = FileMetadata(exif_time=datetime(2025, 12, 31))
 
         result = StoragePathEngine.resolve_path(
-            storage_root="/data",
+            media_root="/data",
             username="alice",
             device_name="device",
             source_folder="photos",

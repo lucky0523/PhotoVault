@@ -120,8 +120,11 @@ docker compose up -d
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `PHOTOVAULT_STORAGE_ROOT` | `/data/photovault` | 文件存储根目录（绝对路径） |
+| `PHOTOVAULT_STORAGE_ROOT` | `/data/photovault` | 存储根目录（绝对路径）。仅作为下面四项未设置时的默认基准 |
+| `PHOTOVAULT_MEDIA_ROOT` | `{storage_root}` | 照片存储目录（绝对路径） |
 | `PHOTOVAULT_DATABASE_URL` | `{storage_root}/photovault.db` | SQLite 数据库路径 |
+| `PHOTOVAULT_LOG_DIR` | `{storage_root}/logs` | 日志目录（绝对路径） |
+| `PHOTOVAULT_MODELS_ROOT` | `{storage_root}/.models` | 分析模型目录（绝对路径） |
 | `PHOTOVAULT_SERVER_HOST` | `127.0.0.1` | 服务监听地址 |
 | `PHOTOVAULT_SERVER_PORT` | `8000` | 服务监听端口 |
 | `PHOTOVAULT_JWT_SECRET_KEY` | `change-me-in-production` | JWT 签名密钥（**生产环境必须修改**） |
@@ -133,9 +136,58 @@ docker compose up -d
 | `PHOTOVAULT_TRASH_RETENTION_DAYS` | `30` | 回收站文件保留天数（过期自动清理） |
 | `PHOTOVAULT_LOG_LEVEL` | `INFO` | 日志级别 |
 
+#### 存储目录相互独立
+
+照片、数据库、日志、模型这四个位置各自独立配置。`PHOTOVAULT_STORAGE_ROOT` **只是**它们未显式设置时的默认基准，服务端不会直接用它来存放任何数据。
+
+因此可以只移动其中一项，其余保持原位：
+
+```bash
+# 只把照片放到大容量阵列，数据库/日志/模型仍在 storage_root 下
+PHOTOVAULT_STORAGE_ROOT=/data/photovault
+PHOTOVAULT_MEDIA_ROOT=/mnt/raid/photos
+```
+
+```bash
+# 四项全部分开：此时 storage_root 完全不被使用
+PHOTOVAULT_STORAGE_ROOT=/data/photovault
+PHOTOVAULT_MEDIA_ROOT=/mnt/raid/photos          # 照片（含回收站、缩略图、分块暂存）
+PHOTOVAULT_DATABASE_URL=/mnt/ssd/photovault.db  # 数据库放 SSD，随机读写更快
+PHOTOVAULT_LOG_DIR=/var/log/photovault          # 日志交给系统日志分区
+PHOTOVAULT_MODELS_ROOT=/opt/photovault/models   # 模型只读，可与数据分离
+```
+
+说明：
+
+- 四项都必须是**绝对路径**，相对路径会在启动时直接报错——相对路径会随服务的工作目录变化（systemd、Docker、`run.sh` 各不相同），静默写错位置比启动失败更难排查。
+- 回收站（`{username}/.trash`）、文件锁（`{username}/.locks`）、缩略图缓存（`.thumbnails`）和上传分块暂存（`.chunks`）都跟随**照片存储目录**。回收站和分块暂存必须与照片同一文件系统，否则移动文件将退化为跨盘复制。
+- 磁盘空间告警与「关于服务端」页显示的可用容量，统计的是**照片存储目录**所在的卷。
+- 已有部署无需改动：不设置新变量时，行为与之前完全一致。
+- 迁移已有数据时请先停止服务，把目录内容整体复制到新位置后再设置变量。数据库中记录的是照片的绝对路径，直接改 `PHOTOVAULT_MEDIA_ROOT` 而不搬运文件会导致旧记录无法访问。
+
 ### config.yaml
 
-也可在 `config/` 目录下创建 `config.yaml` 文件进行配置（环境变量优先级更高）：
+`config.yaml` 是**可选**的，服务端不会自动生成，需要自己创建；不存在时直接使用默认值，不影响启动。
+
+服务端按以下顺序查找，取第一个找到的（**不会**合并多个文件）：
+
+1. 环境变量 `PHOTOVAULT_CONFIG_PATH` 指向的路径。设置了此变量就只认这一个路径，文件不存在也不再往下找
+2. 当前工作目录下的 `config.yaml`
+3. 当前工作目录下的 `config/config.yaml`
+4. 服务端根目录（`app/` 的上一级）下的 `config.yaml`
+5. 服务端根目录下的 `config/config.yaml`
+
+对应到各部署方式的实际放置位置：
+
+| 部署方式 | 放在哪里 |
+|---|---|
+| `./run.sh` 本地开发 | `server/config.yaml` 或 `server/config/config.yaml` |
+| Docker | 宿主机 `./config/config.yaml`（经卷映射成为容器内 `/app/config/config.yaml`），或容器内 `/app/config.yaml` |
+| 飞牛 NAS | `TRIM_PKGETC/config.yaml`，由 `PHOTOVAULT_CONFIG_PATH` 显式指定 |
+
+Docker 用户直接把文件放进 `docker-compose.yml` 已映射的 `./config/` 目录即可，无需额外设置环境变量。
+
+配置示例：
 
 ```yaml
 server:
@@ -144,6 +196,11 @@ server:
 
 storage:
   root: "/data/photovault"
+  # 可选：把照片单独放到别的磁盘，未设置时等于 root
+  # media_root: "/mnt/raid/photos"
+
+# 可选：数据库位置，未设置时为 {storage.root}/photovault.db
+# database_url: "/mnt/ssd/photovault.db"
 
 auth:
   access_token_expire_hours: 24
@@ -160,18 +217,31 @@ trash:
 
 logging:
   level: "INFO"
+  # 可选：日志目录，未设置时为 {storage.root}/logs
+  # dir: "/var/log/photovault"
+
+analysis:
+  # 可选：模型目录，未设置时为 {storage.root}/.models
+  # models_root: "/opt/photovault/models"
 ```
 
 **配置优先级**（从高到低）：环境变量 > .env 文件 > config.yaml > 默认值
+
+因为环境变量优先级更高，已经通过环境变量设置的项，写在 `config.yaml` 里不会生效。飞牛安装包在 `env.sh` 里显式导出了存储路径、端口、注册开关等项，所以那边留给 `config.yaml` 调整的只有未被导出的部分。
 
 ## 存储说明
 
 ### 目录结构
 
+默认配置下（四项均未单独设置）全部数据集中在存储根目录：
+
 ```
 ./data/photovault/              # 宿主机映射目录（对应容器内 /data/photovault）
-├── photovault.db               # SQLite 数据库
-├── logs/                       # 运行日志
+├── photovault.db               # SQLite 数据库    -> PHOTOVAULT_DATABASE_URL
+├── logs/                       # 运行日志        -> PHOTOVAULT_LOG_DIR
+├── .models/                    # 分析模型        -> PHOTOVAULT_MODELS_ROOT
+│                               # 以下均属照片存储 -> PHOTOVAULT_MEDIA_ROOT
+├── .chunks/                    # 上传分块暂存
 ├── .thumbnails/                # 缩略图缓存
 │   └── {username}/
 └── {username}/                 # 用户备份文件
@@ -184,24 +254,41 @@ logging:
             └── {year}/{month}/ # 若启用年月分层
 ```
 
+右侧标注了每一部分对应的环境变量。设置某个变量后，该部分会整体搬到新位置，其余保持不变。
+
 ### Docker 卷映射
 
 | 容器路径 | 宿主机路径 | 用途 |
 |----------|-----------|------|
-| `/data/photovault` | `./data` | 照片存储 + 数据库 |
-| `/app/config` | `./config` | 配置文件 |
+| `/data/photovault` | `./data` | 照片存储 + 数据库 + 日志 + 模型（默认全在此） |
+| `/app/config` | `./config` | 可选的 `config.yaml`（放进去即生效） |
 | `/etc/caddy/Caddyfile` | `./Caddyfile` | Caddy 配置 |
 | `/data` (caddy) | `./caddy_data` | Caddy 证书存储 |
 | `/config` (caddy) | `./caddy_config` | Caddy 运行配置 |
 
 ### 自定义存储路径
 
-如需将照片存储到其他磁盘，修改 `docker-compose.yml` 中的卷映射：
+最简单的做法是整体换掉映射的宿主机目录，容器内路径不变：
 
 ```yaml
 volumes:
   - /mnt/nas-disk/photos:/data/photovault
 ```
+
+如果希望**只把照片**放到大容量磁盘，而数据库和日志留在系统盘，就分别映射并设置对应变量：
+
+```yaml
+services:
+  photovault:
+    volumes:
+      - /mnt/nas-disk/photos:/photos      # 大容量阵列
+      - ./data:/data/photovault           # 数据库、日志
+    environment:
+      - PHOTOVAULT_STORAGE_ROOT=/data/photovault
+      - PHOTOVAULT_MEDIA_ROOT=/photos
+```
+
+注意变量值是**容器内**的路径，需要和上面的卷映射目标一致。数据库和日志未设置变量，因此仍位于 `/data/photovault` 下。
 
 ## 客户端连接
 

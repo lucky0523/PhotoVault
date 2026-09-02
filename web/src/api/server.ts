@@ -5,9 +5,16 @@ export interface ServerInfo {
   port: number
 }
 
-/** Storage paths and disk usage. Only returned to admin users. */
+/**
+ * Storage paths and disk usage. Only returned to admin users.
+ *
+ * The four locations are configured independently; `storage_root` is just the
+ * fallback base for whichever ones the deployment left unset. Disk usage refers
+ * to the volume holding `media_root`.
+ */
 export interface ServerStorageInfo {
   storage_root: string
+  media_root: string
   database_path: string
   log_dir: string
   models_root: string

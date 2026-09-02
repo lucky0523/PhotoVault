@@ -201,7 +201,7 @@ async def browse_directory(
     Empty path returns the root level (typically device names).
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     listing = await service.list_directory(
         user_id=current_user.id,
@@ -264,7 +264,7 @@ async def get_device_stats(
     - purged_count: files permanently deleted (history retained)
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     stats = await service.get_device_stats(user_id=current_user.id)
 
@@ -297,7 +297,7 @@ async def list_files(
     at the given path.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     # Validate sort_by
     if sort_by not in ("name", "size", "time"):
@@ -379,7 +379,7 @@ async def list_all_files(
     timeline view, which groups photos by time rather than by folder.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     if sort_by not in ("name", "size", "time"):
         sort_by = "time"
@@ -434,7 +434,7 @@ async def get_thumbnail(
     Returns JPEG image bytes.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     if size not in ("small", "medium"):
         size = "small"
@@ -469,7 +469,7 @@ async def download_file(
     (image/*, video/*) are served inline; everything else as an attachment.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     target = await service.resolve_download_target(
         user_id=current_user.id,
@@ -565,7 +565,7 @@ async def motion_video(
     and seek the motion clip.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     resolved = await service.resolve_motion_video(user_id=current_user.id, file_id=file_id)
     if resolved is None:
@@ -684,7 +684,7 @@ async def list_trash(
 ) -> TrashListResponse:
     """List files in trash for the current user."""
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     items, total = await service.list_trash(
         user_id=current_user.id,
@@ -730,7 +730,7 @@ async def status_sync(
     Clients use this to update local photo status (trashed/purged).
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     changes = await service.get_status_changes(user_id=current_user.id)
 
@@ -756,7 +756,7 @@ async def restore_file(
 ) -> TrashActionResponse:
     """Restore a single file from trash."""
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     success, message = await service.restore_file(
         user_id=current_user.id,
@@ -777,7 +777,7 @@ async def restore_batch(
 ) -> TrashActionResponse:
     """Restore all files in a batch from trash."""
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     count, message = await service.restore_batch(
         user_id=current_user.id,
@@ -798,7 +798,7 @@ async def purge_file(
 ) -> TrashActionResponse:
     """Permanently delete a single file from trash."""
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     success, message = await service.purge_file(
         user_id=current_user.id,
@@ -818,7 +818,7 @@ async def purge_all(
 ) -> TrashActionResponse:
     """Permanently delete all files in trash."""
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     count, message = await service.purge_all(user_id=current_user.id)
 
@@ -837,7 +837,7 @@ async def delete_directory(
     Physical files are only deleted if no other records reference them.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     deleted_count, message = await service.delete_directory(
         user_id=current_user.id,
@@ -863,7 +863,7 @@ async def delete_file(
     If it's an original file with no references, both the record and physical file are deleted.
     """
     settings = get_settings()
-    service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+    service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
 
     success, message = await service.delete_file(
         user_id=current_user.id,

@@ -115,16 +115,16 @@ class UploadService:
     resolution into a cohesive upload flow.
     """
 
-    def __init__(self, db: aiosqlite.Connection, storage_root: str):
+    def __init__(self, db: aiosqlite.Connection, media_root: str):
         """Initialize UploadService.
 
         Args:
             db: An aiosqlite connection with row_factory set to aiosqlite.Row.
-            storage_root: Root directory for file storage.
+            media_root: Photo storage directory (``Settings.media_root``).
         """
         self._db = db
-        self._storage_root = storage_root
-        self._chunk_manager = ChunkManager(db, storage_root)
+        self._media_root = media_root
+        self._chunk_manager = ChunkManager(db, media_root)
         self._dedup_service = DeduplicationService(db)
 
     async def init_upload(
@@ -173,7 +173,7 @@ class UploadService:
 
         # Step 2: Resolve target path
         target_path = StoragePathEngine.resolve_path(
-            storage_root=self._storage_root,
+            media_root=self._media_root,
             username=username,
             device_name=file_info.device_name,
             source_folder=file_info.source_folder,
@@ -185,7 +185,7 @@ class UploadService:
         # Need space for chunks + final file + buffer
         required_space = file_info.file_size * 2 + _DISK_SPACE_BUFFER
         if not self.check_disk_space(required_space):
-            usage = shutil.disk_usage(self._storage_root)
+            usage = shutil.disk_usage(self._media_root)
             raise DiskSpaceError(
                 required=required_space,
                 available=usage.free,
@@ -426,7 +426,10 @@ class UploadService:
         )
 
     def check_disk_space(self, required_bytes: int) -> bool:
-        """Check if storage_root has enough free space.
+        """Check whether the photo storage directory has enough free space.
+
+        Measures ``media_root`` rather than ``storage_root``: that is the volume
+        the incoming file will actually land on, and the two may differ.
 
         Args:
             required_bytes: Number of bytes needed.
@@ -435,7 +438,7 @@ class UploadService:
             True if sufficient space is available.
         """
         try:
-            usage = shutil.disk_usage(self._storage_root)
+            usage = shutil.disk_usage(self._media_root)
             return usage.free >= required_bytes
         except OSError:
             # If we can't check disk space, assume insufficient

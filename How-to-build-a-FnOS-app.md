@@ -383,27 +383,28 @@ python3 -m uvicorn app.main:app \
 
 多 worker 不是免费的性能优化。先确认状态、队列、定时任务和数据库是否支持多进程，再决定是否扩容。
 
-## 11. 数据库配置要避开项目自身的 URL 解析陷阱
+## 11. 数据库配置优先用纯路径
 
-PhotoVault 的不同后台任务对 `database_url` 的解析不完全一致。不要显式设置：
+早期版本里各后台任务对 `database_url` 的解析不一致：会话清理任务把带前缀的 URL 原样交给 `aiosqlite.connect()`，从而在文件系统里建出第二个空数据库。现在服务端已统一走 `app.core.config.sqlite_path_from_url()`，两种写法都能正确解析：
 
 ```text
-PHOTOVAULT_DATABASE_URL=sqlite+aiosqlite:///...
+PHOTOVAULT_DATABASE_URL=sqlite+aiosqlite:///srv/photos/photovault.db   # 可用
+PHOTOVAULT_DATABASE_URL=/srv/photos/photovault.db                      # 推荐
 ```
 
-部分路径会把该 URL 当普通文件路径处理，可能产生错误目录或第二个空数据库。
+仍推荐纯路径：少一层歧义，日志里出现的也是可以直接 `ls` 的路径。
 
-推荐只设置：
+存储位置有四个互相独立的变量，未设置的才回落到 `PHOTOVAULT_STORAGE_ROOT`：
 
 ```bash
-export PHOTOVAULT_STORAGE_ROOT="$DATA_DIR"
+export PHOTOVAULT_STORAGE_ROOT="$DATA_DIR"      # 仅作为下面各项的默认基准
+export PHOTOVAULT_MEDIA_ROOT="$DATA_DIR"        # 照片：必须在共享目录里才能被文件管理器看到
+export PHOTOVAULT_LOG_DIR="$TRIM_PKGVAR/logs"   # 日志：应用自身运行数据，随包清理
+export PHOTOVAULT_MODELS_ROOT="$TRIM_PKGVAR/models"
+unset PHOTOVAULT_DATABASE_URL                   # 回落到 $DATA_DIR/photovault.db
 ```
 
-让服务端使用默认纯路径：
-
-```text
-$DATA_DIR/photovault.db
-```
+数据库要和照片一起留在共享目录：升级和重装都不能丢，而 `TRIM_PKGVAR` 不保证保留。
 
 ## 12. fnpack 的退出码和旧产物陷阱
 

@@ -50,20 +50,22 @@ class ChunkManager:
 
     CHUNK_SIZE = 2 * 1024 * 1024  # 2MB
 
-    def __init__(self, db: aiosqlite.Connection, storage_root: str):
+    def __init__(self, db: aiosqlite.Connection, media_root: str):
         """Initialize ChunkManager.
 
         Args:
             db: An aiosqlite database connection.
-            storage_root: Root directory for file storage.
+            media_root: Photo storage directory (``Settings.media_root``). Chunks
+                stage under it so that promoting a completed upload to its final
+                location stays a same-filesystem move.
         """
         self._db = db
-        self._storage_root = storage_root
+        self._media_root = media_root
 
     @property
     def _chunks_base_dir(self) -> Path:
         """Base directory for all chunk temporary storage."""
-        return Path(self._storage_root) / ".chunks"
+        return Path(self._media_root) / ".chunks"
 
     def _session_chunk_dir(self, session_id: str) -> Path:
         """Directory for a specific session's chunks."""
@@ -217,7 +219,7 @@ class ChunkManager:
         """Merge all chunks in order into a complete file.
 
         Reads chunks sequentially (0, 1, 2, ...) and writes them to a single
-        output file at {storage_root}/.chunks/{session_id}/merged_{file_name}.
+        output file at {media_root}/.chunks/{session_id}/merged_{file_name}.
 
         Args:
             session_id: The upload session ID.

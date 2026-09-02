@@ -2,7 +2,7 @@
 
 Manages server settings loaded from config.yaml or environment variables:
 - Server host/port
-- Storage root path
+- Storage paths
 - Auth token expiry
 - Chunk size
 - Session expiry
@@ -11,6 +11,27 @@ Configuration priority (highest to lowest):
 1. Environment variables (prefixed with PHOTOVAULT_)
 2. config.yaml file (if present)
 3. Default values
+
+Storage layout
+--------------
+Four locations are configured independently, each with its own setting and
+environment variable:
+
+===================  ==========================  ==============================
+Setting              Environment variable        Default when unset
+===================  ==========================  ==============================
+``media_root``       ``PHOTOVAULT_MEDIA_ROOT``   ``{storage_root}``
+``database_url``     ``PHOTOVAULT_DATABASE_URL`` ``{storage_root}/photovault.db``
+``log_dir``          ``PHOTOVAULT_LOG_DIR``      ``{storage_root}/logs``
+``models_root``      ``PHOTOVAULT_MODELS_ROOT``  ``{storage_root}/.models``
+===================  ==========================  ==============================
+
+``storage_root`` is *only* the fallback base used to derive the ones that were
+left unset — nothing reads it to locate photos, the database, logs or models.
+That means any single location can be moved to a different disk (a small SSD for
+the database, the system partition for logs, a large array for photos) without
+disturbing the others, and a deployment that sets all four never depends on
+``storage_root`` at all.
 """
 
 from __future__ import annotations
@@ -25,14 +46,46 @@ import yaml
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
+# Accepted SQLite URL prefixes for ``database_url``. The setting doubles as a
+# plain filesystem path, so these are stripped before the value is handed to
+# aiosqlite (which does not understand SQLAlchemy-style URLs and would happily
+# create a file literally named "sqlite+aiosqlite:" instead).
+_SQLITE_URL_PREFIXES = ("sqlite+aiosqlite://", "sqlite://")
+
+
+def sqlite_path_from_url(database_url: str) -> str:
+    """Return ``database_url`` as a plain filesystem path.
+
+    Accepts both a bare path and a SQLAlchemy-style SQLite URL, so callers can
+    hand the configured value straight to ``aiosqlite.connect``.
+
+    Args:
+        database_url: A filesystem path or a ``sqlite://`` / ``sqlite+aiosqlite://`` URL.
+
+    Returns:
+        The filesystem path with any SQLite scheme prefix removed.
+    """
+    for prefix in _SQLITE_URL_PREFIXES:
+        if database_url.startswith(prefix):
+            return database_url[len(prefix):]
+    return database_url
+
 
 def _load_yaml_config() -> dict[str, Any]:
     """Load configuration from config.yaml if it exists.
 
-    Searches for config.yaml in the following locations (first found wins):
-    1. PHOTOVAULT_CONFIG_PATH environment variable
-    2. Current working directory
-    3. Server root directory (parent of app/)
+    Searches these locations, first found wins (no merging):
+
+    1. ``PHOTOVAULT_CONFIG_PATH`` environment variable. When set, only that path
+       is consulted — a missing file does not fall through to the rest.
+    2. ``config.yaml`` in the current working directory
+    3. ``config/config.yaml`` in the current working directory
+    4. ``config.yaml`` in the server root (parent of ``app/``)
+    5. ``config/config.yaml`` in the server root
+
+    The ``config/`` variants exist because the Docker image mounts a config
+    volume at ``/app/config`` (see docker-compose.yml), which is the directory
+    users naturally drop the file into.
     """
     # Check explicit path from env var
     config_path_env = os.environ.get("PHOTOVAULT_CONFIG_PATH")
@@ -43,10 +96,15 @@ def _load_yaml_config() -> dict[str, Any]:
                 return yaml.safe_load(f) or {}
         return {}
 
-    # Check common locations
+    # Check common locations. The two bases resolve to the same directory in
+    # every shipped deployment (the process is always started from the server
+    # root), but they are kept distinct so a server launched from somewhere else
+    # still finds a config sitting next to the code.
+    server_root = Path(__file__).resolve().parent.parent.parent
     candidates = [
-        Path.cwd() / "config.yaml",
-        Path(__file__).resolve().parent.parent.parent / "config.yaml",
+        base / name
+        for base in (Path.cwd(), server_root)
+        for name in ("config.yaml", "config/config.yaml")
     ]
     for candidate in candidates:
         if candidate.is_file():
@@ -73,6 +131,8 @@ def _flatten_yaml(data: dict[str, Any]) -> dict[str, Any]:
     if storage:
         if "root" in storage:
             flat["storage_root"] = storage["root"]
+        if "media_root" in storage:
+            flat["media_root"] = storage["media_root"]
 
     auth = data.get("auth", {})
     if auth:
@@ -161,7 +221,13 @@ class Settings(BaseSettings):
     server_port: int = 8000
 
     # Storage
+    #
+    # storage_root is only the fallback base for the four locations below; it is
+    # never used directly to place photos, the database, logs or models. Leave
+    # one of those unset to have it derived from storage_root, or point it
+    # somewhere else to move just that location. See the module docstring.
     storage_root: str = "/data/photovault"
+    media_root: str = ""  # default: storage_root
 
     # Auth
     access_token_expire_hours: int = 24
@@ -179,10 +245,10 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
-    log_dir: str = ""
+    log_dir: str = ""  # default: f"{storage_root}/logs"
 
     # Database
-    database_url: str = ""
+    database_url: str = ""  # default: f"{storage_root}/photovault.db"
 
     # Analysis (people / places / scenes)
     enable_place: bool = True
@@ -226,12 +292,66 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
+    # NOTE: for a given field, pydantic runs "after" validators in the order
+    # they are declared, so normalisation has to come before the absolute-path
+    # checks below.
+    @field_validator("storage_root", "media_root", "log_dir", "models_root")
+    @classmethod
+    def normalize_directory(cls, v: str) -> str:
+        """Strip surrounding whitespace and trailing slashes from a directory.
+
+        These values are joined into paths with f-strings throughout the code
+        base, and ``FileBrowseService`` compares them as string prefixes against
+        the absolute paths recorded in ``file_records.file_path``. A stray
+        trailing slash on an override (``/mnt/photos/``) would produce doubled
+        separators and make those prefix comparisons miss, so it is removed once
+        here rather than defended against at every use site.
+        """
+        v = v.strip()
+        if not v:
+            return v
+        # Guard the filesystem root: "/".rstrip("/") is the empty string.
+        return v.rstrip("/") or "/"
+
     @field_validator("storage_root")
     @classmethod
     def storage_root_must_be_absolute(cls, v: str) -> str:
         """Validate that storage_root is an absolute path."""
         if not os.path.isabs(v):
             raise ValueError(f"storage_root must be an absolute path, got: {v!r}")
+        return v
+
+    @field_validator("media_root", "log_dir", "models_root")
+    @classmethod
+    def optional_dir_must_be_absolute(cls, v: str) -> str:
+        """Validate an optional directory override.
+
+        Empty means "derive it from ``storage_root``". A non-empty value must be
+        absolute: a relative override would resolve against the server's working
+        directory, which is different under systemd, Docker and ``./run.sh``, so
+        it is rejected at startup instead of silently scattering data.
+        """
+        if v and not os.path.isabs(v):
+            raise ValueError(f"must be an absolute path when set, got: {v!r}")
+        return v
+
+    @field_validator("database_url")
+    @classmethod
+    def database_url_must_be_absolute(cls, v: str) -> str:
+        """Validate the database location.
+
+        Empty means "derive it from ``storage_root``". Otherwise the value may be
+        a bare path or a SQLite URL, but the underlying file path has to be
+        absolute for the same reason as the directories above.
+        """
+        v = v.strip()
+        if not v:
+            return v
+        path = sqlite_path_from_url(v)
+        if path != ":memory:" and not os.path.isabs(path):
+            raise ValueError(
+                f"database_url must resolve to an absolute SQLite path when set, got: {v!r}"
+            )
         return v
 
     @field_validator("chunk_size_mb")
@@ -291,8 +411,16 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def set_database_url_default(self) -> "Settings":
-        """Set database_url and log_dir defaults based on storage_root if not explicitly provided."""
+    def apply_path_defaults(self) -> "Settings":
+        """Fill in the storage locations that were left unset.
+
+        Each location is an independent setting. ``storage_root`` is consulted
+        only for the ones the user did not configure, so setting a single
+        environment variable relocates exactly one directory and leaves the rest
+        where they were.
+        """
+        if not self.media_root:
+            self.media_root = self.storage_root
         if not self.database_url:
             self.database_url = f"{self.storage_root}/photovault.db"
         if not self.log_dir:
@@ -324,6 +452,15 @@ class Settings(BaseSettings):
         """Return chunk size in bytes."""
         return self.chunk_size_mb * 1024 * 1024
 
+    @property
+    def database_path(self) -> str:
+        """Return ``database_url`` as a plain filesystem path.
+
+        ``database_url`` may carry a ``sqlite+aiosqlite://`` prefix (that is how
+        docker-compose sets it), while aiosqlite needs a bare path.
+        """
+        return sqlite_path_from_url(self.database_url)
+
 
 def load_settings(**overrides: Any) -> Settings:
     """Create a Settings instance.
@@ -352,6 +489,56 @@ def reset_settings() -> None:
     """Reset the settings singleton (useful for testing)."""
     global _settings
     _settings = None
+
+
+# ---------------------------------------------------------------------------
+# Directory provisioning
+# ---------------------------------------------------------------------------
+
+
+def ensure_runtime_directories(settings: Settings | None = None) -> None:
+    """Create every configured storage location.
+
+    Now that the four locations can each sit on a different volume, a typo or an
+    unmounted share should surface at startup naming the setting at fault,
+    instead of much later as a failed upload or a confusing "no such file".
+
+    ``models_root`` is treated as best-effort: it is only needed when an analysis
+    dimension is enabled, so an unavailable models volume is logged rather than
+    allowed to block a server that may not use it.
+
+    Args:
+        settings: Settings to provision for. Defaults to the singleton.
+
+    Raises:
+        RuntimeError: If a required directory cannot be created.
+    """
+    s = settings or get_settings()
+
+    required = {
+        "storage_root": Path(s.storage_root),
+        "media_root": Path(s.media_root),
+        "log_dir": Path(s.log_dir),
+        "database_url": Path(s.database_path).parent,
+    }
+    for name, path in required.items():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not create the directory configured for {name!r}: {path} ({exc})"
+            ) from exc
+
+    models_root = Path(s.models_root)
+    try:
+        models_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logging.getLogger("photovault.config").warning(
+            "Could not create the models directory %s; analysis features will be "
+            "unavailable until it becomes writable",
+            models_root,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

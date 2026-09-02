@@ -95,7 +95,7 @@ async def validate_path(
 
     # Resolve the example path
     resolved_path = StoragePathEngine.resolve_path(
-        storage_root=settings.storage_root,
+        media_root=settings.media_root,
         username=current_user.username,
         device_name=body.device_name,
         source_folder=body.source_folder,
@@ -322,7 +322,7 @@ async def init_upload(
         mime_type=body.mime_type,
     )
 
-    upload_service = UploadService(db, settings.storage_root)
+    upload_service = UploadService(db, settings.media_root)
 
     try:
         result = await upload_service.init_upload(
@@ -367,7 +367,7 @@ async def upload_chunk(
     and the chunk file data. Verifies the MD5 checksum before storing.
     """
     settings = get_settings()
-    chunk_manager = ChunkManager(db, settings.storage_root)
+    chunk_manager = ChunkManager(db, settings.media_root)
 
     data = await file.read()
 
@@ -400,7 +400,7 @@ async def complete_upload(
     from app.services.upload_service import UploadService
 
     settings = get_settings()
-    upload_service = UploadService(db, settings.storage_root)
+    upload_service = UploadService(db, settings.media_root)
 
     result = await upload_service.complete_upload(
         session_id=body.session_id,
@@ -423,7 +423,7 @@ async def complete_upload(
     session_row = await cursor.fetchone()
     if session_row:
         from app.services.file_browse_service import FileBrowseService
-        browse_service = FileBrowseService(db, settings.storage_root, settings.trash_retention_days)
+        browse_service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
         await browse_service.reactivate_record(
             user_id=current_user.id,
             file_hash=session_row["file_hash"],
@@ -448,7 +448,7 @@ async def get_resume_info(
     uploading from where it left off.
     """
     settings = get_settings()
-    chunk_manager = ChunkManager(db, settings.storage_root)
+    chunk_manager = ChunkManager(db, settings.media_root)
 
     session = await chunk_manager.get_session(session_id)
     if session is None:

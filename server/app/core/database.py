@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from pathlib import Path
 
 import aiosqlite
 
-from app.core.config import get_settings
+from app.core.config import ensure_runtime_directories, get_settings, sqlite_path_from_url
 
 logger = logging.getLogger("photovault.database")
 
@@ -236,11 +235,7 @@ def _extract_db_path(db_url: str) -> str:
 
     Handles both plain file paths and URLs with prefixes like sqlite:// or sqlite+aiosqlite://.
     """
-    if db_url.startswith("sqlite+aiosqlite://"):
-        return db_url[len("sqlite+aiosqlite://"):]
-    elif db_url.startswith("sqlite://"):
-        return db_url[len("sqlite://"):]
-    return db_url
+    return sqlite_path_from_url(db_url)
 
 
 async def _create_connection(db_url: str) -> aiosqlite.Connection:
@@ -289,20 +284,14 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
 async def startup_db() -> None:
     """Initialize the database on application startup.
 
-    - Ensures the database file's parent directory exists.
-    - Ensures the storage root directory exists.
+    - Ensures every configured storage location exists (they can each live on a
+      different volume, so this is where a bad path surfaces).
     - Calls ``init_db`` to create tables/indexes.
     """
     settings = get_settings()
-    db_path = _extract_db_path(settings.database_url)
+    db_path = settings.database_path
 
-    # Ensure database parent directory exists
-    db_dir = Path(db_path).parent
-    db_dir.mkdir(parents=True, exist_ok=True)
-
-    # Ensure storage root directory exists
-    storage_root = Path(settings.storage_root)
-    storage_root.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_directories(settings)
 
     logger.info("Initializing database at %s", db_path)
     await init_db(db_path)

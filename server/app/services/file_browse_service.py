@@ -191,16 +191,18 @@ class FileBrowseService:
         "medium": (600, 600),
     }
 
-    def __init__(self, db: aiosqlite.Connection, storage_root: str, trash_retention_days: int = 30):
-        """Initialize with a database connection and storage root path.
+    def __init__(self, db: aiosqlite.Connection, media_root: str, trash_retention_days: int = 30):
+        """Initialize with a database connection and the photo storage directory.
 
         Args:
             db: An aiosqlite connection with row_factory set to aiosqlite.Row.
-            storage_root: The root directory for file storage.
+            media_root: The photo storage directory (``Settings.media_root``).
+                Per-user trash, lock files and the thumbnail cache all live under
+                it, so they follow the photos when that directory is relocated.
             trash_retention_days: Number of days to retain trash items before auto-purge.
         """
         self._db = db
-        self._storage_root = storage_root
+        self._media_root = media_root
         self._trash_retention_days = trash_retention_days
         self._lock_files: dict[str, int] = {}
 
@@ -214,7 +216,7 @@ class FileBrowseService:
         Returns:
             Lock file path.
         """
-        lock_dir = f"{self._storage_root}/{username}/.locks"
+        lock_dir = f"{self._media_root}/{username}/.locks"
         os.makedirs(lock_dir, exist_ok=True)
         return f"{lock_dir}/{file_hash}.lock"
 
@@ -272,7 +274,7 @@ class FileBrowseService:
         Returns:
             Trash directory path.
         """
-        trash_path = f"{self._storage_root}/{username}/.trash/{device_name}"
+        trash_path = f"{self._media_root}/{username}/.trash/{device_name}"
         os.makedirs(trash_path, exist_ok=True)
         return trash_path
 
@@ -295,7 +297,7 @@ class FileBrowseService:
 
             trash_dir = Path(self._get_trash_path(username, device_name))
             relative_path = Path(file_path).relative_to(
-                Path(self._storage_root) / username / device_name
+                Path(self._media_root) / username / device_name
             )
             dst = trash_dir / relative_path
 
@@ -326,7 +328,7 @@ class FileBrowseService:
 
             trash_dir = Path(self._get_trash_path(username, device_name))
             relative_path = src.relative_to(trash_dir)
-            dst = Path(self._storage_root) / username / device_name / relative_path
+            dst = Path(self._media_root) / username / device_name / relative_path
 
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
@@ -371,7 +373,7 @@ class FileBrowseService:
         path="" means root (shows devices), path="Pixel9Pro" shows that device's folders, etc.
 
         The virtual path structure is derived from the file_path column by stripping
-        the storage_root prefix and username directory.
+        the media_root prefix and username directory.
 
         Args:
             user_id: The authenticated user's ID.
@@ -392,8 +394,8 @@ class FileBrowseService:
             return DirectoryListing(current_path=path)
 
         # Build the base prefix for file_path matching
-        # file_path in DB is like: {storage_root}/{username}/{device}/{source_folder}/file.jpg
-        base_prefix = f"{self._storage_root}/{username}/"
+        # file_path in DB is like: {media_root}/{username}/{device}/{source_folder}/file.jpg
+        base_prefix = f"{self._media_root}/{username}/"
         if path:
             search_prefix = f"{base_prefix}{path}/"
         else:
@@ -740,7 +742,7 @@ class FileBrowseService:
         """Generate or return cached thumbnail.
 
         Sizes: 'small' = 200x200, 'medium' = 600x600.
-        Cache path: {storage_root}/.thumbnails/{username}/{file_hash}_{size}.jpg
+        Cache path: {media_root}/.thumbnails/{username}/{file_hash}_{size}.jpg
 
         Args:
             user_id: The authenticated user's ID.
@@ -764,7 +766,7 @@ class FileBrowseService:
             return None
 
         # Check cache first
-        cache_dir = Path(self._storage_root) / ".thumbnails" / username
+        cache_dir = Path(self._media_root) / ".thumbnails" / username
         cache_filename = f"{file_info.file_hash}_{size}.jpg"
         cache_path = cache_dir / cache_filename
 
@@ -1130,7 +1132,7 @@ class FileBrowseService:
         if username is None:
             return 0, "User not found"
 
-        base_prefix = f"{self._storage_root}/{username}/"
+        base_prefix = f"{self._media_root}/{username}/"
         if path:
             search_prefix = f"{base_prefix}{path}/"
         else:
@@ -1299,8 +1301,8 @@ class FileBrowseService:
         if not username:
             return file_path
 
-        prefix = f"{self._storage_root}/{username}/"
-        trash_prefix = f"{self._storage_root}/{username}/.trash/"
+        prefix = f"{self._media_root}/{username}/"
+        trash_prefix = f"{self._media_root}/{username}/.trash/"
 
         if file_path.startswith(trash_prefix):
             relative_path = file_path[len(trash_prefix):]

@@ -47,9 +47,15 @@ class ServerInfoResponse(BaseModel):
 
 
 class StorageInfo(BaseModel):
-    """Storage paths and disk usage. Admin-only."""
+    """Storage paths and disk usage. Admin-only.
+
+    The four paths are configured independently of each other; ``storage_root``
+    is reported as well because it is the fallback base for whichever ones were
+    left unset. Disk usage describes the volume holding ``media_root``.
+    """
 
     storage_root: str
+    media_root: str
     database_path: str
     log_dir: str
     models_root: str
@@ -108,19 +114,6 @@ class ServerAboutResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _strip_sqlite_scheme(database_url: str) -> str:
-    """Turn a SQLite URL into a plain filesystem path for display."""
-    for prefix in ("sqlite+aiosqlite://", "sqlite://"):
-        if database_url.startswith(prefix):
-            return database_url[len(prefix):]
-    return database_url
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -158,14 +151,15 @@ async def get_server_about(
         # the disk directly here and fall back to the cached values if that
         # fails (unmounted volume, permission error).
         try:
-            disk = refresh_disk_stats(settings.storage_root)
+            disk = refresh_disk_stats(settings.media_root)
         except Exception:
             logger.warning("Could not refresh disk stats for /server/about", exc_info=True)
             disk = get_disk_stats()
 
         storage = StorageInfo(
             storage_root=settings.storage_root,
-            database_path=_strip_sqlite_scheme(settings.database_url),
+            media_root=settings.media_root,
+            database_path=settings.database_path,
             log_dir=settings.log_dir,
             models_root=settings.models_root,
             total_gb=disk.get("total_gb", 0.0),

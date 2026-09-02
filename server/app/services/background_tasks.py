@@ -19,7 +19,7 @@ from typing import Optional
 
 import aiosqlite
 
-from app.core.config import get_settings
+from app.core.config import get_settings, sqlite_path_from_url
 
 logger = logging.getLogger("photovault.background_tasks")
 
@@ -51,7 +51,7 @@ def get_disk_stats() -> dict[str, float]:
     return _disk_stats.copy()
 
 
-def refresh_disk_stats(storage_root: Optional[str] = None) -> dict[str, float]:
+def refresh_disk_stats(media_root: Optional[str] = None) -> dict[str, float]:
     """Recompute disk usage statistics immediately and return them.
 
     The periodic monitor only refreshes once an hour, and it has not run at all
@@ -60,12 +60,13 @@ def refresh_disk_stats(storage_root: Optional[str] = None) -> dict[str, float]:
     all-zeros initial state, so it can ask for a fresh reading.
 
     Args:
-        storage_root: Directory to measure. Defaults to the configured root.
+        media_root: Directory to measure. Defaults to the configured photo
+            storage directory, since that is the volume that actually fills up.
 
     Returns:
         Dictionary with keys: total_gb, used_gb, available_gb.
     """
-    root = storage_root if storage_root is not None else get_settings().storage_root
+    root = media_root if media_root is not None else get_settings().media_root
     return _check_disk_space(root)
 
 
@@ -86,7 +87,7 @@ async def cleanup_expired_sessions_task(
 
     while True:
         try:
-            await _run_session_cleanup(settings.database_url, settings.storage_root)
+            await _run_session_cleanup(settings.database_url, settings.media_root)
         except asyncio.CancelledError:
             logger.info("Expired session cleanup task cancelled")
             raise
@@ -96,19 +97,19 @@ async def cleanup_expired_sessions_task(
         await asyncio.sleep(interval_seconds)
 
 
-async def _run_session_cleanup(database_url: str, storage_root: str) -> int:
+async def _run_session_cleanup(database_url: str, media_root: str) -> int:
     """Execute one round of expired session cleanup.
 
     Args:
-        database_url: Path to the SQLite database.
-        storage_root: Root storage directory.
+        database_url: SQLite URL or path for the database.
+        media_root: Photo storage directory (parent of ``.chunks``).
 
     Returns:
         Number of sessions cleaned up.
     """
     now = datetime.now(timezone.utc).isoformat()
 
-    db = await aiosqlite.connect(database_url)
+    db = await aiosqlite.connect(sqlite_path_from_url(database_url))
     db.row_factory = aiosqlite.Row
     try:
         await db.execute("PRAGMA foreign_keys=ON;")
@@ -123,7 +124,7 @@ async def _run_session_cleanup(database_url: str, storage_root: str) -> int:
         if not expired_rows:
             return 0
 
-        chunks_base = Path(storage_root) / ".chunks"
+        chunks_base = Path(media_root) / ".chunks"
         count = 0
 
         for row in expired_rows:
@@ -165,7 +166,7 @@ async def cleanup_thumbnail_cache_task(
 
     while True:
         try:
-            await _run_thumbnail_cleanup(settings.database_url, settings.storage_root)
+            await _run_thumbnail_cleanup(settings.database_url, settings.media_root)
         except asyncio.CancelledError:
             logger.info("Thumbnail cache cleanup task cancelled")
             raise
@@ -193,7 +194,7 @@ async def disk_space_monitor_task(
 
     while True:
         try:
-            _check_disk_space(settings.storage_root)
+            _check_disk_space(settings.media_root)
         except asyncio.CancelledError:
             logger.info("Disk space monitor task cancelled")
             raise
@@ -203,20 +204,22 @@ async def disk_space_monitor_task(
         await asyncio.sleep(interval_seconds)
 
 
-def _check_disk_space(storage_root: str) -> dict[str, float]:
+def _check_disk_space(media_root: str) -> dict[str, float]:
     """Check disk space and update module-level stats.
 
     Args:
-        storage_root: The storage root directory to check.
+        media_root: The photo storage directory to measure. This is the volume
+            uploads consume, which is not necessarily the one holding the
+            database, logs or models.
 
     Returns:
         Dictionary with total_gb, used_gb, available_gb.
     """
     global _disk_stats
 
-    storage_path = Path(storage_root)
+    storage_path = Path(media_root)
     if not storage_path.exists():
-        logger.warning("Storage root does not exist: %s", storage_root)
+        logger.warning("Photo storage directory does not exist: %s", media_root)
         return _disk_stats
 
     usage = shutil.disk_usage(str(storage_path))
@@ -235,20 +238,20 @@ def _check_disk_space(storage_root: str) -> dict[str, float]:
             "CRITICAL: Disk space very low! Available: %.2f GB (< %.1f GB threshold) on %s",
             available_gb,
             DISK_ERROR_THRESHOLD_GB,
-            storage_root,
+            media_root,
         )
     elif available_gb < DISK_WARNING_THRESHOLD_GB:
         logger.warning(
             "Disk space low! Available: %.2f GB (< %.1f GB threshold) on %s",
             available_gb,
             DISK_WARNING_THRESHOLD_GB,
-            storage_root,
+            media_root,
         )
 
     return _disk_stats
 
 
-async def _run_thumbnail_cleanup(database_url: str, storage_root: str) -> dict[str, int]:
+async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str, int]:
     """Execute one round of thumbnail cache cleanup.
 
     Cleans up:
@@ -257,23 +260,17 @@ async def _run_thumbnail_cleanup(database_url: str, storage_root: str) -> dict[s
     - Oldest thumbnails when cache exceeds MAX_THUMBNAIL_CACHE_SIZE_MB
 
     Args:
-        database_url: Path to the SQLite database.
-        storage_root: Root storage directory.
+        database_url: SQLite URL or path for the database.
+        media_root: Photo storage directory (parent of ``.thumbnails``).
 
     Returns:
         Dictionary with cleanup counts: {'orphaned': N, 'expired': N, 'size_limited': N}.
     """
-    thumbnails_root = Path(storage_root) / ".thumbnails"
+    thumbnails_root = Path(media_root) / ".thumbnails"
     if not thumbnails_root.exists():
         return {"orphaned": 0, "expired": 0, "size_limited": 0}
 
-    db_path = database_url
-    if db_path.startswith("sqlite+aiosqlite://"):
-        db_path = db_path[len("sqlite+aiosqlite://"):]
-    elif db_path.startswith("sqlite://"):
-        db_path = db_path[len("sqlite://"):]
-
-    db = await aiosqlite.connect(db_path)
+    db = await aiosqlite.connect(sqlite_path_from_url(database_url))
     db.row_factory = aiosqlite.Row
     try:
         await db.execute("PRAGMA foreign_keys=ON;")
@@ -349,32 +346,26 @@ async def _run_thumbnail_cleanup(database_url: str, storage_root: str) -> dict[s
 TRASH_PURGE_INTERVAL_SECONDS: int = 24 * 60 * 60  # 24 hours
 
 
-async def _run_trash_purge(database_url: str, storage_root: str, retention_days: int) -> int:
+async def _run_trash_purge(database_url: str, media_root: str, retention_days: int) -> int:
     """Execute one round of trash auto-purge.
 
     Purges (marks purged_at + deletes physical file) trash items older
     than retention_days. Records are kept for client sync.
 
     Args:
-        database_url: Database URL or path.
-        storage_root: Storage root directory.
+        database_url: SQLite URL or path for the database.
+        media_root: Photo storage directory (parent of the per-user ``.trash``).
         retention_days: Trash retention period in days.
 
     Returns:
         Number of items purged.
     """
-    db_path = database_url
-    if db_path.startswith("sqlite+aiosqlite://"):
-        db_path = db_path[len("sqlite+aiosqlite://"):]
-    elif db_path.startswith("sqlite://"):
-        db_path = db_path[len("sqlite://"):]
-
-    db = await aiosqlite.connect(db_path)
+    db = await aiosqlite.connect(sqlite_path_from_url(database_url))
     db.row_factory = aiosqlite.Row
     try:
         await db.execute("PRAGMA foreign_keys=ON;")
         from app.services.file_browse_service import FileBrowseService
-        service = FileBrowseService(db, storage_root, trash_retention_days=retention_days)
+        service = FileBrowseService(db, media_root, trash_retention_days=retention_days)
         return await service.auto_purge_expired(expiry_days=retention_days)
     finally:
         await db.close()
@@ -394,7 +385,7 @@ async def cleanup_expired_trash_task(
     while True:
         try:
             count = await _run_trash_purge(
-                settings.database_url, settings.storage_root, settings.trash_retention_days
+                settings.database_url, settings.media_root, settings.trash_retention_days
             )
             if count > 0:
                 logger.info("Trash auto-purge: %d items purged", count)

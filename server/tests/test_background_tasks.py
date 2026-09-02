@@ -218,13 +218,13 @@ class TestDiskSpaceMonitor:
         assert disk_stats["total_gb"] > 0
 
     def test_check_disk_space_nonexistent_path(self, tmp_path, caplog):
-        """Logs warning when storage root does not exist."""
+        """Logs warning when the photo storage directory does not exist."""
         import logging
 
         with caplog.at_level(logging.WARNING, logger="photovault.background_tasks"):
             _check_disk_space(str(tmp_path / "nonexistent"))
 
-        assert "Storage root does not exist" in caplog.text
+        assert "Photo storage directory does not exist" in caplog.text
 
     def test_check_disk_space_warning_logged(self, tmp_path, caplog):
         """Logs WARNING when available space is below warning threshold."""

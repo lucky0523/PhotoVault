@@ -9,8 +9,19 @@ services:
       - ./data:/data/photovault
       - ./config:/app/config
     environment:
+      # 照片、数据库、日志、模型四个位置各自独立配置，STORAGE_ROOT 只是它们
+      # 未设置时的默认基准。默认全部落在 /data/photovault 下。
+      #
+      # 想把其中某一项移到别的磁盘时，先加一条卷映射，再设置对应变量为
+      # 「容器内」的路径，例如照片单独放到大容量阵列：
+      #   volumes:
+      #     - /mnt/nas-disk/photos:/photos
+      #   environment:
+      #     - PHOTOVAULT_MEDIA_ROOT=/photos
+      #
+      # 可用变量：PHOTOVAULT_MEDIA_ROOT / PHOTOVAULT_DATABASE_URL /
+      #           PHOTOVAULT_LOG_DIR / PHOTOVAULT_MODELS_ROOT（均需绝对路径）
       - PHOTOVAULT_STORAGE_ROOT=/data/photovault
-      - PHOTOVAULT_DATABASE_URL=sqlite+aiosqlite:///data/photovault/photovault.db
     restart: unless-stopped
     networks:
       - photovault-net

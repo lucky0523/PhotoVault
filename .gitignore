@@ -51,6 +51,9 @@ AndroidLiquidGlass-Example
 
 # Configuration
 server/config.yaml
+server/config/config.yaml
+# Docker 的 config 卷映射目标（docker-compose.yml）
+/config/
 
 # Logs
 *.log

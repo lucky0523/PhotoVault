@@ -41,7 +41,7 @@ class StoragePathEngine:
 
     @staticmethod
     def resolve_path(
-        storage_root: str,
+        media_root: str,
         username: str,
         device_name: str,
         source_folder: str,
@@ -51,7 +51,8 @@ class StoragePathEngine:
         """Resolve the target storage path for a file.
 
         Args:
-            storage_root: The root storage directory on the NAS.
+            media_root: The photo storage directory (``Settings.media_root``, not
+                ``storage_root`` — the two are configured separately).
             username: The authenticated user's username.
             device_name: The device name (will be sanitized).
             source_folder: The source folder path from the mobile device.
@@ -70,7 +71,7 @@ class StoragePathEngine:
         if policy.use_custom_path and policy.custom_path:
             base_path = policy.custom_path.rstrip("/")
         else:
-            base_path = f"{storage_root.rstrip('/')}/{username}/{sanitized_device}"
+            base_path = f"{media_root.rstrip('/')}/{username}/{sanitized_device}"
 
         # Append source folder
         if normalized_source:

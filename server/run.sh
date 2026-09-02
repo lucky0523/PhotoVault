@@ -12,6 +12,12 @@
 #   PORT                  监听端口      (默认 8000)
 #   PHOTOVAULT_STORAGE_ROOT  存储根目录 (默认 ./dev_data)
 #
+# 照片、数据库、日志、模型默认都放在存储根目录下，也可分别指定（均需绝对路径）:
+#   PHOTOVAULT_MEDIA_ROOT    照片存储目录 (默认 {storage_root})
+#   PHOTOVAULT_DATABASE_URL  数据库路径   (默认 {storage_root}/photovault.db)
+#   PHOTOVAULT_LOG_DIR       日志目录     (默认 {storage_root}/logs)
+#   PHOTOVAULT_MODELS_ROOT   模型目录     (默认 {storage_root}/.models)
+#
 set -euo pipefail
 
 # 切换到脚本所在目录（服务端工程根目录）

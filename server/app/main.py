@@ -100,20 +100,24 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown events.
 
     Startup:
+        - Create/validate the configured storage directories
         - Initialize database connection and schema
-        - Validate storage root directory
         - Start background tasks (expired session cleanup, disk monitoring)
 
     Shutdown:
         - Cancel background tasks
         - Close database connections
     """
+    from app.core.config import ensure_runtime_directories
     from app.core.database import startup_db, shutdown_db
     from app.core.logging import setup_logging
     from app.core.runtime import mark_started
     from app.services.background_tasks import start_background_tasks, stop_background_tasks
 
     # --- Startup ---
+    # Runs before setup_logging so that a misconfigured log_dir fails with a
+    # message naming the setting, rather than as a bare mkdir traceback.
+    ensure_runtime_directories()
     setup_logging()
     mark_started()
     logger.info("PhotoVault server starting up...")
@@ -183,12 +187,7 @@ def create_app() -> FastAPI:
                 from app.core.config import get_settings
 
                 settings = get_settings()
-                db_path = settings.database_url
-                if db_path.startswith("sqlite+aiosqlite://"):
-                    db_path = db_path[len("sqlite+aiosqlite://"):]
-                elif db_path.startswith("sqlite://"):
-                    db_path = db_path[len("sqlite://"):]
-                db = await aiosqlite.connect(db_path)
+                db = await aiosqlite.connect(settings.database_path)
                 try:
                     cursor = await db.execute("SELECT COUNT(*) FROM users")
                     row = await cursor.fetchone()

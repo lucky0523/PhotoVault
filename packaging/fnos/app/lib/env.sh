@@ -189,7 +189,12 @@ pv_export_settings() {
   # config.yaml 覆盖；留给用户调的是那些这里没有设置的项。
   export PHOTOVAULT_CONFIG_PATH="$PV_USER_CONFIG"
 
+  # 四个存储位置各自独立设置，STORAGE_ROOT 只是未设置项的默认基准。飞牛这边刻意
+  # 把它们分开：照片必须落在用户的共享目录（data-share）里才能在文件管理器中看到，
+  # 而日志和模型属于应用自身的运行数据，应留在 TRIM_PKGVAR，卸载时随包清理，也不会
+  # 污染用户相册。
   export PHOTOVAULT_STORAGE_ROOT="$PV_STORAGE_ROOT"
+  export PHOTOVAULT_MEDIA_ROOT="$PV_STORAGE_ROOT"
   export PHOTOVAULT_LOG_DIR="$PV_LOG_DIR"
   export PHOTOVAULT_MODELS_ROOT="$PV_MODELS_DIR"
 
@@ -197,10 +202,11 @@ pv_export_settings() {
   # GET /api/v1/server/info 返回正确的地址，手机端扫码配对依赖它。
   export PHOTOVAULT_SERVER_PORT="$PV_PORT"
 
-  # PHOTOVAULT_DATABASE_URL 故意留空：留空时 config.py 会填成
-  # "{storage_root}/photovault.db" 这样的纯路径。如果显式设成
-  # "sqlite+aiosqlite://..." 形式，background_tasks 的会话清理任务会把带前缀的
-  # URL 原样交给 aiosqlite.connect()，从而在文件系统里建出第二个空库。
+  # PHOTOVAULT_DATABASE_URL 留空，让 config.py 填成 "{storage_root}/photovault.db"。
+  # 数据库需要和照片一起留在共享目录：升级、重装都不能丢，而 TRIM_PKGVAR 不保证保留。
+  #
+  # 若将来要显式设置，用纯路径而不是 "sqlite+aiosqlite://..." 形式。带前缀的 URL
+  # 现在已能被正确解析（服务端统一走 sqlite_path_from_url），但纯路径少一层歧义。
   unset PHOTOVAULT_DATABASE_URL
 
   if [ -s "$PV_SECRET_FILE" ]; then

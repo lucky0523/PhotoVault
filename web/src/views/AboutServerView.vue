@@ -101,6 +101,9 @@
             <el-descriptions-item label="存储根目录">
               <span class="about-path">{{ about.storage.storage_root }}</span>
             </el-descriptions-item>
+            <el-descriptions-item label="照片存储目录">
+              <span class="about-path">{{ about.storage.media_root }}</span>
+            </el-descriptions-item>
             <el-descriptions-item label="数据库">
               <span class="about-path">{{ about.storage.database_path }}</span>
             </el-descriptions-item>
