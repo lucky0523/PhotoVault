@@ -105,6 +105,10 @@ start_app() {
     return 1
   }
 
+  # 每次启动前检查一次体积。放在这里而不是后台定时做：app.log 只在启停和异常时被
+  # 写入，启动这一刻就是它唯一会变大的入口。
+  pv_rotate_app_log
+
   pv_log "Starting ${PV_APPNAME} ${TRIM_APPVER:-?} (runtime=${PV_RUNTIME_MODE}, port=${PV_PORT}, storage=${PV_STORAGE_ROOT})"
 
   # --workers 1 是硬要求，不是保守设置：
@@ -112,11 +116,24 @@ start_app() {
   #   - 5 个周期性后台任务全在进程内（services/background_tasks.py）
   # 多 worker 会得到多份互不相干的队列、多份重复的清理任务，并让多个进程同时写
   # 同一个 SQLite 库。
+  #
+  # --no-access-log：uvicorn 的访问日志和服务端自己的请求中间件记的是同一批请求
+  # （main.py 的 request_logging_middleware 还多记了耗时），开着等于每个请求写两遍。
+  #
+  # 标准输出丢弃、只保留标准错误，是为了让 app.log 回到它本来的职责：只记「进程有
+  # 没有被拉起来」。两者的分工由 uvicorn 的默认 logging 配置和 core/logging.py 决定：
+  #   stdout <- uvicorn.access（已关闭）+ core/logging.py 的 StreamHandler
+  #             后者的每一行都同时写进了 {log_dir}/photovault.log，那份有 10MB×6 轮转
+  #   stderr <- uvicorn / uvicorn.error 的启动与异常信息 + Python 解释器的 traceback
+  #             这些是服务起不来时唯一的线索，而那时 photovault.log 还没被创建
+  # 所以丢 stdout 不丢任何信息，却让 app.log 从「photovault.log 的无轮转超集」缩回
+  # 到每次启停几行。
   "$PV_PYTHON" -m uvicorn app.main:app \
     --host 0.0.0.0 \
     --port "$PV_PORT" \
     --workers 1 \
-    >>"$PV_LOG_FILE" 2>&1 &
+    --no-access-log \
+    >/dev/null 2>>"$PV_LOG_FILE" &
 
   local pid=$!
   echo "$pid" >"$PV_PID_FILE"

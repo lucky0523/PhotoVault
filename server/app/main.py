@@ -91,6 +91,63 @@ class StorageError(PhotoVaultException):
 
 
 # ---------------------------------------------------------------------------
+# Request logging helpers
+# ---------------------------------------------------------------------------
+
+
+# Cap on the X-Forwarded-For value copied into a log line. The header is
+# attacker-controlled and unbounded in principle; a long chain adds no diagnostic
+# value over its first few hops.
+_MAX_FORWARDED_LEN = 128
+
+
+def _client_addr(request: Request) -> str:
+    """Describe who made a request, for the access log line.
+
+    Reports the peer address as resolved by the ASGI server. Uvicorn runs
+    ``ProxyHeadersMiddleware`` by default and rewrites this from
+    ``X-Forwarded-For`` when the connection comes from a trusted proxy
+    (``--forwarded-allow-ips``, default ``127.0.0.1``), so for a trusted proxy this
+    is already the real client.
+
+    When ``X-Forwarded-For`` is present and differs, the raw header is appended.
+    That covers the Docker deployment, where Caddy connects from the container
+    network rather than ``127.0.0.1``, so uvicorn does *not* trust it and the peer
+    address would otherwise be the proxy on every single request.
+
+    The header is deliberately reproduced verbatim rather than reduced to one hop:
+    uvicorn and this function would otherwise pick different hops out of the same
+    chain and the line would show two unrelated-looking addresses. It is also
+    client-supplied and therefore spoofable, which is why it is labelled ``xff``
+    instead of being presented as the client address.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        ``"192.168.1.50"`` when unproxied, or
+        ``'172.18.0.3 xff "192.168.1.50"'`` when a forwarding header is present.
+        The peer is ``"-"`` if the transport exposes none (some ASGI test
+        transports).
+    """
+    peer = request.client.host if request.client else "-"
+
+    forwarded = request.headers.get("x-forwarded-for", "")
+    # Strip control characters so a crafted header cannot forge extra log lines,
+    # then collapse whitespace to keep the entry on one line.
+    forwarded = " ".join(forwarded.split())
+    forwarded = "".join(c for c in forwarded if c.isprintable())
+
+    if not forwarded or forwarded == peer:
+        return peer
+
+    if len(forwarded) > _MAX_FORWARDED_LEN:
+        forwarded = forwarded[:_MAX_FORWARDED_LEN] + "..."
+
+    return f'{peer} xff "{forwarded}"'
+
+
+# ---------------------------------------------------------------------------
 # Lifespan (startup / shutdown)
 # ---------------------------------------------------------------------------
 
@@ -173,6 +230,9 @@ def create_app() -> FastAPI:
         """
         start_time = time.time()
         path = request.url.path
+        # Resolved once up front so all three log sites below agree, and so the
+        # value is still available if the request object is consumed downstream.
+        client = _client_addr(request)
 
         # Setup check: block non-setup API endpoints when system is not initialized
         # Only applies to /api/v1/* paths (not static files, health check, etc.)
@@ -195,10 +255,11 @@ def create_app() -> FastAPI:
                     if user_count == 0:
                         duration_ms = (time.time() - start_time) * 1000
                         logger.info(
-                            "%s %s -> 503 (%.1fms) [not initialized]",
+                            "%s %s -> 503 (%.1fms) from %s [not initialized]",
                             request.method,
                             path,
                             duration_ms,
+                            client,
                         )
                         return JSONResponse(
                             status_code=503,
@@ -220,9 +281,10 @@ def create_app() -> FastAPI:
             # Log and return a generic 500 response.
             duration_ms = (time.time() - start_time) * 1000
             logger.error(
-                "Unhandled exception on %s %s (%.1fms): %s\n%s",
+                "Unhandled exception on %s %s from %s (%.1fms): %s\n%s",
                 request.method,
                 request.url.path,
+                client,
                 duration_ms,
                 str(exc),
                 traceback.format_exc(),
@@ -237,11 +299,12 @@ def create_app() -> FastAPI:
 
         duration_ms = (time.time() - start_time) * 1000
         logger.info(
-            "%s %s -> %d (%.1fms)",
+            "%s %s -> %d (%.1fms) from %s",
             request.method,
             request.url.path,
             response.status_code,
             duration_ms,
+            client,
         )
         return response
 

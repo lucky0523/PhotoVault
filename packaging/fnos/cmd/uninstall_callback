@@ -68,9 +68,10 @@ purge_dir() {
 purge_dir "${PKGVAR}/logs" "日志目录"
 purge_dir "${PKGVAR}/models" "模型目录"
 
-# 服务已停，PID 文件是残留物。
+# 服务已停，PID 文件是残留物。app.log.1 是轮转出来的历史副本，也一并清掉；当前的
+# app.log 保留，因为卸载过程本身要往它写审计记录。
 if [ "$PKGVAR_OK" -eq 1 ]; then
-  rm -f "${PKGVAR}/app.pid" 2>/dev/null
+  rm -f "${PKGVAR}/app.pid" "${PKGVAR}/app.log.1" 2>/dev/null
 fi
 
 # 工作目录可能是安装时自定义的，优先报告落盘的那个真实路径，读不到再退回共享目录。

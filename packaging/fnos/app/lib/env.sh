@@ -81,6 +81,31 @@ pv_log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-?}] $1" >>"$PV_LOG_FILE" 2>/dev/null
 }
 
+# app.log 的体积上限。正常情况下它每次启停只写几行，一年也到不了 1 MB；设上限是为了
+# 兜住异常场景——崩溃循环时每次重启都会往 stderr 写一份 traceback，没有上限的话会
+# 慢慢吃掉系统盘（app.log 在 TRIM_PKGVAR 下，不在数据盘上）。
+PV_LOG_MAX_BYTES=$((2 * 1024 * 1024))
+
+# 超过上限就轮转，只保留一个备份，总占用因此封顶约 4 MB。
+#
+# 刻意不做多级轮转：这个文件是给「服务起不来时看一眼」用的，历史价值很低。完整的
+# 应用日志在 {log_dir}/photovault.log 里，那份由 Python 的 RotatingFileHandler 管着
+# （10 MB × 6）。
+pv_rotate_app_log() {
+  [ -f "$PV_LOG_FILE" ] || return 0
+
+  local size
+  size="$(wc -c <"$PV_LOG_FILE" 2>/dev/null | tr -d '[:space:]')"
+  case "$size" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$size" -gt "$PV_LOG_MAX_BYTES" ] || return 0
+
+  if mv -f "$PV_LOG_FILE" "${PV_LOG_FILE}.1" 2>/dev/null; then
+    pv_log "Rotated previous app.log (${size} bytes) to app.log.1"
+  fi
+}
+
 # 写入用户可见的错误信息。文档要求生命周期脚本在以非零码退出前把清晰的错误
 # 信息写进 TRIM_TEMP_LOGFILE。
 pv_fail() {
