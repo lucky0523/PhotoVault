@@ -3,15 +3,27 @@
 # 卸载「前」执行。
 #
 # 刻意不做任何删除。PhotoVault 管的是用户的照片原件和绑定它们的 SQLite 元数据库
-# （去重记录、回收站状态、人脸聚类），这些都在共享目录里，属于用户资产。
+# （去重记录、回收站状态、人脸聚类），这些都在工作目录里，属于用户资产。
 # 文档也要求卸载逻辑尊重用户数据。
+#
+# 应用自身的运行数据（日志目录、模型目录）由 uninstall_callback 在卸载走完之后清理，
+# 不放在这里：卸载中途失败会留下"应用还在、模型却被删了"的状态。
 #
 # 这里只把数据位置写进日志，方便用户之后找回或重装后复用。
 #
 set -u
 
 LOG_FILE="${TRIM_PKGVAR}/app.log"
-DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+
+# 工作目录可能是安装时在向导里自定义的，落盘在 TRIM_PKGETC/workdir。优先报告它，
+# 这样用户重装时知道该填回哪个路径。
+DATA_DIR=""
+if [ -s "${TRIM_PKGETC:-/nonexistent}/workdir" ]; then
+  DATA_DIR="$(head -n 1 "${TRIM_PKGETC}/workdir" 2>/dev/null | tr -d '\r')"
+fi
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+fi
 
 mkdir -p "$TRIM_PKGVAR" 2>/dev/null
 {

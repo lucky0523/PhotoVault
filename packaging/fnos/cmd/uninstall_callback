@@ -2,14 +2,90 @@
 #
 # 卸载清理「后」执行。
 #
-# 同样不删任何用户数据，只做一次善后提示。TRIM_PKGETC / TRIM_PKGVAR 由系统按自己
-# 的策略处理；共享目录里的照片和数据库不属于本脚本的职责范围。
+# 会删除应用自身的运行数据（日志目录、模型目录），不删任何用户数据：照片原件和
+# SQLite 数据库都在工作目录里，属于用户资产，本脚本绝不触碰。
+#
+# 放在 callback 而不是 init：只有卸载真正走完才清理。若放在 init，卸载中途失败会
+# 留下"应用还在、模型却被删了"的状态。
 #
 set -u
 
-DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
-if [ -n "$DATA_DIR" ]; then
-  echo "PhotoVault 已卸载。照片与数据库仍保留在: ${DATA_DIR}" >"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+# 与 app/lib/env.sh 的 PV_LOG_DIR / PV_MODELS_DIR 保持一致。
+#
+# 这里刻意不 source env.sh：卸载清理后 $TRIM_APPDEST 下的应用文件可能已被移除；
+# 而且 env.sh 在 set -u 下会直接引用 TRIM_PKGETC、TRIM_DATA_SHARE_PATHS 等变量，
+# 卸载阶段未必都还在，一旦缺失整个脚本会直接中断。
+PKGVAR="${TRIM_PKGVAR:-}"
+
+# 动手之前先把 TRIM_PKGVAR 本身确认一遍，后面所有操作都以它为前提。
+#
+# 必须是至少两层的绝对路径：TRIM_PKGVAR 为空时 "${PKGVAR}/logs" 会退化成 "/logs"，
+# 那就是在系统根目录上 rm -rf。同时要求目录当前存在——系统若已经把它清掉了，这里
+# 本来就没什么可做。
+PKGVAR_OK=0
+case "$PKGVAR" in
+  /*/*) [ -d "$PKGVAR" ] && PKGVAR_OK=1 ;;
+esac
+
+LOG_FILE="${PKGVAR}/app.log"
+
+log_line() {
+  [ "$PKGVAR_OK" -eq 1 ] || return 0
+  # stderr 先改向再打开文件：顺序反了的话，追加失败时 shell 的报错会漏到终端上。
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-UNINSTALL}] $1" \
+    2>/dev/null >>"$LOG_FILE"
+}
+
+# 只删 TRIM_PKGVAR 下我们自己建的那一个子目录，绝不删 TRIM_PKGVAR 本身。
+purge_dir() {
+  local dir="$1" label="$2"
+
+  [ "$PKGVAR_OK" -eq 1 ] || return 0
+  [ "$(dirname "$dir")" = "$PKGVAR" ] || return 0
+
+  # 若被替换成符号链接（比如有人把 logs 指到照片目录），只摘掉链接本身，
+  # 不跟进去删目标。
+  if [ -L "$dir" ]; then
+    rm -f "$dir" 2>/dev/null
+    log_line "已移除${label}的符号链接（未触碰其指向的内容）: ${dir}"
+    return 0
+  fi
+
+  [ -d "$dir" ] || return 0
+
+  local size
+  size="$(du -sh "$dir" 2>/dev/null | cut -f1)"
+
+  if rm -rf "$dir" 2>/dev/null; then
+    log_line "已清理${label}: ${dir} (${size:-?})"
+  else
+    log_line "WARN: 无法清理${label}: ${dir}"
+  fi
+}
+
+# 日志可再生；模型是能重新下载的缓存（ONNX 模型 + 地理编码库，体积可达数百 MB），
+# 留着只是白占空间。
+purge_dir "${PKGVAR}/logs" "日志目录"
+purge_dir "${PKGVAR}/models" "模型目录"
+
+# 服务已停，PID 文件是残留物。
+if [ "$PKGVAR_OK" -eq 1 ]; then
+  rm -f "${PKGVAR}/app.pid" 2>/dev/null
 fi
 
+# 工作目录可能是安装时自定义的，优先报告落盘的那个真实路径，读不到再退回共享目录。
+DATA_DIR=""
+if [ -s "${TRIM_PKGETC:-/nonexistent}/workdir" ]; then
+  DATA_DIR="$(head -n 1 "${TRIM_PKGETC}/workdir" 2>/dev/null | tr -d '\r')"
+fi
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="${TRIM_DATA_SHARE_PATHS:-}"
+  DATA_DIR="${DATA_DIR%%:*}"
+fi
+
+if [ -n "$DATA_DIR" ]; then
+  echo "PhotoVault 已卸载，日志与识别模型已清理。照片与数据库仍保留在: ${DATA_DIR}" >"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+fi
+
+log_line "Uninstall completed. 保留的用户数据: ${DATA_DIR:-未知}"
 exit 0

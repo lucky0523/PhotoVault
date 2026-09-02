@@ -30,6 +30,7 @@ TRIM_APPDEST/
 
 TRIM_PKGETC/
 ├── jwt_secret    JWT 签名密钥
+├── workdir       安装向导选定的工作目录（单行绝对路径，留空未自定义时不存在）
 └── config.yaml   可选高级配置
 
 TRIM_PKGVAR/
@@ -38,7 +39,7 @@ TRIM_PKGVAR/
 ├── logs/         应用日志目录
 └── models/       下载的 ONNX / 地理数据模型
 
-TRIM_DATA_SHARE_PATHS 的首个目录/
+工作目录（默认为 TRIM_DATA_SHARE_PATHS 的首个目录，可在安装向导中自定义）/
 ├── photovault.db
 ├── .thumbnails/
 ├── .chunks/
@@ -46,7 +47,23 @@ TRIM_DATA_SHARE_PATHS 的首个目录/
 └── <username>/   用户照片、回收站和媒体文件
 ```
 
-照片和 SQLite 数据库放在同一个 data-share 中：两者是强绑定的用户资产。这样用户可以整体迁移、备份或在重新安装后继续使用，而不会发生“照片保留、数据库元数据丢失”的状态。
+照片和 SQLite 数据库放在同一个工作目录中：两者是强绑定的用户资产。这样用户可以整体迁移、备份或在重新安装后继续使用，而不会发生“照片保留、数据库元数据丢失”的状态。
+
+## 1.1 安装向导收集的值只在安装期存在
+
+`wizard/install` 的字段会成为同名环境变量，但**只在安装那一趟的生命周期脚本里可见**。官方文档只对 `wizard/config` 承诺“提交后的值会继续作为环境变量提供给应用使用”，`wizard/install` 没有这个承诺——`cmd/main start` 时读不到 `$wizard_work_dir`。
+
+所以凡是安装时收集、运行时还要用的值，都必须自己落盘。PhotoVault 的工作目录走的是和 `jwt_secret` 完全一样的路子：
+
+1. `cmd/install_callback` 调用 `pv_persist_workdir`，校验后写入 `TRIM_PKGETC/workdir`
+2. `app/lib/env.sh` 在 source 的末尾调用 `pv_resolve_storage_root`，从该文件读回，读不到则回落 data-share
+
+放 `TRIM_PKGETC` 而不是 `TRIM_PKGVAR`，因为升级要保留：丢了这个文件，升级后工作目录会悄悄跳回默认共享目录，用户看到的现象是“照片全没了”。
+
+两个容易漏掉的边界：
+
+- **重装留空**。卸载不一定清 `TRIM_PKGETC`，若用户重装时把工作目录留空，必须**删掉**旧记录，否则会继承一个他并没有选择的目录。
+- **路径类输入要当攻击面对待**。除了绝对路径和系统目录黑名单，最有价值的一条是校验**上层目录必须已存在**：否则存储空间没挂载时 `mkdir -p` 会在系统盘上凭空建出整条路径，照片越备份越多直到写满系统盘。同理 `cmd/main` 的 preflight 只检查目录存在、绝不 `mkdir`，因为服务端启动时的 `ensure_runtime_directories` 会 `mkdir -p`，必须在它之前拦下来。
 
 ## 2. `fnpack` 不是编译器
 
