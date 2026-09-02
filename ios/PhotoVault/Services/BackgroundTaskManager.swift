@@ -12,10 +12,10 @@ class BackgroundTaskManager {
     // MARK: - Task Identifiers
 
     /// Background app refresh task for periodic photo folder scanning
-    static let backgroundScanIdentifier = "com.photovault.ios.background-scan"
+    static let backgroundScanIdentifier = "com.huoyi.photovault.ios.background-scan"
 
     /// Background processing task for file uploads
-    static let backgroundUploadIdentifier = "com.photovault.ios.background-upload"
+    static let backgroundUploadIdentifier = "com.huoyi.photovault.ios.background-upload"
 
     // MARK: - Configuration
 

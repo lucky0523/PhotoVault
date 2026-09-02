@@ -1,0 +1,105 @@
+package com.huoyi.photovault.ui.main.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.huoyi.photovault.ui.theme.PhotoVaultColors
+
+/**
+ * 可复用的备份状态标签：一个彩色圆点加「标签 数量」文本，背景为对应颜色的低透明度填充。
+ *
+ * 供本地 Tab（LocalTab）与云端 Tab（CloudTab）共用，用于展示各类备份状态数量。
+ *
+ * @param label 状态标签文本，如「已备份」「未备份」「回收站」「已删除」
+ * @param count 该状态对应的数量
+ * @param color 该状态的主题色，用于圆点、文本与半透明背景
+ * @param modifier 外部布局修饰符
+ */
+@Composable
+fun StatusChip(
+    label: String,
+    count: Int,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.15f))
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Top line: colored dot + label. Kept on its own line so the chip only
+        // needs to be as wide as the (short) label text, not "label + count".
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                color = color,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        // Count on its own line, emphasized. Shown exactly (to the unit digit);
+        // the dedicated line gives it plenty of room even for large numbers.
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * 备份状态颜色约定，供本地 Tab、云端 Tab 与文件夹详情页统一复用，避免硬编码。
+ *
+ * - [BackedUp] 已备份：绿色
+ * - [Pending] 未备份：蓝色
+ * - [Trashed] 回收站：橙色
+ * - [Purged] 已删除：红色
+ */
+object CloudStatusColors {
+    val BackedUp = PhotoVaultColors.SyncGreen
+    val Pending = PhotoVaultColors.VaultBlue
+    val Trashed = PhotoVaultColors.ArchiveAmber
+    val Purged = PhotoVaultColors.DeleteRose
+}

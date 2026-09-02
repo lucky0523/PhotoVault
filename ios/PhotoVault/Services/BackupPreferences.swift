@@ -9,7 +9,7 @@ import Foundation
 /// the automatic triggers (background scan / upload) read the exact same value.
 enum BackupPreferences {
     /// UserDefaults key for the "自动备份" switch.
-    static let autoBackupEnabledKey = "com.photovault.settings.autoBackupEnabled"
+    static let autoBackupEnabledKey = "com.huoyi.photovault.settings.autoBackupEnabled"
 
     /// Whether automatic backup is enabled. Defaults to `true` when unset,
     /// matching the Android default (auto-backup on).

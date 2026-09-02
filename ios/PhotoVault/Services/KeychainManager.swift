@@ -36,7 +36,7 @@ class KeychainManager {
     // MARK: - Properties
 
     /// The service identifier used for all Keychain items.
-    static let serviceIdentifier = "com.photovault.ios"
+    static let serviceIdentifier = "com.huoyi.photovault.ios"
 
     /// Shared singleton instance.
     static let shared = KeychainManager()

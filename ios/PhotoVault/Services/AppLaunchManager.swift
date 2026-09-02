@@ -21,7 +21,7 @@ class AppLaunchManager: ObservableObject {
     private let tokenManager: TokenManager
     private let apiClient: APIClient
 
-    private let savedServerAddressKey = "com.photovault.savedServerAddress"
+    private let savedServerAddressKey = "com.huoyi.photovault.savedServerAddress"
 
     // MARK: - Initialization
 

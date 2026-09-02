@@ -33,10 +33,10 @@ class LoginViewModel: ObservableObject {
 
     // MARK: - Credential Storage Keys
 
-    private let savedServerAddressKey = "com.photovault.savedServerAddress"
-    private let savedUsernameKey = "com.photovault.savedUsername"
-    private let savedPasswordKey = "com.photovault.savedPassword"
-    private let savedRememberPasswordKey = "com.photovault.savedRememberPassword"
+    private let savedServerAddressKey = "com.huoyi.photovault.savedServerAddress"
+    private let savedUsernameKey = "com.huoyi.photovault.savedUsername"
+    private let savedPasswordKey = "com.huoyi.photovault.savedPassword"
+    private let savedRememberPasswordKey = "com.huoyi.photovault.savedRememberPassword"
 
     // MARK: - Initialization
 

@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.photovault"
+    namespace = "com.huoyi.photovault"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.photovault"
+        applicationId = "com.huoyi.photovault"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

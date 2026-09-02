@@ -66,7 +66,7 @@ class ConnectionManager: ObservableObject {
     private var currentServerAddress: String?
 
     private let pathMonitor: NWPathMonitor
-    private let monitorQueue = DispatchQueue(label: "com.photovault.networkMonitor")
+    private let monitorQueue = DispatchQueue(label: "com.huoyi.photovault.networkMonitor")
     private var healthCheckTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 

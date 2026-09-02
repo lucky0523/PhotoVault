@@ -229,7 +229,7 @@ fun deriveLocalCounts(folder: BackupFolder): LocalBackupCounts =
 
 #### 共享组件复用
 
-复用 `com.photovault.ui.main.components` 下的 `StatusChip` 与 `CloudStatusColors`（已存在）：
+复用 `com.huoyi.photovault.ui.main.components` 下的 `StatusChip` 与 `CloudStatusColors`（已存在）：
 
 ```kotlin
 object CloudStatusColors {

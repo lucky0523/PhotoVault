@@ -11,7 +11,7 @@
 }
 
 # Gson
--keep class com.photovault.data.api.model.** { *; }
+-keep class com.huoyi.photovault.data.api.model.** { *; }
 
 # Room
 -keep class * extends androidx.room.RoomDatabase

@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_ID="com.photovault"
+APP_ID="com.huoyi.photovault"
 LAUNCH_ACTIVITY="$APP_ID/.MainActivity"
 
 # ---- 默认参数 ----

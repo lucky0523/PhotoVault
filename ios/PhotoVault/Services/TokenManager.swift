@@ -12,10 +12,10 @@ class TokenManager: ObservableObject {
 
     private let keychain = KeychainManager.shared
 
-    private let accessTokenKey = "com.photovault.accessToken"
-    private let refreshTokenKey = "com.photovault.refreshToken"
-    private let accessTokenExpiryKey = "com.photovault.accessTokenExpiry"
-    private let refreshTokenExpiryKey = "com.photovault.refreshTokenExpiry"
+    private let accessTokenKey = "com.huoyi.photovault.accessToken"
+    private let refreshTokenKey = "com.huoyi.photovault.refreshToken"
+    private let accessTokenExpiryKey = "com.huoyi.photovault.accessTokenExpiry"
+    private let refreshTokenExpiryKey = "com.huoyi.photovault.refreshTokenExpiry"
 
     /// Stored access token
     var accessToken: String? {

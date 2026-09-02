@@ -1,0 +1,47 @@
+package com.huoyi.photovault.ui.main
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.network.ConnectionManager
+import com.huoyi.photovault.data.network.ConnectionState
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class MainViewModel @Inject constructor(
+    private val connectionManager: ConnectionManager,
+    private val credentialManager: CredentialManager
+) : ViewModel() {
+
+    val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
+
+    // Debug: seconds until the next heartbeat probe fires.
+    val heartbeatCountdown: StateFlow<Int> = connectionManager.heartbeatCountdown
+
+    init {
+        // Attempt connection on initialization
+        val serverAddress = credentialManager.getServerAddress()
+        if (!serverAddress.isNullOrEmpty()) {
+            viewModelScope.launch {
+                connectionManager.connect(serverAddress)
+            }
+        }
+    }
+
+    fun logout() {
+        credentialManager.clearTokens()
+        connectionManager.disconnect()
+    }
+
+    fun retryConnection() {
+        val serverAddress = credentialManager.getServerAddress()
+        if (!serverAddress.isNullOrEmpty()) {
+            viewModelScope.launch {
+                connectionManager.connect(serverAddress)
+            }
+        }
+    }
+}

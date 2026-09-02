@@ -44,8 +44,8 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.photovault.ios.background-scan</string>
-		<string>com.photovault.ios.background-upload</string>
+		<string>com.huoyi.photovault.ios.background-scan</string>
+		<string>com.huoyi.photovault.ios.background-upload</string>
 	</array>
 </dict>
 </plist>
