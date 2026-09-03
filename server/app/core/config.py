@@ -120,9 +120,15 @@ def previous_workdir_pointer_path(storage_root: str) -> Path:
     return Path(storage_root) / WORKDIR_PREVIOUS_NAME
 
 
-def read_previous_workdir_pointer(storage_root: str) -> str:
-    """Return the retired working directory, or ``""``. Never raises."""
-    return _read_pointer_file(previous_workdir_pointer_path(storage_root))
+def read_previous_workdir_pointer(settings: Settings) -> str:
+    """Return the retired working directory, or ``""``. Never raises.
+
+    Gated on ``require_workdir_setup`` for the same reason as
+    ``read_workdir_pointer`` — see the note there.
+    """
+    if not settings.require_workdir_setup:
+        return ""
+    return _read_pointer_file(previous_workdir_pointer_path(settings.storage_root))
 
 
 def _read_pointer_file(path: Path) -> str:
@@ -150,8 +156,18 @@ def _read_pointer_file(path: Path) -> str:
     return candidate.rstrip("/") or "/"
 
 
-def read_workdir_pointer(storage_root: str) -> str:
+def read_workdir_pointer(settings: Settings) -> str:
     """Return the usable working directory, or ``""`` when unset or unusable.
+
+    **Only deployments that opted into the wizard read this file.** The pointer is a
+    mechanism of the fnOS package, where the photo directory has to be chosen at
+    runtime because the platform grants write access per directory. Everywhere else
+    — Docker, a bare ``uvicorn``, local development — storage comes from the
+    environment and configuration alone, and a stray ``.workdir`` left in the volume
+    (copied from a backup, restored from another install) must not be able to
+    silently relocate the photos and the database. Hence the gate lives inside this
+    function rather than at its call sites: it is the single entry point for reading
+    the pointer, so no future caller can forget it.
 
     Never raises: this runs during settings construction, and a corrupt pointer
     must degrade to "not provisioned yet" rather than prevent the server from
@@ -167,7 +183,10 @@ def read_workdir_pointer(storage_root: str) -> str:
     ``needs_provisioning``. Whether the directory is actually *writable* is a real
     write probe, done once at startup by ``verify_workdir_writable``.
     """
-    candidate = _read_pointer_file(workdir_pointer_path(storage_root))
+    if not settings.require_workdir_setup:
+        return ""
+
+    candidate = _read_pointer_file(workdir_pointer_path(settings.storage_root))
     if not candidate:
         return ""
 
@@ -545,7 +564,7 @@ class Settings(BaseSettings):
         explicit environment variable or yaml value — a deployment that pins those
         deliberately should never be overridden by persisted UI state.
         """
-        workdir = read_workdir_pointer(self.storage_root)
+        workdir = read_workdir_pointer(self)
         if workdir:
             if not self.media_root:
                 self.media_root = workdir
@@ -682,7 +701,7 @@ def ensure_runtime_directories(settings: Settings | None = None) -> None:
 def is_provisioned(settings: Settings | None = None) -> bool:
     """Whether an administrator has already chosen a working directory."""
     s = settings or get_settings()
-    return bool(read_workdir_pointer(s.storage_root))
+    return bool(read_workdir_pointer(s))
 
 
 def needs_provisioning(settings: Settings | None = None) -> bool:
@@ -756,7 +775,7 @@ def verify_workdir_writable(settings: Settings | None = None) -> bool:
     """
     s = settings or get_settings()
 
-    workdir = read_workdir_pointer(s.storage_root)
+    workdir = read_workdir_pointer(s)
     if not workdir:
         return True
 
@@ -797,13 +816,25 @@ def set_workdir(path: str, settings: Settings | None = None) -> str:
 
     Raises:
         ValueError: If ``path`` is not absolute.
+        RuntimeError: If the deployment did not opt into the wizard, in which case a
+            pointer must never be created — it would be dead weight that only the
+            fnOS build knows how to read.
         OSError: If the pointer file cannot be written.
     """
     if not os.path.isabs(path):
         raise ValueError(f"working directory must be an absolute path, got: {path!r}")
 
-    normalised = path.rstrip("/") or "/"
     s = settings or get_settings()
+    # Symmetric with the read gate: only the wizard-driven deployments own this file.
+    # Asserted rather than assumed so that a future caller reaching here on Docker
+    # fails loudly instead of quietly leaving a pointer nobody will honour.
+    if not s.require_workdir_setup:
+        raise RuntimeError(
+            "refusing to record a working directory: this deployment configures "
+            "storage through the environment (require_workdir_setup is off)"
+        )
+
+    normalised = path.rstrip("/") or "/"
 
     pointer = workdir_pointer_path(s.storage_root)
     pointer.parent.mkdir(parents=True, exist_ok=True)

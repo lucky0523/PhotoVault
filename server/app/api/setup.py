@@ -326,7 +326,7 @@ async def get_work_dir_options() -> WorkDirOptionsResponse:
 
     response = WorkDirOptionsResponse(
         default_path=settings.storage_root,
-        previous_path=read_previous_workdir_pointer(settings.storage_root),
+        previous_path=read_previous_workdir_pointer(settings),
     )
 
     # Best-effort: a missing gateway must not block setup, because default_path is
