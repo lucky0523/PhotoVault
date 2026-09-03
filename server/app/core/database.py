@@ -15,7 +15,13 @@ from collections.abc import AsyncGenerator
 
 import aiosqlite
 
-from app.core.config import ensure_runtime_directories, get_settings, sqlite_path_from_url
+from app.core.config import (
+    ensure_runtime_directories,
+    get_settings,
+    needs_provisioning,
+    sqlite_path_from_url,
+    verify_workdir_writable,
+)
 
 logger = logging.getLogger("photovault.database")
 
@@ -287,8 +293,30 @@ async def startup_db() -> None:
     - Ensures every configured storage location exists (they can each live on a
       different volume, so this is where a bad path surfaces).
     - Calls ``init_db`` to create tables/indexes.
+
+    Skips database creation entirely while the first-run wizard still has to pick a
+    working directory. Creating it now would place it under ``storage_root``, i.e.
+    the wrong volume, and provisioning would then have to migrate it — the whole
+    point of asking before creating anything. The setup endpoints create the
+    database inside the chosen directory instead.
     """
     settings = get_settings()
+
+    # Catches the uninstall/reinstall case: the pointer survives in storage_root but
+    # the platform's grant on the working directory does not. Retires the pointer so
+    # the wizard runs again instead of the server silently failing every write.
+    verify_workdir_writable(settings)
+
+    if needs_provisioning(settings):
+        # storage_root / log_dir / models_root are still needed: the wizard has to
+        # be served and logged. Only the database is deferred.
+        ensure_runtime_directories(settings)
+        logger.info(
+            "Waiting for first-run setup to choose a working directory; "
+            "no database created yet"
+        )
+        return
+
     db_path = settings.database_path
 
     ensure_runtime_directories(settings)

@@ -243,10 +243,38 @@ def create_app() -> FastAPI:
             and path != "/api/v1/health"
         ):
             try:
+                import os
+
                 import aiosqlite
-                from app.core.config import get_settings
+                from app.core.config import get_settings, needs_provisioning
 
                 settings = get_settings()
+
+                # Before provisioning there is deliberately no database at all.
+                # This has to short-circuit: falling through to aiosqlite.connect
+                # would *create* an empty file at the pre-provisioning path (wrong
+                # volume), and the follow-up query would then fail on the missing
+                # table and be swallowed by the except below — letting every
+                # endpoint through on an uninitialised server.
+                if needs_provisioning(settings) or not os.path.isfile(
+                    settings.database_path
+                ):
+                    duration_ms = (time.time() - start_time) * 1000
+                    logger.info(
+                        "%s %s -> 503 (%.1fms) from %s [not provisioned]",
+                        request.method,
+                        path,
+                        duration_ms,
+                        client,
+                    )
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "NOT_INITIALIZED",
+                            "detail": "System not initialized, please complete setup",
+                        },
+                    )
+
                 db = await aiosqlite.connect(settings.database_path)
                 try:
                     cursor = await db.execute("SELECT COUNT(*) FROM users")

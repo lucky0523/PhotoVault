@@ -14,33 +14,29 @@ set -u
 
 pv_ensure_dirs
 
-# 工作目录必须在这一趟定下来。wizard/install 收集的 $wizard_work_dir 只在安装期
-# 以环境变量存在，start 时读不到，所以这里校验、创建、探测可写，再落盘到
-# TRIM_PKGETC/workdir 供之后每次启动读取。任何一步不过就直接让安装失败，用户能在
-# 应用中心看到具体原因，而不是"装好了但启动不了"。
-if ! pv_persist_workdir; then
-  exit 1
-fi
-
+# 刻意不在这里决定照片的存放位置。
+#
+# 飞牛只对申报的 data-share 自动授予运行用户 ACL，其它目录要由管理员通过
+# trim.file.sharedAccess 授权，而那个流程只能在**已装好并跑起来**的应用界面里走。
+# 安装阶段去碰它必然形成死锁：装不上 -> 进不了界面 -> 没法授权 -> 还是装不上。
+#
+# 所以安装只保证 data-share 可用，照片位置留给首次启动的初始化向导。
 if ! pv_ensure_secret; then
   pv_fail "无法生成 JWT 密钥（Python 运行时: ${PV_PYTHON}）。请确认运行时依赖已正确安装。"
   exit 1
 fi
 
-# 自定义工作目录已由 pv_persist_workdir 创建并验证过。默认的共享目录则由系统在安装
-# 时创建并授予 ACL 权限，这里只验证，不创建——它没建出来说明资源声明有问题，替它
-# mkdir 只会掩盖故障。
-if [ "$PV_STORAGE_IS_CUSTOM" -eq 0 ]; then
-  if [ -z "$PV_STORAGE_ROOT" ] || [ ! -d "$PV_STORAGE_ROOT" ]; then
-    pv_fail "共享数据目录未创建成功: '${PV_STORAGE_ROOT}'"
-    exit 1
-  fi
-
-  if ! pv_storage_writable; then
-    pv_fail "共享数据目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
-    exit 1
-  fi
+# 共享目录由系统在安装时创建并授予 ACL 权限。这里只验证，不创建——它没建出来说明
+# 资源声明有问题，替它 mkdir 只会掩盖故障。
+if [ -z "$PV_STORAGE_ROOT" ] || [ ! -d "$PV_STORAGE_ROOT" ]; then
+  pv_fail "共享数据目录未创建成功: '${PV_STORAGE_ROOT}'"
+  exit 1
 fi
 
-pv_log "Install completed. runtime=${PV_RUNTIME_MODE} storage=${PV_STORAGE_ROOT} custom=${PV_STORAGE_IS_CUSTOM} etc=${TRIM_PKGETC} var=${TRIM_PKGVAR}"
+if ! pv_storage_writable; then
+  pv_fail "共享数据目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
+  exit 1
+fi
+
+pv_log "Install completed. runtime=${PV_RUNTIME_MODE} storage=${PV_STORAGE_ROOT} etc=${TRIM_PKGETC} var=${TRIM_PKGVAR}"
 exit 0

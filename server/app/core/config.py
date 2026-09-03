@@ -26,6 +26,12 @@ Setting              Environment variable        Default when unset
 ``models_root``      ``PHOTOVAULT_MODELS_ROOT``  ``{storage_root}/.models``
 ===================  ==========================  ==============================
 
+On the fnOS package a further step sits in front of this table: ``photos`` and the
+database live in a *working directory* the administrator picks during the first-run
+wizard, because the platform only lets the app write directories it has been
+granted an ACL for. That choice is recorded in ``{storage_root}/.workdir`` and
+overrides the two derived defaults. See ``needs_provisioning`` / ``set_workdir``.
+
 ``storage_root`` is *only* the fallback base used to derive the ones that were
 left unset — nothing reads it to locate photos, the database, logs or models.
 That means any single location can be moved to a different disk (a small SSD for
@@ -69,6 +75,111 @@ def sqlite_path_from_url(database_url: str) -> str:
         if database_url.startswith(prefix):
             return database_url[len(prefix):]
     return database_url
+
+
+# ---------------------------------------------------------------------------
+# Working-directory pointer
+# ---------------------------------------------------------------------------
+# The working directory holds the photos *and* the database, so its location
+# cannot be recorded inside itself. It goes in a one-line file under
+# ``storage_root`` instead, which is the one place guaranteed to exist and be
+# writable before provisioning (on fnOS that is the declared data-share, the only
+# directory the platform auto-grants the app user an ACL for).
+#
+# This file is also the "provisioning finished" marker: it is written last, after
+# the database and the admin account exist, so an interrupted setup leaves no
+# pointer and the next start simply runs the wizard again.
+#
+# packaging/fnos/cmd/uninstall_callback reads it too, to tell the user where the
+# photos were left. Keep the format a single bare path on one line.
+WORKDIR_POINTER_NAME = ".workdir"
+
+#: Where a no-longer-valid pointer is kept.
+#:
+#: A pointer is retired rather than deleted in two situations: the package was
+#: uninstalled (see cmd/uninstall_callback), or the recorded directory turned out to
+#: be unwritable at startup. Both mean the wizard has to run again — on fnOS an
+#: uninstall revokes the ``trim.file.sharedAccess`` grant, and the wizard is the only
+#: place that can obtain a new one, so continuing to treat the directory as valid
+#: would strand the app with no way to recover.
+#:
+#: The path is preserved because the wizard offers it as "the directory you used
+#: last time": its picker only lists *authorized* directories, so after a revoked
+#: grant the old library would otherwise be unfindable, and there is no free-text
+#: field to type it into.
+WORKDIR_PREVIOUS_NAME = ".workdir.previous"
+
+
+def workdir_pointer_path(storage_root: str) -> Path:
+    """Path to the file recording the administrator-chosen working directory."""
+    return Path(storage_root) / WORKDIR_POINTER_NAME
+
+
+def previous_workdir_pointer_path(storage_root: str) -> Path:
+    """Path to the retired pointer kept as a recovery hint for the wizard."""
+    return Path(storage_root) / WORKDIR_PREVIOUS_NAME
+
+
+def read_previous_workdir_pointer(storage_root: str) -> str:
+    """Return the retired working directory, or ``""``. Never raises."""
+    return _read_pointer_file(previous_workdir_pointer_path(storage_root))
+
+
+def _read_pointer_file(path: Path) -> str:
+    """Read a one-line absolute path from ``path``, or return ``""``."""
+    try:
+        if not path.is_file():
+            return ""
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        candidate = lines[0].strip() if lines else ""
+    except OSError:
+        logging.getLogger("photovault.config").warning(
+            "Could not read the working-directory pointer at %s", path, exc_info=True
+        )
+        return ""
+
+    # Only absolute paths are meaningful; a relative one would resolve against
+    # whatever working directory the service happened to start in.
+    if not candidate or not os.path.isabs(candidate):
+        if candidate:
+            logging.getLogger("photovault.config").warning(
+                "Ignoring non-absolute working directory %r in %s", candidate, path
+            )
+        return ""
+
+    return candidate.rstrip("/") or "/"
+
+
+def read_workdir_pointer(storage_root: str) -> str:
+    """Return the usable working directory, or ``""`` when unset or unusable.
+
+    Never raises: this runs during settings construction, and a corrupt pointer
+    must degrade to "not provisioned yet" rather than prevent the server from
+    starting (which would also make the setup wizard unreachable).
+
+    The recorded directory must still exist to count. A pointer at a missing
+    directory — a deleted library, or a volume that is not mounted — reports "not
+    provisioned", which is the safe answer: in that state the server creates no
+    database, so nothing is written to the wrong place and the untouched library on
+    the absent volume can still be re-adopted through the wizard later.
+
+    Only a cheap ``isdir`` check happens here because this is called per request via
+    ``needs_provisioning``. Whether the directory is actually *writable* is a real
+    write probe, done once at startup by ``verify_workdir_writable``.
+    """
+    candidate = _read_pointer_file(workdir_pointer_path(storage_root))
+    if not candidate:
+        return ""
+
+    if not os.path.isdir(candidate):
+        logging.getLogger("photovault.config").warning(
+            "Recorded working directory %s does not exist; treating the server as "
+            "not provisioned so setup can run again",
+            candidate,
+        )
+        return ""
+
+    return candidate
 
 
 def _load_yaml_config() -> dict[str, Any]:
@@ -242,6 +353,16 @@ class Settings(BaseSettings):
 
     # Trash
     trash_retention_days: int = 30
+
+    # First-run provisioning
+    #
+    # When true the server refuses to create its database until an administrator
+    # has picked a working directory through the setup wizard. Only the fnOS
+    # package turns this on (see packaging/fnos/app/lib/env.sh): there, photos may
+    # only live in a directory the platform has granted the app user an ACL for,
+    # and that grant can only be obtained from inside the running app. Docker and
+    # local development leave it false and keep the original one-step setup.
+    require_workdir_setup: bool = False
 
     # Logging
     log_level: str = "INFO"
@@ -418,7 +539,19 @@ class Settings(BaseSettings):
         only for the ones the user did not configure, so setting a single
         environment variable relocates exactly one directory and leaves the rest
         where they were.
+
+        A working directory chosen through the setup wizard takes priority over
+        ``storage_root`` for both photos and the database, but still yields to an
+        explicit environment variable or yaml value — a deployment that pins those
+        deliberately should never be overridden by persisted UI state.
         """
+        workdir = read_workdir_pointer(self.storage_root)
+        if workdir:
+            if not self.media_root:
+                self.media_root = workdir
+            if not self.database_url:
+                self.database_url = f"{workdir}/photovault.db"
+
         if not self.media_root:
             self.media_root = self.storage_root
         if not self.database_url:
@@ -539,6 +672,160 @@ def ensure_runtime_directories(settings: Settings | None = None) -> None:
             models_root,
             exc_info=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# First-run provisioning state
+# ---------------------------------------------------------------------------
+
+
+def is_provisioned(settings: Settings | None = None) -> bool:
+    """Whether an administrator has already chosen a working directory."""
+    s = settings or get_settings()
+    return bool(read_workdir_pointer(s.storage_root))
+
+
+def needs_provisioning(settings: Settings | None = None) -> bool:
+    """Whether the server must run the working-directory wizard before doing anything.
+
+    True only for deployments that opted into the flow (``require_workdir_setup``)
+    and have not completed it. While true the server deliberately has **no
+    database**: creating one under ``storage_root`` would put it in the wrong place
+    and later require a migration, which is exactly what this flow avoids.
+    """
+    s = settings or get_settings()
+    return bool(s.require_workdir_setup) and not is_provisioned(s)
+
+
+def demote_workdir_pointer(settings: Settings | None = None, *, reason: str = "") -> str:
+    """Retire the current pointer and send the live settings back to ``storage_root``.
+
+    Used when the recorded directory exists but cannot be written to. The pointer is
+    moved to ``.workdir.previous`` rather than deleted so the wizard can offer the
+    path back as a recovery hint, and so the cheap ``is_provisioned`` check agrees
+    with this decision on every later request without redoing the write probe.
+
+    Returns:
+        The retired path, or ``""`` if there was nothing to retire.
+    """
+    s = settings or get_settings()
+    logger = logging.getLogger("photovault.config")
+
+    pointer = workdir_pointer_path(s.storage_root)
+    retired = _read_pointer_file(pointer)
+    if not retired:
+        return ""
+
+    try:
+        pointer.replace(previous_workdir_pointer_path(s.storage_root))
+    except OSError:
+        logger.warning("Could not retire the pointer at %s", pointer, exc_info=True)
+        return ""
+
+    # Only reset the values this pointer was responsible for. A deployment that pins
+    # them through the environment never had the pointer applied in the first place.
+    if s.media_root == retired:
+        object.__setattr__(s, "media_root", s.storage_root)
+    if s.database_url == f"{retired}/photovault.db":
+        object.__setattr__(s, "database_url", f"{s.storage_root}/photovault.db")
+
+    logger.warning(
+        "Retired working directory %s%s; setup will run again",
+        retired,
+        f" ({reason})" if reason else "",
+    )
+    return retired
+
+
+def verify_workdir_writable(settings: Settings | None = None) -> bool:
+    """Confirm at startup that the recorded working directory can be written to.
+
+    This is the check that catches an uninstall/reinstall cycle. The pointer lives in
+    ``storage_root``, which an uninstall deliberately leaves alone (it is the user's
+    share), while the fnOS ``trim.file.sharedAccess`` grant on the working directory
+    is revoked with the app. The directory therefore still *exists* and the pointer
+    still looks valid, but every write fails — and since the wizard is the only place
+    that can request a fresh grant, skipping it would leave no way out.
+
+    A real write probe rather than ``os.access``: the shared folders use Windows ACLs,
+    under which the POSIX permission bits give false negatives.
+
+    Returns:
+        True when provisioning is intact (or there is nothing to check). False when
+        the pointer was retired, meaning the caller should expect the setup flow.
+    """
+    s = settings or get_settings()
+
+    workdir = read_workdir_pointer(s.storage_root)
+    if not workdir:
+        return True
+
+    probe = Path(workdir) / f".pv_startup_probe.{os.getpid()}"
+    try:
+        probe.touch()
+    except OSError as exc:
+        demote_workdir_pointer(s, reason=f"not writable: {exc.strerror or exc}")
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+    return True
+
+
+def set_workdir(path: str, settings: Settings | None = None) -> str:
+    """Record the chosen working directory and point the live settings at it.
+
+    Writing the pointer is the commit step of provisioning, so callers must
+    already have created the database and the administrator account inside
+    ``path``. See ``app.api.setup``.
+
+    The live settings singleton is mutated rather than reloaded because every
+    consumer reads ``settings.media_root`` / ``settings.database_url`` per request
+    (and the background worker holds a reference to this same object), so the new
+    location takes effect immediately with no restart. This mirrors how
+    ``set_analysis_flags`` applies runtime changes.
+
+    Args:
+        path: Absolute path to the working directory.
+        settings: Settings to update. Defaults to the singleton.
+
+    Returns:
+        The normalised path that was recorded.
+
+    Raises:
+        ValueError: If ``path`` is not absolute.
+        OSError: If the pointer file cannot be written.
+    """
+    if not os.path.isabs(path):
+        raise ValueError(f"working directory must be an absolute path, got: {path!r}")
+
+    normalised = path.rstrip("/") or "/"
+    s = settings or get_settings()
+
+    pointer = workdir_pointer_path(s.storage_root)
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    # Write-then-rename so an interrupted write cannot leave a half-written pointer
+    # that would send the server at a truncated path.
+    tmp = pointer.with_name(f"{pointer.name}.tmp")
+    tmp.write_text(f"{normalised}\n", encoding="utf-8")
+    tmp.replace(pointer)
+
+    # The recovery hint has served its purpose now that a directory is chosen again.
+    try:
+        previous_workdir_pointer_path(s.storage_root).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    object.__setattr__(s, "media_root", normalised)
+    object.__setattr__(s, "database_url", f"{normalised}/photovault.db")
+
+    logging.getLogger("photovault.config").info(
+        "Working directory set to %s (database: %s)", normalised, s.database_url
+    )
+    return normalised
 
 
 # ---------------------------------------------------------------------------

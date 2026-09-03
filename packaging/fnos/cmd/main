@@ -56,20 +56,15 @@ preflight() {
     return 1
   fi
 
-  # 刻意只检查存在、不 mkdir。工作目录可能是用户在安装向导里指定的其它存储空间，
-  # 一旦该空间没挂载，替它建目录会让服务端把照片写进系统盘（server 端启动时的
-  # ensure_runtime_directories 会 mkdir -p，所以必须在这之前就拦下来）。
+  # 刻意只检查存在、不 mkdir：data-share 由系统创建并授 ACL，它不在说明资源声明有
+  # 问题，替它建一个空目录只会把故障掩盖成"能启动但照片存不进去"。
   if [ -z "$PV_STORAGE_ROOT" ] || [ ! -d "$PV_STORAGE_ROOT" ]; then
-    if [ "$PV_STORAGE_IS_CUSTOM" -eq 1 ]; then
-      pv_fail "工作目录不存在: '${PV_STORAGE_ROOT}'。这是安装时指定的自定义目录，请确认对应的存储空间已挂载。"
-    else
-      pv_fail "共享数据目录不可用: '${PV_STORAGE_ROOT}'。请检查应用资源声明或重新安装。"
-    fi
+    pv_fail "共享数据目录不可用: '${PV_STORAGE_ROOT}'。请检查应用资源声明或重新安装。"
     return 1
   fi
 
   if ! pv_storage_writable; then
-    pv_fail "工作目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
+    pv_fail "共享数据目录不可写: ${PV_STORAGE_ROOT}（运行用户: ${TRIM_USERNAME:-?}）"
     return 1
   fi
 

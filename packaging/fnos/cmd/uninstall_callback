@@ -74,19 +74,47 @@ if [ "$PKGVAR_OK" -eq 1 ]; then
   rm -f "${PKGVAR}/app.pid" "${PKGVAR}/app.log.1" 2>/dev/null
 fi
 
-# 工作目录可能是安装时自定义的，优先报告落盘的那个真实路径，读不到再退回共享目录。
-DATA_DIR=""
-if [ -s "${TRIM_PKGETC:-/nonexistent}/workdir" ]; then
-  DATA_DIR="$(head -n 1 "${TRIM_PKGETC}/workdir" 2>/dev/null | tr -d '\r')"
-fi
-if [ -z "$DATA_DIR" ]; then
-  DATA_DIR="${TRIM_DATA_SHARE_PATHS:-}"
-  DATA_DIR="${DATA_DIR%%:*}"
+# 数据库固定在 data-share 里。
+SHARE="${TRIM_DATA_SHARE_PATHS:-}"
+SHARE="${SHARE%%:*}"
+
+# 照片和数据库都在管理员于初始化向导里选定的「工作目录」里。服务端把该路径写在
+# data-share 下的 .workdir 单行文件中（见 server/app/core/config.py 的
+# WORKDIR_POINTER_NAME）。卸载提示必须报告这个真实位置，否则用户会去 data-share
+# 找照片却什么都找不到。
+WORK_DIR=""
+if [ -n "$SHARE" ] && [ -s "${SHARE}/.workdir" ]; then
+  WORK_DIR="$(head -n 1 "${SHARE}/.workdir" 2>/dev/null | tr -d '\r')"
 fi
 
-if [ -n "$DATA_DIR" ]; then
-  echo "PhotoVault 已卸载，日志与识别模型已清理。照片与数据库仍保留在: ${DATA_DIR}" >"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+# 把指针「退休」成 .workdir.previous。
+#
+# 必须做：卸载不动 data-share（那是用户的共享目录），所以 .workdir 会残留；而卸载会
+# 收回飞牛对工作目录的 sharedAccess 授权。留着它的话，重装后服务端会认为自己已初始化
+# 并跳过向导，然后每次写入都失败——而向导恰恰是唯一能重新申请授权的地方，等于死锁。
+#
+# 改名而不是删除：重装时向导会把这个路径作为「上次使用的目录」提示出来。它的选择器
+# 只列已授权目录，授权一旦被收回，旧库的位置就再也无处可查，而且没有手填路径的入口。
+if [ -n "$WORK_DIR" ]; then
+  if mv -f "${SHARE}/.workdir" "${SHARE}/.workdir.previous" 2>/dev/null; then
+    log_line "Retired work dir pointer -> .workdir.previous (${WORK_DIR})"
+  else
+    log_line "WARN: 无法退休工作目录指针 ${SHARE}/.workdir，重装后可能会跳过初始化向导"
+  fi
 fi
 
-log_line "Uninstall completed. 保留的用户数据: ${DATA_DIR:-未知}"
+if [ -n "$WORK_DIR" ]; then
+  MSG="PhotoVault 已卸载，日志与识别模型已清理。照片与数据库仍保留在: ${WORK_DIR}"
+elif [ -n "$SHARE" ]; then
+  # 初始化没走完就卸载了：那时还没有工作目录，也就没有任何用户数据。
+  MSG="PhotoVault 已卸载。初始化未完成，没有产生照片或数据库。"
+else
+  MSG=""
+fi
+
+if [ -n "$MSG" ]; then
+  echo "$MSG" >"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+fi
+
+log_line "Uninstall completed. workdir=${WORK_DIR:-<not provisioned>} share=${SHARE:-未知}"
 exit 0

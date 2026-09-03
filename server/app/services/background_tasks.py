@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,9 +20,27 @@ from typing import Optional
 
 import aiosqlite
 
-from app.core.config import get_settings, sqlite_path_from_url
+from app.core.config import get_settings, needs_provisioning, sqlite_path_from_url
 
 logger = logging.getLogger("photovault.background_tasks")
+
+
+def _database_ready() -> bool:
+    """Whether the periodic tasks may touch the database.
+
+    Guards first-run provisioning. Until an administrator picks a working
+    directory there is deliberately no database, and ``aiosqlite.connect``
+    *creates* the file it is pointed at — so an unguarded cleanup round would
+    materialise an empty database at the pre-provisioning path, which is exactly
+    the misplacement the wizard exists to prevent.
+
+    Re-checked every round rather than once at startup, so the tasks resume by
+    themselves as soon as setup finishes; no restart needed.
+    """
+    settings = get_settings()
+    if needs_provisioning(settings):
+        return False
+    return os.path.isfile(settings.database_path)
 
 # Module-level state for disk usage stats accessible by the health endpoint
 _disk_stats: dict[str, float] = {
@@ -87,7 +106,8 @@ async def cleanup_expired_sessions_task(
 
     while True:
         try:
-            await _run_session_cleanup(settings.database_url, settings.media_root)
+            if _database_ready():
+                await _run_session_cleanup(settings.database_url, settings.media_root)
         except asyncio.CancelledError:
             logger.info("Expired session cleanup task cancelled")
             raise
@@ -166,7 +186,8 @@ async def cleanup_thumbnail_cache_task(
 
     while True:
         try:
-            await _run_thumbnail_cleanup(settings.database_url, settings.media_root)
+            if _database_ready():
+                await _run_thumbnail_cleanup(settings.database_url, settings.media_root)
         except asyncio.CancelledError:
             logger.info("Thumbnail cache cleanup task cancelled")
             raise
@@ -384,9 +405,13 @@ async def cleanup_expired_trash_task(
 
     while True:
         try:
-            count = await _run_trash_purge(
-                settings.database_url, settings.media_root, settings.trash_retention_days
-            )
+            count = 0
+            if _database_ready():
+                count = await _run_trash_purge(
+                    settings.database_url,
+                    settings.media_root,
+                    settings.trash_retention_days,
+                )
             if count > 0:
                 logger.info("Trash auto-purge: %d items purged", count)
         except asyncio.CancelledError:

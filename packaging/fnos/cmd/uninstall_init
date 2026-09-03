@@ -15,20 +15,21 @@ set -u
 
 LOG_FILE="${TRIM_PKGVAR}/app.log"
 
-# 工作目录可能是安装时在向导里自定义的，落盘在 TRIM_PKGETC/workdir。优先报告它，
-# 这样用户重装时知道该填回哪个路径。
-DATA_DIR=""
-if [ -s "${TRIM_PKGETC:-/nonexistent}/workdir" ]; then
-  DATA_DIR="$(head -n 1 "${TRIM_PKGETC}/workdir" 2>/dev/null | tr -d '\r')"
-fi
-if [ -z "$DATA_DIR" ]; then
-  DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+# 用户数据在初始化向导选定的工作目录里，路径由服务端写在 data-share 的 .workdir。
+SHARE="${TRIM_DATA_SHARE_PATHS%%:*}"
+WORK_DIR=""
+if [ -n "$SHARE" ] && [ -s "${SHARE}/.workdir" ]; then
+  WORK_DIR="$(head -n 1 "${SHARE}/.workdir" 2>/dev/null | tr -d '\r')"
 fi
 
 mkdir -p "$TRIM_PKGVAR" 2>/dev/null
 {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [${TRIM_APP_STATUS:-UNINSTALL}] Uninstalling ${TRIM_APPVER:-?}"
-  echo "  照片与数据库保留在: ${DATA_DIR}"
+  if [ -n "$WORK_DIR" ]; then
+    echo "  照片与数据库保留在: ${WORK_DIR}"
+  else
+    echo "  初始化未完成，没有用户数据"
+  fi
 } >>"$LOG_FILE" 2>/dev/null
 
 exit 0
