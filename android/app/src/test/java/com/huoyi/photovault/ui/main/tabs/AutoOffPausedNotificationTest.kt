@@ -2,6 +2,7 @@ package com.huoyi.photovault.ui.main.tabs
 
 import android.app.NotificationManager
 import android.content.Context
+import com.huoyi.photovault.R
 import com.huoyi.photovault.service.BackupForegroundService
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,22 +17,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
- * Wording/notification distinction tests for the AUTO_OFF (third) pause source
- * (photo-backup-service, task 27.11; R-30.1/R-30.2).
- *
- * The AUTO_OFF pause — files kept because the user turned off "自动备份"
- * mid-upload — must be worded distinctly from the two existing pause sources so
- * users understand it will NOT auto-resume and must be continued manually:
- * - **USER** pause  → [PauseReason.UserPaused] ("已手动暂停" / "点击开始继续").
- * - **CONDITION** pause → [PauseReason.LowBattery]/[PauseReason.NoWifi]/…
- *   ("…将…自动恢复").
- * - **AUTO_OFF** → the standalone reminder posted by
- *   [BackupForegroundService.postAutoOffPausedNotification] ("自动备份已关闭…").
- *
- * These assertions pin the notification text (R-30.2) and prove it is disjoint
- * from the USER/CONDITION wording exposed by the [PauseReason] sealed class
- * (R-30.1: the AUTO_OFF phrasing names "自动备份已关闭" and does not reuse the
- * USER/CONDITION messages).
+ * Wording/notification distinction tests for the AUTO_OFF (third) pause source.
+ * User-visible wording is resolved through Android resources so the same
+ * behavior is covered independently of the active locale.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], manifest = Config.NONE)
@@ -57,34 +45,30 @@ class AutoOffPausedNotificationTest {
         val title = shadow.contentTitle?.toString().orEmpty()
         val text = shadow.contentText?.toString().orEmpty()
 
-        // R-30.2: names the cause and the number of preserved tasks.
-        assertTrue("title names 自动备份已关闭: $title", title.contains("自动备份已关闭"))
+        assertEquals(context.getString(R.string.notification_backup_auto_off_title), title)
+        assertEquals(context.getString(R.string.notification_backup_auto_off_text, 3), text)
         assertTrue("text carries the count N=3: $text", text.contains("3"))
 
-        // R-30.1: distinct from the USER pause wording.
         assertFalse(
             "AUTO_OFF text must not reuse the USER pause message",
-            text.contains(PauseReason.UserPaused.message)
+            text.contains(context.getString(PauseReason.UserPaused.messageRes))
         )
         assertFalse(
             "AUTO_OFF text must not reuse the USER resume hint",
-            text.contains(PauseReason.UserPaused.resumeHint)
+            text.contains(context.getString(PauseReason.UserPaused.resumeHintRes))
         )
-
-        // R-30.1: distinct from the CONDITION pause wording.
         assertFalse(
             "AUTO_OFF text must not reuse the low-battery message",
-            text.contains(PauseReason.LowBattery.message)
+            text.contains(context.getString(PauseReason.LowBattery.messageRes))
         )
         assertFalse(
             "AUTO_OFF text must not reuse the no-wifi message",
-            text.contains(PauseReason.NoWifi.message)
+            text.contains(context.getString(PauseReason.NoWifi.messageRes))
         )
     }
 
     @Test
     fun `posts nothing when no in-flight task was preserved`() {
-        // R-25.5: nothing was in flight → no reminder at all.
         val context = context()
 
         BackupForegroundService.postAutoOffPausedNotification(context, count = 0)
@@ -98,28 +82,28 @@ class AutoOffPausedNotificationTest {
     }
 
     @Test
-    fun `USER and CONDITION pause wordings are themselves distinct (R-30_1)`() {
-        // The three sources' messages are mutually distinct, and only CONDITION
-        // advertises automatic recovery — the USER (and, by design, AUTO_OFF)
-        // pauses require a manual tap to continue.
+    fun `USER and CONDITION pause resources are themselves distinct`() {
         assertTrue(PauseReason.UserPaused.isUserPause)
-        assertFalse("user pause must not claim auto-recovery", PauseReason.UserPaused.resumeHint.contains("自动"))
-        assertTrue(PauseReason.LowBattery.resumeHint.contains("自动"))
-        assertTrue(PauseReason.NoWifi.resumeHint.contains("自动"))
+        assertFalse(PauseReason.LowBattery.isUserPause)
+        assertFalse(PauseReason.NoWifi.isUserPause)
+        assertFalse(PauseReason.LowBatteryAndNoWifi.isUserPause)
+
+        assertEquals(R.string.pause_user_hint, PauseReason.UserPaused.resumeHintRes)
+        assertEquals(R.string.pause_low_battery_hint, PauseReason.LowBattery.resumeHintRes)
+        assertEquals(R.string.pause_no_wifi_hint, PauseReason.NoWifi.resumeHintRes)
+        assertEquals(R.string.pause_conditions_hint, PauseReason.LowBatteryAndNoWifi.resumeHintRes)
 
         val messages = listOf(
-            PauseReason.UserPaused.message,
-            PauseReason.LowBattery.message,
-            PauseReason.NoWifi.message,
-            PauseReason.LowBatteryAndNoWifi.message
+            PauseReason.UserPaused.messageRes,
+            PauseReason.LowBattery.messageRes,
+            PauseReason.NoWifi.messageRes,
+            PauseReason.LowBatteryAndNoWifi.messageRes
         )
-        assertEquals("pause messages must be mutually distinct", messages.size, messages.toSet().size)
+        assertEquals("pause message resources must be mutually distinct", messages.size, messages.toSet().size)
     }
 
     @Test
     fun `the AUTO_OFF reminder uses a channel separate from the foreground progress channel`() {
-        // R-30.2: the reminder survives the foreground service (and its ongoing
-        // notification) being torn down, so it must use a distinct channel/ID.
         assertFalse(
             "AUTO_OFF channel must differ from the progress channel",
             BackupForegroundService.AUTO_OFF_CHANNEL_ID == BackupForegroundService.NOTIFICATION_CHANNEL_ID

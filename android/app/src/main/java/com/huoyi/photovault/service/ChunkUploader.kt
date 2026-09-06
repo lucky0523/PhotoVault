@@ -3,6 +3,7 @@ package com.huoyi.photovault.service
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.api.BackupApi
 import com.huoyi.photovault.data.api.model.CompleteUploadRequest
 import com.huoyi.photovault.data.api.model.DuplicateCheckRequest
@@ -103,9 +104,15 @@ class ChunkUploader @Inject constructor(
             // before it was backed up), skip it with a clear reason instead of
             // reporting a generic failure.
             if (!sourceExists(context, fileUri)) {
-                return UploadResult.Skipped("源文件已删除", countsAsBackedUp = false)
+                return UploadResult.Skipped(
+                    context.getString(R.string.backup_skip_source_deleted),
+                    countsAsBackedUp = false
+                )
             }
-            return UploadResult.Failed("Failed to compute file hash: ${e.message}", shouldRetry = false)
+            return UploadResult.Failed(
+                context.getString(R.string.backup_error_hash),
+                shouldRetry = false
+            )
         }
 
         // Step 2: Check for duplicates
@@ -120,13 +127,16 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val duplicateResult = checkDuplicate(precheckHash, fileInfo)
+        val duplicateResult = checkDuplicate(precheckHash, fileInfo, context)
         if (duplicateResult != null) {
             val skipState = when (duplicateResult) {
                 is UploadResult.Duplicate -> UploadState.SKIPPED_DUPLICATE
                 is UploadResult.Skipped -> {
-                    if (duplicateResult.reason.contains("回收站")) UploadState.SKIPPED_TRASHED
-                    else UploadState.SKIPPED_PURGED
+                    if (duplicateResult.reason == context.getString(R.string.backup_skip_in_trash)) {
+                        UploadState.SKIPPED_TRASHED
+                    } else {
+                        UploadState.SKIPPED_PURGED
+                    }
                 }
                 else -> UploadState.SKIPPED_DUPLICATE
             }
@@ -152,7 +162,10 @@ class ChunkUploader @Inject constructor(
             createSnapshot(context, fileUri, fileInfo.fileName)
         } catch (e: Exception) {
             android.util.Log.e("PhotoVaultBackup", "snapshot failed for ${fileInfo.fileName}: ${e.message}", e)
-            return UploadResult.Failed("Failed to stage file for upload: ${e.message}", shouldRetry = true)
+            return UploadResult.Failed(
+                context.getString(R.string.backup_error_stage),
+                shouldRetry = true
+            )
         }
 
         try {
@@ -164,7 +177,10 @@ class ChunkUploader @Inject constructor(
             fileHash = result.hash
             actualSize = result.size
         } catch (e: Exception) {
-            return UploadResult.Failed("Failed to compute file hash: ${e.message}", shouldRetry = false)
+            return UploadResult.Failed(
+                context.getString(R.string.backup_error_hash),
+                shouldRetry = false
+            )
         }
         android.util.Log.i(
             "PhotoVaultBackup",
@@ -184,7 +200,15 @@ class ChunkUploader @Inject constructor(
                 )
                 // The outer finally{} deletes the snapshot (R3.5); the upload
                 // record is left intact so the file is retried later (R3.4).
-                return UploadResult.Failed("Source not fully written yet: ${v.reason}", shouldRetry = true)
+                val errorRes = when (v.reason) {
+                    SnapshotValidation.Reason.TRUNCATED_STRUCTURE ->
+                        R.string.backup_error_truncated_structure
+                    else -> R.string.backup_error_source_not_ready
+                }
+                return UploadResult.Failed(
+                    context.getString(errorRes),
+                    shouldRetry = true
+                )
             }
             SnapshotValidation.Valid -> { /* proceed with existing flow */ }
         }
@@ -208,7 +232,10 @@ class ChunkUploader @Inject constructor(
         )
 
         val sessionInfo = resolveSession(context, fileUri, upload, fileHash, totalChunks, storagePolicy)
-            ?: return UploadResult.Failed("Failed to initialize upload session", shouldRetry = true)
+            ?: return UploadResult.Failed(
+                context.getString(R.string.backup_error_init_session),
+                shouldRetry = true
+            )
 
         val sessionId = sessionInfo.sessionId
         val startChunkIndex = sessionInfo.startChunkIndex
@@ -229,13 +256,20 @@ class ChunkUploader @Inject constructor(
             )
 
             val chunkData = readChunkFromFile(snapshot, chunkIndex, upload.fileSize)
-                ?: return UploadResult.Failed("Failed to read chunk $chunkIndex", shouldRetry = true)
+                ?: return UploadResult.Failed(
+                    context.getString(R.string.backup_error_read_chunk, chunkIndex),
+                    shouldRetry = true
+                )
 
             val chunkResult = uploadChunkWithRetry(sessionId, chunkIndex, chunkData)
             if (!chunkResult) {
                 // All retries exhausted — mark as failed for later retry
                 return UploadResult.Failed(
-                    "Failed to upload chunk $chunkIndex after $MAX_RETRIES retries",
+                    context.getString(
+                        R.string.backup_error_upload_chunk_retries,
+                        chunkIndex,
+                        MAX_RETRIES
+                    ),
                     shouldRetry = true
                 )
             }
@@ -257,7 +291,7 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val completeResult = completeUpload(sessionId, fileHash)
+        val completeResult = completeUpload(context, sessionId, fileHash)
         if (completeResult != null) {
             // Clean up local record on success
             uploadRecordDao.deleteByFileUri(upload.uri)
@@ -277,7 +311,10 @@ class ChunkUploader @Inject constructor(
             return completeResult
         }
 
-        return UploadResult.Failed("Failed to complete upload", shouldRetry = true)
+        return UploadResult.Failed(
+            context.getString(R.string.backup_error_complete),
+            shouldRetry = true
+        )
 
         } finally {
             if (snapshot.exists() && !snapshot.delete()) {
@@ -296,7 +333,11 @@ class ChunkUploader @Inject constructor(
      * - null if the file is not found (proceed with upload) or the check fails
      */
     @androidx.annotation.VisibleForTesting
-    internal suspend fun checkDuplicate(fileHash: String, fileInfo: FileInfo): UploadResult? {
+    internal suspend fun checkDuplicate(
+        fileHash: String,
+        fileInfo: FileInfo,
+        context: Context? = null
+    ): UploadResult? {
         return try {
             val response = backupApi.checkDuplicate(
                 DuplicateCheckRequest(
@@ -331,7 +372,11 @@ class ChunkUploader @Inject constructor(
                         // stale resume record re-queue it on every app launch.
                         statusSyncManager.markTrashed(fileInfo.uri, fileHash, body.expiresAt)
                         uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                        UploadResult.Skipped("文件在回收站中", countsAsBackedUp = false)
+                        UploadResult.Skipped(
+                            context?.getString(R.string.backup_skip_in_trash)
+                                ?: PhotoStatusValue.TRASHED,
+                            countsAsBackedUp = false
+                        )
                     }
                 }
                 status == PhotoStatusValue.PURGED -> {
@@ -345,7 +390,11 @@ class ChunkUploader @Inject constructor(
                         // Delete the stale resume record so it is not retried.
                         statusSyncManager.markPurged(fileInfo.uri, fileHash)
                         uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                        UploadResult.Skipped("文件已彻底删除", countsAsBackedUp = false)
+                        UploadResult.Skipped(
+                            context?.getString(R.string.backup_skip_purged)
+                                ?: PhotoStatusValue.PURGED,
+                            countsAsBackedUp = false
+                        )
                     }
                 }
                 else -> {
@@ -574,7 +623,11 @@ class ChunkUploader @Inject constructor(
     /**
      * Calls the complete upload endpoint after all chunks are uploaded.
      */
-    private suspend fun completeUpload(sessionId: String, fileHash: String): UploadResult? {
+    private suspend fun completeUpload(
+        context: Context,
+        sessionId: String,
+        fileHash: String
+    ): UploadResult? {
         return try {
             val response = backupApi.completeUpload(
                 CompleteUploadRequest(
@@ -595,7 +648,10 @@ class ChunkUploader @Inject constructor(
                         storedPath = body.storedPath
                     )
                 } else {
-                    UploadResult.Failed("Failed to complete upload", shouldRetry = true)
+                    UploadResult.Failed(
+                        context.getString(R.string.backup_error_complete),
+                        shouldRetry = true
+                    )
                 }
             } else {
                 // Non-2xx (e.g. HTTP 422 integrity verification failed) — retryable

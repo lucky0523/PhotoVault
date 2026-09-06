@@ -45,7 +45,9 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import com.huoyi.photovault.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -97,6 +99,10 @@ fun LocalTab(
     val pendingFolderUri by viewModel.pendingFolderUri.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val refreshCompleteText = stringResource(R.string.refresh_complete)
+    val backupStartedText = stringResource(R.string.backup_started)
+    val unknownFolderText = stringResource(R.string.unknown_folder)
+    val folderAlreadyAddedText = stringResource(R.string.folder_already_added)
 
     // Sync server-side status (recycle-bin deletions / restores) when this tab
     // resumes — on tab entry and when the app returns to foreground. Throttled in
@@ -117,7 +123,7 @@ fun LocalTab(
         isRefreshing = true
         scope.launch {
             viewModel.refreshOnPull { errorMsg ->
-                val msg = errorMsg ?: "已刷新"
+                val msg = errorMsg ?: refreshCompleteText
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
             delay(800)
@@ -131,7 +137,7 @@ fun LocalTab(
         isRefreshing = true
         scope.launch {
             viewModel.backupNow { errorMsg ->
-                val msg = errorMsg ?: "已开始备份"
+                val msg = errorMsg ?: backupStartedText
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
             delay(800)
@@ -147,12 +153,12 @@ fun LocalTab(
             val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             context.contentResolver.takePersistableUriPermission(it, takeFlags)
             val documentFile = DocumentFile.fromTreeUri(context, it)
-            val folderName = documentFile?.name ?: "未知文件夹"
+            val folderName = documentFile?.name ?: unknownFolderText
             val added = viewModel.onFolderPicked(it, folderName)
             if (!added) {
                 android.widget.Toast.makeText(
                     context,
-                    "该文件夹已添加，请勿重复添加",
+                    folderAlreadyAddedText,
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             }

@@ -106,7 +106,7 @@ class ChunkUploaderCheckDuplicateTest {
         val result = uploader.checkDuplicate("hashA", fileInfo(forceReupload = false))
 
         assertTrue(result is UploadResult.Skipped)
-        assertEquals("文件在回收站中", (result as UploadResult.Skipped).reason)
+        assertEquals(PhotoStatusValue.TRASHED, (result as UploadResult.Skipped).reason)
         assertEquals(PhotoStatusValue.TRASHED, dao.get("uri://a")!!.status)
     }
 
@@ -120,7 +120,7 @@ class ChunkUploaderCheckDuplicateTest {
         val result = uploader.checkDuplicate("hashA", fileInfo(forceReupload = false))
 
         assertTrue(result is UploadResult.Skipped)
-        assertEquals("文件已彻底删除", (result as UploadResult.Skipped).reason)
+        assertEquals(PhotoStatusValue.PURGED, (result as UploadResult.Skipped).reason)
         assertEquals(PhotoStatusValue.PURGED, dao.get("uri://a")!!.status)
     }
 

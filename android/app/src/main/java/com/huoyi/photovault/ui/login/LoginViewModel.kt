@@ -1,10 +1,13 @@
 package com.huoyi.photovault.ui.login
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.repository.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,7 +39,8 @@ sealed class TestConnectionResult {
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val credentialManager: CredentialManager
+    private val credentialManager: CredentialManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LoginUiState())
@@ -90,7 +94,7 @@ class LoginViewModel @Inject constructor(
     fun testConnection() {
         val state = _uiState.value
         if (state.serverAddress.isBlank()) {
-            _uiState.update { it.copy(serverAddressError = "请输入服务器地址") }
+            _uiState.update { it.copy(serverAddressError = context.getString(R.string.validation_server_required)) }
             return
         }
 
@@ -105,7 +109,7 @@ class LoginViewModel @Inject constructor(
                         TestConnectionResult.Success
                     } else {
                         TestConnectionResult.Failure(
-                            result.exceptionOrNull()?.message ?: "连接失败"
+                            result.exceptionOrNull()?.message ?: context.getString(R.string.error_connection_failed)
                         )
                     }
                 )
@@ -121,15 +125,15 @@ class LoginViewModel @Inject constructor(
         var newState = state.copy(errorMessage = null)
 
         if (state.serverAddress.isBlank()) {
-            newState = newState.copy(serverAddressError = "请输入服务器地址")
+            newState = newState.copy(serverAddressError = context.getString(R.string.validation_server_required))
             hasError = true
         }
         if (state.username.isBlank()) {
-            newState = newState.copy(usernameError = "请输入用户名")
+            newState = newState.copy(usernameError = context.getString(R.string.validation_username_required))
             hasError = true
         }
         if (state.password.isBlank()) {
-            newState = newState.copy(passwordError = "请输入密码")
+            newState = newState.copy(passwordError = context.getString(R.string.validation_password_required))
             hasError = true
         }
 
@@ -160,7 +164,8 @@ class LoginViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = result.exceptionOrNull()?.message ?: "登录失败"
+                        errorMessage = result.exceptionOrNull()?.message
+                            ?: context.getString(R.string.error_login_failed)
                     )
                 }
             }

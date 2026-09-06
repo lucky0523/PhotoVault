@@ -1,8 +1,10 @@
 package com.huoyi.photovault.ui.main.tabs
 
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.dao.BackupHistoryDao
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
 import com.huoyi.photovault.data.local.entity.BackupHistoryRecord
@@ -59,14 +61,27 @@ enum class HistoryFilter {
  *   visual treatment and "点击开始继续" wording.
  */
 sealed class PauseReason(
-    val message: String,
-    val resumeHint: String,
+    @StringRes val messageRes: Int,
+    @StringRes val resumeHintRes: Int,
     val isUserPause: Boolean = false
 ) {
-    data object UserPaused : PauseReason("已手动暂停", "点击开始继续", isUserPause = true)
-    data object LowBattery : PauseReason("电量不足", "将在电量恢复至 55% 以上后自动恢复")
-    data object NoWifi : PauseReason("WiFi 未连接", "将在 WiFi 连接后自动恢复")
-    data object LowBatteryAndNoWifi : PauseReason("电量不足且 WiFi 未连接", "将在条件满足后自动恢复")
+    data object UserPaused : PauseReason(
+        R.string.pause_user_message,
+        R.string.pause_user_hint,
+        isUserPause = true
+    )
+    data object LowBattery : PauseReason(
+        R.string.pause_low_battery_message,
+        R.string.pause_low_battery_hint
+    )
+    data object NoWifi : PauseReason(
+        R.string.pause_no_wifi_message,
+        R.string.pause_no_wifi_hint
+    )
+    data object LowBatteryAndNoWifi : PauseReason(
+        R.string.pause_conditions_message,
+        R.string.pause_conditions_hint
+    )
 }
 
 /**
@@ -359,7 +374,7 @@ class TasksTabViewModel @Inject constructor(
             if (!isSourceReadable(record.fileUri)) {
                 uploadRecordDao.deleteByFileUri(fileUri)
                 _uiState.value = _uiState.value.copy(
-                    transientMessage = "源文件已不存在，无法续传"
+                    transientMessage = context.getString(R.string.error_paused_task_source_missing)
                 )
                 loadPausedTasks()
                 return@launch
@@ -409,7 +424,7 @@ class TasksTabViewModel @Inject constructor(
                     e
                 )
                 _uiState.value = _uiState.value.copy(
-                    transientMessage = "清除失败，请重试"
+                    transientMessage = context.getString(R.string.error_clear_paused_task)
                 )
             }
         }

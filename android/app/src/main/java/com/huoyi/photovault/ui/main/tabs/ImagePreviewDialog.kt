@@ -46,12 +46,14 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
+import com.huoyi.photovault.R
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import androidx.media3.common.MediaItem
@@ -562,7 +564,7 @@ private fun ZoomableImageContent(
         // Error state
         if (imageState is AsyncImagePainter.State.Error) {
             Text(
-                text = "图片加载失败",
+                text = stringResource(R.string.error_image_load),
                 color = Color.White,
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.align(Alignment.Center)
@@ -579,7 +581,7 @@ private const val DISMISS_DISTANCE_PX = 600f
  * page (and pauses when the app is backgrounded); the player is released when
  * the page leaves the composition.
  */
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun VideoPageContent(
     model: Any?,

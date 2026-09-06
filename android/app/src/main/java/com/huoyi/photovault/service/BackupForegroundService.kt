@@ -81,7 +81,6 @@ class BackupForegroundService : Service() {
 
     companion object {
         const val NOTIFICATION_CHANNEL_ID = "backup_progress"
-        const val NOTIFICATION_CHANNEL_NAME = "备份进度"
         const val NOTIFICATION_ID = 1001
 
         /**
@@ -93,7 +92,6 @@ class BackupForegroundService : Service() {
          * where to continue it.
          */
         const val AUTO_OFF_CHANNEL_ID = "backup_notice"
-        const val AUTO_OFF_CHANNEL_NAME = "备份提示"
         const val AUTO_OFF_NOTIFICATION_ID = 1002
 
         const val ACTION_START = "com.huoyi.photovault.action.START_BACKUP"
@@ -307,10 +305,12 @@ class BackupForegroundService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = NotificationChannel(
                     AUTO_OFF_CHANNEL_ID,
-                    AUTO_OFF_CHANNEL_NAME,
+                    context.getString(R.string.notification_channel_backup_notice),
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
-                    description = "提示因关闭自动备份而暂停的备份任务"
+                    description = context.getString(
+                        R.string.notification_channel_backup_notice_description
+                    )
                     setShowBadge(false)
                 }
                 notificationManager.createNotificationChannel(channel)
@@ -324,11 +324,13 @@ class BackupForegroundService : Service() {
             )
 
             val notification = NotificationCompat.Builder(context, AUTO_OFF_CHANNEL_ID)
-                .setContentTitle("备份已暂停 · 自动备份已关闭")
-                .setContentText("有 $count 个未完成的备份任务，可在“备份任务”页点击“继续”手动续传")
+                .setContentTitle(context.getString(R.string.notification_backup_auto_off_title))
+                .setContentText(
+                    context.getString(R.string.notification_backup_auto_off_text, count)
+                )
                 .setStyle(
                     NotificationCompat.BigTextStyle().bigText(
-                        "自动备份已关闭，有 $count 个未完成的备份任务已保留为已暂停任务。它们不会随电量/WiFi 恢复自动续传，可在“备份任务”页点击“继续”手动续传。"
+                        context.getString(R.string.notification_backup_auto_off_details, count)
                     )
                 )
                 .setSmallIcon(android.R.drawable.ic_menu_upload)
@@ -429,9 +431,15 @@ class BackupForegroundService : Service() {
                 backupJob?.cancel()
                 _uploadProgress.value = null
                 if (reason == PauseReason.USER) {
-                    updateNotification("备份已暂停（手动）", "点击“开始”继续备份")
+                    updateNotification(
+                        getString(R.string.notification_backup_paused_manual_title),
+                        getString(R.string.notification_backup_paused_manual_content)
+                    )
                 } else {
-                    updateNotification("备份已暂停", "等待条件恢复...")
+                    updateNotification(
+                        getString(R.string.notification_backup_paused_title),
+                        getString(R.string.notification_backup_waiting_conditions)
+                    )
                 }
             }
             ACTION_RESUME -> {
@@ -503,7 +511,10 @@ class BackupForegroundService : Service() {
                 if (backupConditionChecker.shouldPauseBackup()) {
                     isPaused = true
                     pauseReason = PauseReason.CONDITION
-                    updateNotification("备份已暂停", "等待条件恢复...")
+                    updateNotification(
+                        getString(R.string.notification_backup_paused_title),
+                        getString(R.string.notification_backup_waiting_conditions)
+                    )
                     break
                 }
 
@@ -540,8 +551,12 @@ class BackupForegroundService : Service() {
                 }
 
                 updateNotification(
-                    title = "正在备份: $currentFileName",
-                    content = "进度: ${completedFiles + 1}/$totalFiles"
+                    title = getString(R.string.notification_backup_file_title, currentFileName),
+                    content = getString(
+                        R.string.notification_backup_progress,
+                        completedFiles + 1,
+                        totalFiles
+                    )
                 )
 
                 // Storage policy for this file, from the folder resolved above.
@@ -593,7 +608,10 @@ class BackupForegroundService : Service() {
                         "Upload failed for ${fileInfo.fileName}: ${e.message}",
                         e
                     )
-                    UploadResult.Failed(e.message ?: "unknown error", shouldRetry = false)
+                    UploadResult.Failed(
+                        getString(R.string.backup_error_unknown),
+                        shouldRetry = false
+                    )
                 }
 
                 when (result) {
@@ -612,7 +630,11 @@ class BackupForegroundService : Service() {
                             "Skipped duplicate ${fileInfo.fileName}"
                         )
                         // Save skipped record with reason "云端已存在" and increment backed up count
-                        saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, "云端已存在")
+                        saveHistoryRecord(
+                            fileInfo,
+                            BackupStatus.SKIPPED,
+                            getString(R.string.backup_skip_duplicate)
+                        )
                         incrementBackedUpCount(fileInfo.folderUri, priorStatus)
                     }
                     is UploadResult.Skipped -> {
@@ -643,7 +665,10 @@ class BackupForegroundService : Service() {
                                 "PhotoVaultBackup",
                                 "Upload of ${fileInfo.fileName} interrupted by conditions; re-queued for resume"
                             )
-                            updateNotification("备份已暂停", "等待条件恢复...")
+                            updateNotification(
+                        getString(R.string.notification_backup_paused_title),
+                        getString(R.string.notification_backup_waiting_conditions)
+                    )
                             currentFileUri = null
                             break
                         }
@@ -669,7 +694,10 @@ class BackupForegroundService : Service() {
                                 "PhotoVaultBackup",
                                 "Server unreachable; re-queued ${fileInfo.fileName} and paused for resume"
                             )
-                            updateNotification("备份已暂停", "服务器连接已断开，恢复后继续")
+                            updateNotification(
+                                getString(R.string.notification_backup_paused_title),
+                                getString(R.string.notification_backup_server_disconnected)
+                            )
                             currentFileUri = null
                             break
                         }
@@ -687,13 +715,20 @@ class BackupForegroundService : Service() {
                 currentFileUri = null
                 completedFiles++
                 updateNotification(
-                    title = "正在备份",
-                    content = "已完成: $completedFiles/$totalFiles"
+                    title = getString(R.string.notification_backup_active_title),
+                    content = getString(
+                        R.string.notification_backup_completed_count,
+                        completedFiles,
+                        totalFiles
+                    )
                 )
             }
 
             if (backupQueue.isEmpty() && !isPaused) {
-                updateNotification("备份完成", "已备份 $completedFiles 个文件")
+                updateNotification(
+                    getString(R.string.notification_backup_complete_title),
+                    getString(R.string.notification_backup_complete_content, completedFiles)
+                )
                 // Auto-stop after a short delay to let user see the completion notification
                 delay(3000)
                 stopBackup()
@@ -716,24 +751,34 @@ class BackupForegroundService : Service() {
             state = progress.state
         )
         val stateText = when (progress.state) {
-            UploadState.HASHING -> "计算校验值…"
-            UploadState.CHECKING_DUPLICATE -> "检查重复…"
-            UploadState.INITIALIZING -> "准备上传…"
+            UploadState.HASHING -> getString(R.string.notification_backup_state_hashing)
+            UploadState.CHECKING_DUPLICATE ->
+                getString(R.string.notification_backup_state_checking_duplicate)
+            UploadState.INITIALIZING ->
+                getString(R.string.notification_backup_state_initializing)
             UploadState.UPLOADING -> {
                 val speedText = formatSpeed(transferSpeedBytesPerSec)
                 val sizeText = "${formatBytes(progress.uploadedBytes)}/${formatBytes(progress.totalBytes)}"
                 "$sizeText · $speedText"
             }
-            UploadState.COMPLETING -> "完成中…"
-            UploadState.COMPLETED -> "已完成"
-            UploadState.SKIPPED_DUPLICATE -> "已存在，跳过"
-            UploadState.SKIPPED_TRASHED -> "回收站中，跳过"
-            UploadState.SKIPPED_PURGED -> "已删除，跳过"
-            UploadState.FAILED -> "上传失败"
+            UploadState.COMPLETING -> getString(R.string.notification_backup_state_completing)
+            UploadState.COMPLETED -> getString(R.string.notification_backup_state_completed)
+            UploadState.SKIPPED_DUPLICATE ->
+                getString(R.string.notification_backup_state_duplicate)
+            UploadState.SKIPPED_TRASHED ->
+                getString(R.string.notification_backup_state_trashed)
+            UploadState.SKIPPED_PURGED ->
+                getString(R.string.notification_backup_state_purged)
+            UploadState.FAILED -> getString(R.string.notification_backup_state_failed)
         }
         updateNotification(
-            title = "正在备份: ${progress.fileName}",
-            content = "进度: ${completedFiles + 1}/$totalFiles · $stateText"
+            title = getString(R.string.notification_backup_file_title, progress.fileName),
+            content = getString(
+                R.string.notification_backup_progress_with_state,
+                completedFiles + 1,
+                totalFiles,
+                stateText
+            )
         )
     }
 
@@ -835,10 +880,10 @@ class BackupForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                NOTIFICATION_CHANNEL_NAME,
+                getString(R.string.notification_channel_backup_progress),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "显示图片备份进度"
+                description = getString(R.string.notification_channel_backup_progress_description)
                 setShowBadge(false)
             }
 
@@ -849,8 +894,8 @@ class BackupForegroundService : Service() {
     }
 
     private fun buildNotification(
-        title: String = "准备备份...",
-        content: String = "正在检查文件..."
+        title: String = getString(R.string.notification_backup_preparing),
+        content: String = getString(R.string.notification_backup_checking_files)
     ): Notification {
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -888,8 +933,13 @@ class BackupForegroundService : Service() {
 
         val speedText = formatSpeed(speedBytesPerSec)
         updateNotification(
-            title = "正在备份: $fileName",
-            content = "进度: $completed/$total · $speedText"
+            title = getString(R.string.notification_backup_file_title, fileName),
+            content = getString(
+                R.string.notification_backup_progress_with_state,
+                completed,
+                total,
+                speedText
+            )
         )
     }
 

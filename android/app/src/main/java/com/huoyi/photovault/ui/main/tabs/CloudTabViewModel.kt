@@ -1,13 +1,16 @@
 package com.huoyi.photovault.ui.main.tabs
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.api.FileApi
 import com.huoyi.photovault.data.api.model.DirectoryInfo
 import com.huoyi.photovault.data.api.model.FileBrowseInfo
 import com.huoyi.photovault.data.api.model.TrashItemInfo
 import com.huoyi.photovault.data.local.CredentialManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,7 +67,8 @@ data class BreadcrumbItem(
 @HiltViewModel
 class CloudTabViewModel @Inject constructor(
     private val fileApi: FileApi,
-    private val credentialManager: CredentialManager
+    private val credentialManager: CredentialManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CloudTabUiState())
@@ -123,21 +127,21 @@ class CloudTabViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            error = "服务器返回空数据"
+                            error = context.getString(R.string.error_empty_server_response)
                         )
                     }
                 } else {
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         isRefreshing = false,
-                        error = "加载失败: ${response.code()}"
+                        error = context.getString(R.string.error_load_http, response.code())
                     )
                 }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     isRefreshing = false,
-                    error = "网络错误: ${e.localizedMessage ?: "未知错误"}"
+                    error = context.getString(R.string.error_network)
                 )
             }
         }
@@ -217,13 +221,13 @@ class CloudTabViewModel @Inject constructor(
                 } else {
                     _uiState.value = _uiState.value.copy(
                         isTrashLoading = false,
-                        trashError = "加载失败: ${response.code()}"
+                        trashError = context.getString(R.string.error_load_http, response.code())
                     )
                 }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isTrashLoading = false,
-                    trashError = "网络错误: ${e.localizedMessage ?: "未知错误"}"
+                    trashError = context.getString(R.string.error_network)
                 )
             }
         }

@@ -1,4 +1,104 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PhotoVault</string>
+
+    <!-- Shared actions and error labels -->
+    <string name="action_retry">Retry</string>
+    <string name="common_unknown_error">Unknown error</string>
+    <string name="error_connection_failed">Connection failed</string>
+    <string name="error_login_failed">Login failed</string>
+    <string name="error_network_unavailable">Network unavailable. Check your connection.</string>
+    <string name="error_battery_too_low">Battery is below %1$d%%. Charge the device and try again.</string>
+    <string name="error_server_unreachable">Cannot connect to the server. Check the server and network.</string>
+    <string name="error_empty_server_response">The server returned no data.</string>
+    <string name="error_load_http">Failed to load (HTTP %1$d).</string>
+    <string name="error_network">A network error occurred. Try again.</string>
+    <string name="error_image_load">Unable to load the image.</string>
+
+    <!-- Login and authentication -->
+    <string name="validation_server_required">Enter the server address.</string>
+    <string name="validation_username_required">Enter your username.</string>
+    <string name="validation_password_required">Enter your password.</string>
+    <string name="error_server_http">The server returned an error (HTTP %1$d).</string>
+    <string name="error_invalid_credentials">Incorrect username or password.</string>
+    <string name="error_login_http">Login failed (HTTP %1$d).</string>
+    <string name="error_server_connection_failed">Unable to connect to the server.</string>
+    <string name="error_missing_refresh_token">No refresh token is available.</string>
+    <string name="error_missing_server_address">No server address is configured.</string>
+    <string name="error_token_refresh_failed">Unable to refresh the sign-in session.</string>
+    <string name="connection_status_failed">Connection failed</string>
+
+    <!-- Local backup validation -->
+    <string name="refresh_complete">Refreshed</string>
+    <string name="backup_started">Backup started</string>
+    <string name="unknown_folder">Unknown folder</string>
+    <string name="folder_already_added">This folder has already been added.</string>
+
+    <!-- Upload and history errors -->
+    <string name="backup_skip_source_deleted">The source file was deleted.</string>
+    <string name="backup_error_hash">Unable to verify the source file.</string>
+    <string name="backup_error_stage">Unable to prepare the file for upload.</string>
+    <string name="backup_error_source_not_ready">The source file is still being written. Try again later.</string>
+    <string name="backup_error_truncated_structure">The file structure is incomplete. Make sure the file has finished writing.</string>
+    <string name="backup_error_init_session">Unable to start the upload.</string>
+    <string name="backup_error_read_chunk">Unable to read upload block %1$d.</string>
+    <string name="backup_error_upload_chunk_retries">Upload block %1$d failed after %2$d attempts.</string>
+    <string name="backup_error_complete">Unable to complete the upload.</string>
+    <string name="backup_error_unknown">An unexpected upload error occurred.</string>
+    <string name="backup_skip_in_trash">The file is in the recycle bin.</string>
+    <string name="backup_skip_purged">The file was permanently deleted.</string>
+    <string name="backup_skip_duplicate">The file already exists in the cloud.</string>
+    <string name="backup_failure_reason_format">Failure reason: %1$s</string>
+    <string name="backup_skip_reason_format">Skipped because: %1$s</string>
+    <string name="backup_status_success">Success</string>
+    <string name="backup_status_failed">Failed</string>
+    <string name="backup_status_skipped">Skipped</string>
+
+    <!-- Task errors and pause reasons -->
+    <string name="error_paused_tasks_load">Unable to load paused tasks.</string>
+    <string name="error_paused_task_source_missing">The source file no longer exists, so the upload cannot resume.</string>
+    <string name="error_clear_paused_task">Unable to clear the paused task. Try again.</string>
+    <string name="pause_user_message">Paused manually</string>
+    <string name="pause_user_hint">Tap Start to continue</string>
+    <string name="pause_low_battery_message">Battery too low</string>
+    <string name="pause_low_battery_hint">Backup will resume automatically when the battery is above 55%</string>
+    <string name="pause_no_wifi_message">Wi-Fi is not connected</string>
+    <string name="pause_no_wifi_hint">Backup will resume automatically when Wi-Fi reconnects</string>
+    <string name="pause_conditions_message">Battery too low and Wi-Fi is not connected</string>
+    <string name="pause_conditions_hint">Backup will resume automatically when the conditions are met</string>
+    <string name="backup_paused_reason_format">Backup paused: %1$s</string>
+
+    <!-- Backup notifications -->
+    <string name="notification_channel_backup_progress">Backup progress</string>
+    <string name="notification_channel_backup_progress_description">Shows photo backup progress</string>
+    <string name="notification_channel_backup_notice">Backup notices</string>
+    <string name="notification_channel_backup_notice_description">Notices for tasks paused when automatic backup is disabled</string>
+    <string name="notification_backup_auto_off_title">Backup paused · Automatic backup is off</string>
+    <string name="notification_backup_auto_off_text">%1$d unfinished backup tasks are paused. Tap Continue on the Backup Tasks page to resume them.</string>
+    <string name="notification_backup_auto_off_details">Automatic backup is off. %1$d unfinished backup tasks are saved as paused tasks. They will not resume when battery or Wi-Fi recovers; tap Continue on the Backup Tasks page to resume them manually.</string>
+    <string name="notification_backup_paused_manual_title">Backup paused manually</string>
+    <string name="notification_backup_paused_manual_content">Tap Start to continue backing up</string>
+    <string name="notification_backup_paused_title">Backup paused</string>
+    <string name="notification_backup_waiting_conditions">Waiting for conditions to recover…</string>
+    <string name="notification_backup_server_disconnected">Server disconnected. Backup will continue after it reconnects.</string>
+    <string name="notification_backup_active_title">Backing up</string>
+    <string name="notification_backup_file_title">Backing up: %1$s</string>
+    <string name="notification_backup_progress">Progress: %1$d/%2$d</string>
+    <string name="notification_backup_progress_with_state">Progress: %1$d/%2$d · %3$s</string>
+    <string name="notification_backup_completed_count">Completed: %1$d/%2$d</string>
+    <string name="notification_backup_complete_title">Backup complete</string>
+    <string name="notification_backup_complete_content">Backed up %1$d files</string>
+    <string name="notification_backup_state_hashing">Calculating checksum…</string>
+    <string name="notification_backup_state_checking_duplicate">Checking for duplicates…</string>
+    <string name="notification_backup_state_initializing">Preparing upload…</string>
+    <string name="notification_backup_state_completing">Finishing…</string>
+    <string name="notification_backup_state_completed">Completed</string>
+    <string name="notification_backup_state_duplicate">Already exists, skipped</string>
+    <string name="notification_backup_state_trashed">In recycle bin, skipped</string>
+    <string name="notification_backup_state_purged">Deleted, skipped</string>
+    <string name="notification_backup_state_failed">Upload failed</string>
+    <string name="notification_backup_preparing">Preparing backup…</string>
+    <string name="notification_backup_checking_files">Checking files…</string>
+    <string name="notification_channel_scan">Photo scanning</string>
+    <string name="notification_scan_in_progress">Scanning for new photos…</string>
 </resources>

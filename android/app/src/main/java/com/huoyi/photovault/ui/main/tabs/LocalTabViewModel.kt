@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.SettingsPreferences
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
@@ -250,7 +251,7 @@ class LocalTabViewModel @Inject constructor(
     private suspend fun startScan(manual: Boolean, requireBattery: Boolean): String? {
         val networkOk = backupConditionChecker.isNetworkAvailableForBackup()
         if (!networkOk) {
-            return "网络不可用，请检查网络连接"
+            return context.getString(R.string.error_network_unavailable)
         }
 
         if (requireBattery) {
@@ -259,7 +260,7 @@ class LocalTabViewModel @Inject constructor(
             val minBattery = backupConditionChecker.getMinBatteryLevel()
 
             if (!isCharging && batteryLevel <= minBattery) {
-                return "电量不足 ${minBattery}%，请充电后再试"
+                return context.getString(R.string.error_battery_too_low, minBattery)
             }
         }
 
@@ -268,7 +269,7 @@ class LocalTabViewModel @Inject constructor(
         if (!serverAddress.isNullOrEmpty()) {
             val connectionResult = authRepository.testConnection(serverAddress)
             if (connectionResult.isFailure) {
-                return "服务器未连接: ${connectionResult.exceptionOrNull()?.localizedMessage ?: "连接失败"}"
+                return context.getString(R.string.error_server_unreachable)
             }
         }
 

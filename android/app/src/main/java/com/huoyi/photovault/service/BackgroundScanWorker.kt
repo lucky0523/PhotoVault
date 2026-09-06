@@ -10,6 +10,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.SettingsPreferences
 import com.huoyi.photovault.data.local.dao.BackupFolderDao
@@ -532,7 +533,7 @@ class BackgroundScanWorker @AssistedInject constructor(
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = android.app.NotificationChannel(
                 channelId,
-                "扫描照片",
+                applicationContext.getString(R.string.notification_channel_scan),
                 android.app.NotificationManager.IMPORTANCE_LOW
             )
             nm.createNotificationChannel(channel)
@@ -540,7 +541,7 @@ class BackgroundScanWorker @AssistedInject constructor(
 
         val notification = androidx.core.app.NotificationCompat.Builder(applicationContext, channelId)
             .setContentTitle("PhotoVault")
-            .setContentText("正在扫描新照片…")
+            .setContentText(applicationContext.getString(R.string.notification_scan_in_progress))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()

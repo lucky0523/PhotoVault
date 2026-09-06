@@ -60,10 +60,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.entity.BackupHistoryRecord
 import com.huoyi.photovault.data.local.entity.BackupStatus
 import com.huoyi.photovault.ui.theme.LiquidDialogButton
@@ -204,7 +206,7 @@ private fun CurrentTasksView(
                 enabled = uiState.isStartPauseEnabled,
                 isManualRun = uiState.isManualRun,
                 statusText = if (uiState.isPaused && uiState.pauseReason?.isUserPause == true) {
-                    uiState.pauseReason.message
+                    stringResource(uiState.pauseReason.messageRes)
                 } else {
                     null
                 },
@@ -424,14 +426,17 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "备份已暂停：${pauseReason.message}",
+                    text = stringResource(
+                        R.string.backup_paused_reason_format,
+                        stringResource(pauseReason.messageRes)
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     color = textColor
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = pauseReason.resumeHint,
+                    text = stringResource(pauseReason.resumeHintRes),
                     style = MaterialTheme.typography.bodySmall,
                     color = textColor.copy(alpha = 0.7f)
                 )
@@ -682,7 +687,7 @@ private fun PausedTasksLoadErrorCard(onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(12.dp))
             Text(
-                text = "已暂停任务读取失败",
+                text = stringResource(R.string.error_paused_tasks_load),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
@@ -694,7 +699,7 @@ private fun PausedTasksLoadErrorCard(onRetry: () -> Unit) {
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("重试")
+                Text(stringResource(R.string.action_retry))
             }
         }
     }
@@ -869,7 +874,7 @@ private fun HistoryFilterBar(
         FilterChip(
             selected = selectedFilter == HistoryFilter.FAILED,
             onClick = { onFilterChanged(HistoryFilter.FAILED) },
-            label = { Text("失败") }
+            label = { Text(stringResource(R.string.backup_status_failed)) }
         )
         FilterChip(
             selected = selectedFilter == HistoryFilter.SKIPPED,
@@ -971,7 +976,14 @@ private fun HistoryRecordItem(
                 ) {
                     if (record.errorMessage != null) {
                         Text(
-                            text = if (record.status == BackupStatus.SKIPPED) "跳过原因：${record.errorMessage}" else "失败原因：${record.errorMessage}",
+                            text = stringResource(
+                                if (record.status == BackupStatus.SKIPPED) {
+                                    R.string.backup_skip_reason_format
+                                } else {
+                                    R.string.backup_failure_reason_format
+                                },
+                                record.errorMessage
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (record.status == BackupStatus.SKIPPED)
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -995,7 +1007,7 @@ private fun HistoryRecordItem(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("重试")
+                            Text(stringResource(R.string.action_retry))
                         }
                     }
                 }
@@ -1029,9 +1041,9 @@ private fun StatusIcon(status: BackupStatus) {
 @Composable
 private fun StatusLabel(status: BackupStatus) {
     val (text, color) = when (status) {
-        BackupStatus.SUCCESS -> "成功" to PhotoVaultColors.SyncGreen
-        BackupStatus.FAILED -> "失败" to MaterialTheme.colorScheme.error
-        BackupStatus.SKIPPED -> "跳过" to MaterialTheme.colorScheme.onSurfaceVariant
+        BackupStatus.SUCCESS -> stringResource(R.string.backup_status_success) to PhotoVaultColors.SyncGreen
+        BackupStatus.FAILED -> stringResource(R.string.backup_status_failed) to MaterialTheme.colorScheme.error
+        BackupStatus.SKIPPED -> stringResource(R.string.backup_status_skipped) to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Text(
