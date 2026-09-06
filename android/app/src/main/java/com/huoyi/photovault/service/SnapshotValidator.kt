@@ -238,11 +238,16 @@ object SnapshotValidator {
      * ISO base media file format (HEIC/HEIF/AVIF): walk the top-level boxes from offset 0,
      * reading only each box header (`size(4) + type(4)`, plus 8 bytes when a 64-bit
      * `largesize` is present). A `size` of 0 means "extends to end of file". The traversal
-     * must contain an `ftyp` box and the box sizes must sum exactly to the file length; any
-     * dangling / overshooting box indicates truncation. (R3.3)
+     * must contain an `ftyp` box, and every recognizable box must fit within the file. (R3.3)
      *
-     * If no `ftyp` box is present the file is not recognizably ISO-BMFF, so we return null
-     * (insufficient evidence → conservative pass-through, R4.3).
+     * Some phone cameras append an opaque OEM trailer after a complete `mdat` (for example,
+     * OPPO/Qualcomm `QTI ` debug and watermark metadata). Such bytes are not ISO-BMFF boxes and
+     * must not be treated as proof that the image is still being written. Once a complete `mdat`
+     * has been seen, an implausible box type or a short opaque tail is therefore insufficient
+     * evidence and returns null (conservative pass-through, R4.3). A recognizable box whose
+     * declared size exceeds the remaining file is still definite truncation.
+     *
+     * If no `ftyp` box is present the file is not recognizably ISO-BMFF, so we also return null.
      */
     private fun checkIsoBmff(snapshot: File): Boolean? {
         return try {
@@ -252,35 +257,57 @@ object SnapshotValidator {
                 val header = ByteArray(16)
                 var position = 0L
                 var sawFtyp = false
+                var sawCompleteMdat = false
                 while (position < length) {
-                    // A partial header at the tail means the file was cut mid-box → truncated.
-                    if (length - position < 8L) return sawFtypOrNull(sawFtyp, truncated = true)
+                    val remaining = length - position
+                    if (remaining < 8L) {
+                        return if (sawCompleteMdat) null
+                        else sawFtypOrNull(sawFtyp, truncated = true)
+                    }
+
                     raf.seek(position)
                     raf.readFully(header, 0, 8)
+
+                    // ISO-BMFF box types are printable four-character codes. Binary bytes here,
+                    // after a complete media-data box, identify an opaque OEM trailer rather than
+                    // a declared box that can be proven truncated.
+                    val plausibleType = (4 until 8).all { index ->
+                        (header[index].toInt() and 0xFF) in 0x20..0x7E
+                    }
+                    if (!plausibleType) {
+                        return if (sawCompleteMdat) null
+                        else sawFtypOrNull(sawFtyp, truncated = true)
+                    }
+
                     var boxSize = readU32BE(header, 0)
                     val type = String(header, 4, 4, Charsets.US_ASCII)
                     var headerSize = 8L
                     when (boxSize) {
                         1L -> {
                             // 64-bit largesize follows the 8-byte header.
-                            if (length - position < 16L) return sawFtypOrNull(sawFtyp, truncated = true)
+                            if (remaining < 16L) {
+                                return sawFtypOrNull(sawFtyp, truncated = true)
+                            }
                             raf.readFully(header, 8, 8)
                             boxSize = readU64BE(header, 8)
                             headerSize = 16L
                         }
                         0L -> {
                             // Box extends to end of file.
-                            boxSize = length - position
+                            boxSize = remaining
                         }
                     }
                     if (type == "ftyp") sawFtyp = true
-                    // A box smaller than its own header is malformed → truncated/corrupt.
-                    if (boxSize < headerSize) return sawFtypOrNull(sawFtyp, truncated = true)
+                    // A box smaller than its header or larger than the remaining bytes is
+                    // malformed/truncated. Check before addition to avoid Long overflow.
+                    if (boxSize < headerSize || boxSize > remaining) {
+                        return sawFtypOrNull(sawFtyp, truncated = true)
+                    }
                     position += boxSize
+                    if (type == "mdat") sawCompleteMdat = true
                 }
                 if (!sawFtyp) return null
-                // Boxes summed exactly to the file length → intact; overshoot → truncated.
-                position == length
+                true
             }
         } catch (e: IOException) {
             // Evidence unavailable: don't let validator IO jitter block a normal backup (R4.3).
