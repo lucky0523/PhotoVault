@@ -8,7 +8,7 @@
 #
 # 用法:
 #   ./scripts/build.sh web [--fnos]                     仅构建前端
-#   ./scripts/build.sh docker [--tag photovault:0.1.0]  构建 Docker 镜像
+#   ./scripts/build.sh docker [--tag photovault:1.0]    构建 Docker 镜像
 #   ./scripts/build.sh fpk    [--arch x86_64|aarch64]   构建 .fpk
 #   ./scripts/build.sh all                              前端 + Docker + 两种架构的 fpk
 #   ./scripts/build.sh verify [--arch ARCH]             对已组装的包目录重跑自检

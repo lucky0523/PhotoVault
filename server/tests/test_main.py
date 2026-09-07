@@ -176,4 +176,4 @@ async def test_unhandled_exception_handler(async_client):
 def test_app_metadata():
     """App is configured with correct title and version."""
     assert app.title == "PhotoVault"
-    assert app.version == "0.1.0"
+    assert app.version == "1.0"

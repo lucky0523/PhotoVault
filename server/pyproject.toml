@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "photovault"
-version = "0.1.0"
+version = "1.0"
 description = "Photo backup service for NAS - server component"
 requires-python = ">=3.11"
 dependencies = [

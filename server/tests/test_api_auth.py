@@ -85,7 +85,7 @@ class TestConnectionTest:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["version"] == "0.1.0"
+        assert body["version"] == "1.0"
 
     @pytest.mark.asyncio
     async def test_connection_test_no_auth_required(self, seeded_db, async_client):
