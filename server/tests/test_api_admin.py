@@ -115,17 +115,21 @@ class TestListUsers:
         assert "created_at" in user
 
     @pytest.mark.asyncio
-    async def test_list_users_as_regular_user_forbidden(
+    async def test_list_users_as_regular_user_only_returns_self(
         self, admin_db, regular_user_token, async_client
     ):
-        """Non-admin user gets 403 when trying to list users."""
+        """Non-admin users can list users but only see their own account."""
         async with async_client as client:
             response = await client.get(
                 "/api/v1/admin/users",
                 headers={"Authorization": f"Bearer {regular_user_token}"},
             )
 
-        assert response.status_code == 403
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["username"] == "regular"
+        assert body[0]["is_admin"] is False
 
     @pytest.mark.asyncio
     async def test_list_users_no_auth(self, admin_db, async_client):

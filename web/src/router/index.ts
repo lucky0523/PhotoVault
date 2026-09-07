@@ -66,7 +66,6 @@ const mainChildren: RouteRecordRaw[] = [
     path: 'settings/users',
     name: 'AdminUsers',
     component: () => import('@/views/AdminUsersView.vue'),
-    meta: { requiresAdmin: true },
   },
   {
     path: 'settings/about',

@@ -4,6 +4,7 @@ Endpoints:
 - POST /auth/login
 - POST /auth/register
 - POST /auth/refresh
+- PUT  /auth/password
 - GET  /auth/registration-status
 - GET  /connection/test
 """
@@ -18,8 +19,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app import __version__
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.security import get_current_user
 from app.core.validators import validate_password
-from app.models.auth import LoginRequest, RefreshRequest, RegisterRequest, TokenPair
+from app.models.auth import (
+    ChangeOwnPasswordRequest,
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    TokenPair,
+    UserInfo,
+)
 from app.services.auth_service import AuthService
 
 logger = logging.getLogger("photovault.api.auth")
@@ -129,6 +138,34 @@ async def refresh(
             detail="Invalid or expired refresh token",
         )
     return token_pair
+
+
+@router.put("/auth/password")
+async def change_own_password(
+    body: ChangeOwnPasswordRequest,
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
+    """Change the authenticated user's password after verifying the current one."""
+    password_error = validate_password(body.new_password)
+    if password_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=password_error,
+        )
+
+    auth_service = AuthService(db)
+    changed = await auth_service.change_own_password(
+        current_user.id,
+        body.current_password,
+        body.new_password,
+    )
+    if not changed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="当前密码不正确",
+        )
+    return {"success": True}
 
 
 @router.get("/connection/test")

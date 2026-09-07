@@ -1,7 +1,7 @@
 """Admin API endpoints.
 
 Endpoints:
-- GET    /admin/users                         — List all users (admin only)
+- GET    /admin/users                         — List visible users (authenticated)
 - POST   /admin/users                         — Create a new user (admin only)
 - DELETE /admin/users/{id}                    — Delete a user (admin only)
 - DELETE /admin/users/{id}/purged-records     — Remove purged file records (admin only)
@@ -17,7 +17,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
-from app.core.security import require_admin
+from app.core.security import get_current_user, require_admin
 from app.core.validators import validate_password
 from app.models.auth import (
     ChangePasswordRequest,
@@ -33,12 +33,13 @@ router = APIRouter()
 
 @router.get("/admin/users", response_model=List[UserInfo])
 async def list_users(
-    _admin: UserInfo = Depends(require_admin),
+    current_user: UserInfo = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db),
 ) -> List[UserInfo]:
-    """List all users. Requires admin privileges."""
+    """List all users for admins, or only the current user otherwise."""
     auth_service = AuthService(db)
-    return await auth_service.list_users()
+    user_id = None if current_user.is_admin else current_user.id
+    return await auth_service.list_users(user_id=user_id)
 
 
 @router.post("/admin/users", response_model=UserInfo, status_code=status.HTTP_201_CREATED)

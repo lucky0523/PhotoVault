@@ -24,3 +24,16 @@ export async function getRegistrationStatus(): Promise<RegistrationStatus> {
   const response = await http.get('/auth/registration-status')
   return response.data
 }
+
+/**
+ * Change the authenticated user's own password after verifying the current one.
+ */
+export async function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  await http.put('/auth/password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  })
+}

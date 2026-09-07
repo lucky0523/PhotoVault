@@ -212,19 +212,38 @@ class AuthService:
         return cursor.rowcount > 0
 
     async def change_password(self, user_id: int, new_password: str) -> bool:
-        """Change a user's password.
+        """Change a user's password without checking the current password.
 
-        Args:
-            user_id: The ID of the user.
-            new_password: The new plaintext password to hash and store.
-
-        Returns:
-            True if the password was changed, False if user not found.
+        This method is reserved for administrator-authorized resets.
         """
         password_hash = _hash_password(new_password)
         cursor = await self._db.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (password_hash, user_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def change_own_password(
+        self, user_id: int, current_password: str, new_password: str
+    ) -> bool:
+        """Change a user's own password after verifying the current password."""
+        cursor = await self._db.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+
+        current_hash = row[0] if isinstance(row, tuple) else row["password_hash"]
+        if not _verify_password(current_password, current_hash):
+            return False
+
+        new_hash = _hash_password(new_password)
+        cursor = await self._db.execute(
+            """UPDATE users SET password_hash = ?
+               WHERE id = ? AND password_hash = ?""",
+            (new_hash, user_id, current_hash),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -239,11 +258,18 @@ class AuthService:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def list_users(self) -> List[UserInfo]:
-        """List all users (for admin)."""
-        cursor = await self._db.execute(
-            "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
-        )
+    async def list_users(self, user_id: int | None = None) -> List[UserInfo]:
+        """List all users, optionally restricted to one user ID."""
+        if user_id is None:
+            cursor = await self._db.execute(
+                "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+            )
+        else:
+            cursor = await self._db.execute(
+                """SELECT id, username, is_admin, created_at
+                   FROM users WHERE id = ? ORDER BY id""",
+                (user_id,),
+            )
         rows = await cursor.fetchall()
         return [
             UserInfo(

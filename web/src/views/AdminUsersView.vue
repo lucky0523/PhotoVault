@@ -2,7 +2,7 @@
   <div class="admin-users-view pv-page">
     <PageHeader
       title="用户管理"
-      subtitle="管理系统用户（仅管理员可见）"
+      subtitle="查看系统用户"
       :icon="UserFilled"
     >
       <template #extra>
@@ -30,7 +30,7 @@
         <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openResetPasswordDialog(row)">
-              重置密码
+              {{ authStore.isAdmin ? '重置密码' : '修改密码' }}
             </el-button>
             <el-popconfirm
               :width="360"
@@ -50,6 +50,7 @@
               </template>
             </el-popconfirm>
             <el-popconfirm
+              v-if="authStore.isAdmin"
               title="确定要删除该用户吗？此操作不可恢复。"
               confirm-button-text="确定"
               cancel-button-text="取消"
@@ -103,19 +104,30 @@
     <!-- Reset Password Dialog -->
     <el-dialog
       v-model="showResetPasswordDialog"
-      title="重置密码"
+      :title="authStore.isAdmin ? '重置密码' : '修改密码'"
       width="420px"
       @close="resetPasswordForm"
     >
       <p class="reset-hint">
-        为用户 <strong>{{ resetTarget?.username }}</strong> 设置新密码
+        <template v-if="authStore.isAdmin">
+          为用户 <strong>{{ resetTarget?.username }}</strong> 设置新密码
+        </template>
+        <template v-else>验证当前密码后设置新密码</template>
       </p>
       <el-form
         ref="resetFormRef"
         :model="resetForm"
         :rules="resetRules"
-        label-width="80px"
+        label-width="90px"
       >
+        <el-form-item v-if="!authStore.isAdmin" label="当前密码" prop="currentPassword">
+          <el-input
+            v-model="resetForm.currentPassword"
+            type="password"
+            placeholder="请输入当前密码"
+            show-password
+          />
+        </el-form-item>
         <el-form-item label="新密码" prop="newPassword">
           <el-input
             v-model="resetForm.newPassword"
@@ -136,7 +148,7 @@
       <template #footer>
         <el-button @click="showResetPasswordDialog = false">取消</el-button>
         <el-button type="primary" :loading="resetLoading" @click="handleResetPassword">
-          确认重置
+          {{ authStore.isAdmin ? '确认重置' : '确认修改' }}
         </el-button>
       </template>
     </el-dialog>
@@ -156,9 +168,12 @@ import {
   clearPurgedRecords,
   changePassword,
 } from '@/api/admin'
+import { changeOwnPassword } from '@/api/auth'
+import { useAuthStore } from '@/stores/auth'
 import { validatePasswordChars } from '@/utils/validators'
 import type { UserInfo } from '@/api/admin'
 
+const authStore = useAuthStore()
 const loading = ref(false)
 const users = ref<UserInfo[]>([])
 const clearingUserId = ref<number | null>(null)
@@ -188,6 +203,7 @@ const resetLoading = ref(false)
 const resetTarget = ref<UserInfo | null>(null)
 const resetFormRef = ref<FormInstance>()
 const resetForm = reactive({
+  currentPassword: '',
   newPassword: '',
   confirmPassword: '',
 })
@@ -199,6 +215,9 @@ const validateResetConfirmPassword = (_rule: any, value: string, callback: any) 
   }
 }
 const resetRules: FormRules = {
+  currentPassword: [
+    { required: true, message: '请输入当前密码', trigger: 'blur' },
+  ],
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
     { validator: validatePasswordChars, trigger: 'blur' },
@@ -288,18 +307,21 @@ function openResetPasswordDialog(user: UserInfo) {
 
 async function handleResetPassword() {
   const valid = await resetFormRef.value?.validate().catch(() => false)
-  if (!valid) return
-
-  if (!resetTarget.value) return
+  if (!valid || !resetTarget.value) return
 
   resetLoading.value = true
   try {
-    await changePassword(resetTarget.value.id, resetForm.newPassword)
-    ElMessage.success('密码重置成功')
+    if (authStore.isAdmin) {
+      await changePassword(resetTarget.value.id, resetForm.newPassword)
+    } else {
+      await changeOwnPassword(resetForm.currentPassword, resetForm.newPassword)
+    }
+    ElMessage.success(authStore.isAdmin ? '密码重置成功' : '密码修改成功')
     showResetPasswordDialog.value = false
     resetPasswordForm()
   } catch (error: any) {
-    const msg = error.response?.data?.detail || '重置密码失败'
+    const fallback = authStore.isAdmin ? '重置密码失败' : '修改密码失败'
+    const msg = error.response?.data?.detail || fallback
     ElMessage.error(msg)
   } finally {
     resetLoading.value = false
@@ -314,6 +336,7 @@ function resetCreateForm() {
 }
 
 function resetPasswordForm() {
+  resetForm.currentPassword = ''
   resetForm.newPassword = ''
   resetForm.confirmPassword = ''
   resetTarget.value = null

@@ -55,3 +55,10 @@ class ChangePasswordRequest(BaseModel):
     """Admin request to change a user's password."""
 
     new_password: str
+
+
+class ChangeOwnPasswordRequest(BaseModel):
+    """Authenticated user request to change their own password."""
+
+    current_password: str
+    new_password: str
