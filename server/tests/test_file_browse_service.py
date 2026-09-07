@@ -414,7 +414,12 @@ async def test_get_thumbnail_caching(service_with_data):
     assert thumb1 is not None
 
     # Verify cache file exists
-    cache_path = Path(storage_root) / ".thumbnails" / "alice" / "hash_a1_small.jpg"
+    cache_path = (
+        Path(storage_root)
+        / ".thumbnails"
+        / "alice"
+        / f"hash_a1_small_{service.THUMBNAIL_CACHE_VERSION}.jpg"
+    )
     assert cache_path.exists()
 
     # Second call should return cached version

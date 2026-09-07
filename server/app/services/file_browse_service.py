@@ -190,6 +190,9 @@ class FileBrowseService:
         "small": (200, 200),
         "medium": (600, 600),
     }
+    # Increment whenever thumbnail rendering semantics change so stale derived
+    # images are regenerated without mutating or deleting original media.
+    THUMBNAIL_CACHE_VERSION = "v2"
 
     def __init__(self, db: aiosqlite.Connection, media_root: str, trash_retention_days: int = 30):
         """Initialize with a database connection and the photo storage directory.
@@ -767,7 +770,9 @@ class FileBrowseService:
 
         # Check cache first
         cache_dir = Path(self._media_root) / ".thumbnails" / username
-        cache_filename = f"{file_info.file_hash}_{size}.jpg"
+        cache_filename = (
+            f"{file_info.file_hash}_{size}_{self.THUMBNAIL_CACHE_VERSION}.jpg"
+        )
         cache_path = cache_dir / cache_filename
 
         if cache_path.exists():
@@ -1023,12 +1028,17 @@ class FileBrowseService:
             JPEG bytes of the thumbnail, or None if generation fails.
         """
         try:
-            from PIL import Image
+            from PIL import Image, ImageOps
             import io
 
             target_size = self.THUMBNAIL_SIZES[size]
 
             with Image.open(file_path) as img:
+                # Pillow does not automatically apply EXIF Orientation. Bake it
+                # into the derived image before resizing; save then safely emits
+                # ordinary pixels without requiring orientation metadata.
+                img = ImageOps.exif_transpose(img)
+
                 # Convert to RGB if necessary (e.g., RGBA, P mode)
                 if img.mode not in ("RGB", "L"):
                     img = img.convert("RGB")
