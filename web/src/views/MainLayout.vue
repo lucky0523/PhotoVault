@@ -47,6 +47,10 @@
             <el-icon><UserFilled /></el-icon>
             <span>用户管理</span>
           </el-menu-item>
+          <el-menu-item v-if="authStore.isAdmin" index="/settings/client-versions">
+            <el-icon><Cellphone /></el-icon>
+            <span>客户端安装包管理</span>
+          </el-menu-item>
           <el-menu-item index="/settings/about">
             <el-icon><InfoFilled /></el-icon>
             <span>关于服务端</span>
@@ -69,6 +73,16 @@
     <el-container>
       <el-header>
         <div class="header-content">
+          <el-tooltip content="下载手机 App" placement="bottom">
+            <el-button
+              class="qrcode-btn"
+              circle
+              size="default"
+              @click="showAppDownload = true"
+            >
+              <el-icon :size="18"><Cellphone /></el-icon>
+            </el-button>
+          </el-tooltip>
           <el-tooltip content="服务器二维码" placement="bottom">
             <el-button
               class="qrcode-btn"
@@ -88,6 +102,46 @@
         <router-view />
       </el-main>
     </el-container>
+
+    <el-dialog
+      v-model="showAppDownload"
+      title="下载手机 App"
+      width="400px"
+      align-center
+      @open="renderAppDownload"
+    >
+      <div v-loading="appDownloadLoading" class="qrcode-dialog-body app-download-body">
+        <template v-if="latestClient && appDownloadUrl">
+          <div class="qrcode-wrapper">
+            <img
+              v-if="appQrcodeDataUrl"
+              :src="appQrcodeDataUrl"
+              alt="Android App 下载二维码"
+              class="qrcode-img"
+            />
+            <div v-else class="qrcode-loading">生成中...</div>
+          </div>
+          <div class="app-version">
+            Android {{ latestClient.version_name }}
+            <span>（versionCode {{ latestClient.version_code }}）</span>
+          </div>
+          <el-link
+            class="download-link"
+            type="primary"
+            :href="appDownloadUrl"
+            target="_blank"
+          >
+            下载最新Android客户端
+          </el-link>
+          <p class="qrcode-hint">手机扫描二维码或点击链接下载最新版 APK</p>
+        </template>
+        <el-empty
+          v-else-if="!appDownloadLoading"
+          :description="appDownloadError || '管理员尚未上传 Android 客户端'"
+          :image-size="80"
+        />
+      </div>
+    </el-dialog>
 
     <el-dialog
       v-model="showQrcode"
@@ -114,6 +168,8 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTrashStore } from '@/stores/trash'
 import { getServerInfo } from '@/api/server'
+import { getLatestAndroidClient } from '@/api/clientVersions'
+import type { ClientVersionInfo } from '@/api/clientVersions'
 import QRCode from 'qrcode'
 
 // Inline QR-code-style SVG icon (Element Plus has no dedicated QrCode icon)
@@ -168,6 +224,12 @@ const visibleFnosMenuItems = computed(() =>
 const showQrcode = ref(false)
 const qrcodeDataUrl = ref('')
 const serverUrl = ref(window.location.origin)
+const showAppDownload = ref(false)
+const appDownloadLoading = ref(false)
+const appQrcodeDataUrl = ref('')
+const appDownloadUrl = ref('')
+const appDownloadError = ref('')
+const latestClient = ref<ClientVersionInfo | null>(null)
 
 function isLocalHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
@@ -189,6 +251,38 @@ async function resolveServerUrl(): Promise<string> {
     // fall through to window.location.origin
   }
   return window.location.origin
+}
+
+async function renderAppDownload() {
+  appDownloadLoading.value = true
+  appQrcodeDataUrl.value = ''
+  appDownloadUrl.value = ''
+  appDownloadError.value = ''
+  latestClient.value = null
+  try {
+    const [baseUrl, client] = await Promise.all([
+      resolveServerUrl(),
+      getLatestAndroidClient(),
+    ])
+    if (!client.download_url) {
+      appDownloadError.value = '最新版客户端缺少下载地址'
+      return
+    }
+    latestClient.value = client
+    appDownloadUrl.value = new URL(client.download_url, `${baseUrl}/`).toString()
+    appQrcodeDataUrl.value = await QRCode.toDataURL(appDownloadUrl.value, {
+      width: 240,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' },
+    })
+  } catch (error: any) {
+    appDownloadError.value =
+      error.response?.status === 404
+        ? '管理员尚未上传 Android 客户端'
+        : '无法获取最新版 Android 客户端'
+  } finally {
+    appDownloadLoading.value = false
+  }
 }
 
 async function renderQrcode() {
@@ -328,6 +422,35 @@ function handleLogout() {
   flex-direction: column;
   align-items: center;
   gap: 12px;
+}
+
+.app-download-body {
+  min-height: 340px;
+  justify-content: center;
+}
+
+.app-version {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.app-version span {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.download-link {
+  max-width: 100%;
+  font-size: 13px;
+}
+
+.download-link :deep(.el-link__inner) {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .qrcode-wrapper {

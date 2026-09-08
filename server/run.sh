@@ -45,19 +45,32 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
-# 虚拟环境
+# 虚拟环境与依赖同步
 # ---------------------------------------------------------------------------
-if [ ! -d "$VENV_DIR" ]; then
-    echo "==> 未找到虚拟环境，正在创建 $VENV_DIR ..."
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "==> 未找到可用的虚拟环境，正在创建 $VENV_DIR ..."
     python3 -m venv "$VENV_DIR"
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
-    echo "==> 安装依赖 ..."
-    pip install --quiet --upgrade pip
-    pip install --quiet -r requirements.txt
-else
-    # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate"
+fi
+
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+
+# 旧逻辑只在创建虚拟环境时安装一次依赖，requirements.txt 后续增加包时
+# 已有环境不会更新。以依赖文件内容哈希作为戳记：仅在清单变化（或首次
+# 使用此逻辑）时同步，避免每次启动都访问包索引。
+REQUIREMENTS_FILE="requirements.txt"
+REQUIREMENTS_STAMP="$VENV_DIR/.requirements.sha256"
+REQUIREMENTS_HASH="$("$VENV_DIR/bin/python" -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("requirements.txt").read_bytes()).hexdigest())')"
+INSTALLED_HASH=""
+if [ -f "$REQUIREMENTS_STAMP" ]; then
+    INSTALLED_HASH="$(<"$REQUIREMENTS_STAMP")"
+fi
+
+if [ "$REQUIREMENTS_HASH" != "$INSTALLED_HASH" ]; then
+    echo "==> 依赖清单已更新，正在同步虚拟环境 ..."
+    "$VENV_DIR/bin/python" -m pip install --quiet --upgrade pip
+    "$VENV_DIR/bin/python" -m pip install --quiet -r "$REQUIREMENTS_FILE"
+    printf '%s\n' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
 fi
 
 # ---------------------------------------------------------------------------
@@ -107,7 +120,7 @@ echo "================================================================"
 # 启动
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "prod" ]; then
-    exec uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --workers 4
+    exec "$VENV_DIR/bin/python" -m uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --workers 4
 else
-    exec uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --reload
+    exec "$VENV_DIR/bin/python" -m uvicorn app.main:app --host "$BIND_HOST" --port "$PORT" --reload
 fi

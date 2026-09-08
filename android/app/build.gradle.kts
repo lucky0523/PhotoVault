@@ -1,3 +1,5 @@
+import java.time.LocalDate
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -15,6 +17,9 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"
+        // APK ZIP timestamps are normalized by Android tooling, so persist an
+        // explicit build date for server-side release filename generation.
+        manifestPlaceholders["buildDate"] = LocalDate.now().toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

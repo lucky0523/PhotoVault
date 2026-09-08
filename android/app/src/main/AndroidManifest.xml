@@ -41,6 +41,11 @@
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="34">
 
+        <!-- Build date used by the PhotoVault server to format uploaded APK names. -->
+        <meta-data
+            android:name="com.huoyi.photovault.BUILD_DATE"
+            android:value="${buildDate}" />
+
         <!-- Portrait-locked QR scanner (ZXing default is landscape). -->
         <activity
             android:name=".ui.login.PortraitCaptureActivity"

@@ -414,6 +414,7 @@ def _register_routes(application: FastAPI) -> None:
     from app.api.files import router as files_router
     from app.api.server import router as server_router
     from app.api.explore import router as explore_router
+    from app.api.client_versions import router as client_versions_router
     from app.api.fnos import router as fnos_router
 
     application.include_router(setup_router, prefix="/api/v1", tags=["setup"])
@@ -423,6 +424,9 @@ def _register_routes(application: FastAPI) -> None:
     application.include_router(files_router, prefix="/api/v1", tags=["files"])
     application.include_router(server_router, prefix="/api/v1", tags=["server"])
     application.include_router(explore_router, prefix="/api/v1", tags=["explore"])
+    application.include_router(
+        client_versions_router, prefix="/api/v1", tags=["client versions"]
+    )
     # 飞牛（fnOS）开放能力代理。仅管理员可用；不在飞牛运行时中调用会返回 503。
     # 前端只有飞牛构建才会用到它，见 server/app/api/fnos.py 的说明。
     application.include_router(fnos_router, prefix="/api/v1", tags=["fnos"])

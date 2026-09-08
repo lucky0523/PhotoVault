@@ -68,6 +68,12 @@ const mainChildren: RouteRecordRaw[] = [
     component: () => import('@/views/AdminUsersView.vue'),
   },
   {
+    path: 'settings/client-versions',
+    name: 'ClientVersions',
+    component: () => import('@/views/ClientVersionsView.vue'),
+    meta: { requiresAdmin: true },
+  },
+  {
     path: 'settings/about',
     name: 'AboutServer',
     component: () => import('@/views/AboutServerView.vue'),

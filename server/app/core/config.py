@@ -600,6 +600,18 @@ class Settings(BaseSettings):
             )
 
     @property
+    def client_releases_root(self) -> str:
+        """Directory for distributable clients, isolated from photo records.
+
+        fnOS stores its administrator-selected working directory in a pointer;
+        other deployments use ``storage_root`` as their working directory.  APKs
+        live below a reserved directory in that location and are never added to
+        ``file_records`` or served through the photo APIs.
+        """
+        workdir = read_workdir_pointer(self) or self.storage_root
+        return str(Path(workdir) / "client-releases")
+
+    @property
     def chunk_size_bytes(self) -> int:
         """Return chunk size in bytes."""
         return self.chunk_size_mb * 1024 * 1024
@@ -673,6 +685,11 @@ def ensure_runtime_directories(settings: Settings | None = None) -> None:
         "log_dir": Path(s.log_dir),
         "database_url": Path(s.database_path).parent,
     }
+    # Before fnOS provisioning there is no selected working directory yet, so
+    # defer creation instead of leaving a client directory in storage_root.
+    if not s.require_workdir_setup or read_workdir_pointer(s):
+        required["client_releases_root"] = Path(s.client_releases_root)
+
     for name, path in required.items():
         try:
             path.mkdir(parents=True, exist_ok=True)

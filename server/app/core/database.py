@@ -156,6 +156,25 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 """
 
+_CREATE_CLIENT_VERSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS client_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    version_name TEXT NOT NULL,
+    version_code INTEGER NOT NULL,
+    relative_apk_path TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    release_notes TEXT,
+    uploaded_by INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE(platform, package_name, version_code)
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_file_hash ON file_records(user_id, file_hash);",
     "CREATE INDEX IF NOT EXISTS idx_upload_session_user ON upload_sessions(user_id, file_hash);",
@@ -164,6 +183,7 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_photo_scenes_user ON photo_scenes(user_id, scene_label);",
     "CREATE INDEX IF NOT EXISTS idx_faces_user ON faces(user_id, cluster_id);",
     "CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);",
+    "CREATE INDEX IF NOT EXISTS idx_client_versions_latest ON client_versions(platform, package_name, version_code DESC);",
 ]
 
 
@@ -195,6 +215,7 @@ async def init_db(db_path: str) -> None:
         await db.execute(_CREATE_PHOTO_SCENES_TABLE)
         await db.execute(_CREATE_FACE_CLUSTERS_TABLE)
         await db.execute(_CREATE_FACES_TABLE)
+        await db.execute(_CREATE_CLIENT_VERSIONS_TABLE)
 
         # Idempotent column migration for existing databases (before indexes)
         cursor = await db.execute("PRAGMA table_info(file_records)")
