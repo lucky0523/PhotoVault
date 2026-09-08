@@ -122,6 +122,8 @@ class TestLoginEndpoint:
         assert body["access_token"] != ""
         assert body["refresh_token"] != ""
         assert body["expires_in"] == 24 * 3600
+        assert body["instance_id"]
+        assert body["user_id"] > 0
 
     @pytest.mark.asyncio
     async def test_login_wrong_password(self, seeded_db, async_client):
@@ -211,6 +213,8 @@ class TestRefreshEndpoint:
         assert "expires_in" in body
         assert body["access_token"] != ""
         assert body["refresh_token"] != ""
+        assert body["instance_id"] == login_resp.json()["instance_id"]
+        assert body["user_id"] == login_resp.json()["user_id"]
 
     @pytest.mark.asyncio
     async def test_refresh_invalid_token(self, async_client, seeded_db):

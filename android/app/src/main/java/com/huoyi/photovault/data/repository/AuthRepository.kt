@@ -7,7 +7,9 @@ import com.huoyi.photovault.data.api.AuthInterceptor
 import com.huoyi.photovault.data.api.model.ConnectionTestResponse
 import com.huoyi.photovault.data.api.model.LoginRequest
 import com.huoyi.photovault.data.api.model.LoginResponse
+import com.huoyi.photovault.data.api.model.RefreshResponse
 import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.local.StableAccountIdentity
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -90,14 +92,16 @@ class AuthRepository @Inject constructor(
             val api = createApiForServer(serverAddress)
             val response = api.login(LoginRequest(username, password))
             if (response.isSuccessful) {
-                val loginResponse = response.body()!!
-                // Save tokens
-                credentialManager.saveTokens(
-                    accessToken = loginResponse.accessToken,
-                    refreshToken = loginResponse.refreshToken,
-                    expiresIn = loginResponse.expiresIn
-                )
-                Result.success(loginResponse)
+                val body = response.body()
+                    ?: return Result.failure(Exception(context.getString(R.string.error_empty_server_response)))
+                if (stableIdentity(body.instanceId, body.userId) == null) {
+                    return Result.failure(Exception(context.getString(R.string.error_server_identity_missing)))
+                }
+                // Do not publish the new token yet. LoginViewModel hands the
+                // response to AccountSessionManager, which first invalidates any
+                // old server-bound local state and then atomically saves the new
+                // endpoint, stable identity and tokens.
+                Result.success(body)
             } else {
                 val messageRes = if (response.code() == 401) {
                     R.string.error_invalid_credentials
@@ -116,7 +120,7 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    suspend fun refreshToken(): Result<LoginResponse> {
+    suspend fun refreshToken(): Result<RefreshResponse> {
         val refreshToken = credentialManager.getRefreshToken()
             ?: return Result.failure(Exception(context.getString(R.string.error_missing_refresh_token)))
 
@@ -129,19 +133,30 @@ class AuthRepository @Inject constructor(
                 com.huoyi.photovault.data.api.model.RefreshRequest(refreshToken)
             )
             if (response.isSuccessful) {
-                val refreshResponse = response.body()!!
+                val refreshResponse = response.body()
+                    ?: return Result.failure(Exception(context.getString(R.string.error_empty_server_response)))
+                val refreshedIdentity = stableIdentity(
+                    refreshResponse.instanceId,
+                    refreshResponse.userId
+                )
+                val savedIdentity = credentialManager.getStableAccountIdentity()
+                if (refreshedIdentity == null) {
+                    credentialManager.clearTokens()
+                    return Result.failure(Exception(context.getString(R.string.error_server_identity_missing)))
+                }
+                if (savedIdentity == null || savedIdentity != refreshedIdentity) {
+                    // A refresh must never switch the local account projection.
+                    // Force an interactive login so AccountSessionManager can run
+                    // its stop/clear/rescan transition safely.
+                    credentialManager.clearTokens()
+                    return Result.failure(Exception(context.getString(R.string.error_server_identity_changed)))
+                }
                 credentialManager.saveTokens(
                     accessToken = refreshResponse.accessToken,
                     refreshToken = refreshResponse.refreshToken,
                     expiresIn = refreshResponse.expiresIn
                 )
-                Result.success(
-                    LoginResponse(
-                        accessToken = refreshResponse.accessToken,
-                        refreshToken = refreshResponse.refreshToken,
-                        expiresIn = refreshResponse.expiresIn
-                    )
-                )
+                Result.success(refreshResponse)
             } else {
                 credentialManager.clearTokens()
                 Result.failure(Exception(context.getString(R.string.error_token_refresh_failed)))
@@ -152,11 +167,24 @@ class AuthRepository @Inject constructor(
     }
 
     fun hasValidToken(): Boolean {
-        return credentialManager.hasValidToken()
+        if (!credentialManager.hasValidToken()) return false
+        // Pre-stable-ID installs must perform one interactive login so the local
+        // projection can be conservatively rebound to (instance_id, user_id).
+        if (credentialManager.getStableAccountIdentity() == null) {
+            credentialManager.clearTokens()
+            return false
+        }
+        return true
     }
 
     fun logout() {
         credentialManager.clearTokens()
+    }
+
+    private fun stableIdentity(instanceId: String?, userId: Long?): StableAccountIdentity? {
+        val validInstanceId = instanceId?.takeIf { it.isNotBlank() } ?: return null
+        val validUserId = userId?.takeIf { it > 0L } ?: return null
+        return StableAccountIdentity(validInstanceId, validUserId)
     }
 
     private fun normalizeServerUrl(address: String): String {

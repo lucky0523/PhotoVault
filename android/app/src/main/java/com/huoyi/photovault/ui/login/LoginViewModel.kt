@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.huoyi.photovault.R
+import com.huoyi.photovault.data.local.AccountSessionManager
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.repository.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,6 +41,7 @@ sealed class TestConnectionResult {
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val credentialManager: CredentialManager,
+    private val accountSessionManager: AccountSessionManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -152,14 +154,26 @@ class LoginViewModel @Inject constructor(
             )
 
             if (result.isSuccess) {
-                // Save credentials
-                credentialManager.saveCredentials(
-                    serverAddress = state.serverAddress,
-                    username = state.username,
-                    password = if (state.rememberPassword) state.password else null,
-                    rememberPassword = state.rememberPassword
-                )
-                _uiState.update { it.copy(isLoading = false, loginSuccess = true) }
+                val sessionResult = runCatching {
+                    accountSessionManager.activate(
+                        serverAddress = state.serverAddress,
+                        username = state.username,
+                        password = if (state.rememberPassword) state.password else null,
+                        rememberPassword = state.rememberPassword,
+                        loginResponse = result.getOrThrow()
+                    )
+                }
+                if (sessionResult.isSuccess) {
+                    _uiState.update { it.copy(isLoading = false, loginSuccess = true) }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = sessionResult.exceptionOrNull()?.message
+                                ?: context.getString(R.string.error_login_failed)
+                        )
+                    }
+                }
             } else {
                 _uiState.update {
                     it.copy(

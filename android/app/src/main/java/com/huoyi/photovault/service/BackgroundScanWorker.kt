@@ -51,7 +51,8 @@ class BackgroundScanWorker @AssistedInject constructor(
     private val uploadRecordDao: UploadRecordDao,
     private val backupHistoryDao: BackupHistoryDao,
     private val settingsPreferences: SettingsPreferences,
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val sessionOperationGuard: SessionOperationGuard
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -357,6 +358,10 @@ class BackgroundScanWorker @AssistedInject constructor(
     }
 
     override suspend fun doWork(): Result {
+        return sessionOperationGuard.withOperation { doWorkForActiveSession() }
+    }
+
+    private suspend fun doWorkForActiveSession(): Result {
         val isTestRun = inputData.getBoolean(KEY_TEST_INTERVAL_RUN, false)
         com.huoyi.photovault.util.FileLogger.log(
             "Scan",

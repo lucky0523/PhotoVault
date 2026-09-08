@@ -23,6 +23,8 @@
     <string name="error_invalid_credentials">Incorrect username or password.</string>
     <string name="error_login_http">Login failed (HTTP %1$d).</string>
     <string name="error_server_connection_failed">Unable to connect to the server.</string>
+    <string name="error_server_identity_missing">The server is too old or returned an invalid identity. Update the PhotoVault server and try again.</string>
+    <string name="error_server_identity_changed">The server identity changed. Sign in again to safely switch the local backup state.</string>
     <string name="error_missing_refresh_token">No refresh token is available.</string>
     <string name="error_missing_server_address">No server address is configured.</string>
     <string name="error_token_refresh_failed">Unable to refresh the sign-in session.</string>

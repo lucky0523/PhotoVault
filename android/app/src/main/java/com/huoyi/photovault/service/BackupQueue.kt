@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import java.util.PriorityQueue
 import java.util.concurrent.Executors
@@ -132,6 +133,23 @@ class BackupQueue @Inject constructor(
     fun clear() {
         queue.clear()
         persist { dao -> dao.deleteAll() }
+    }
+
+    /**
+     * Clears memory and waits until the durable queue is empty. Unlike [clear],
+     * this is a session-switch barrier: the delete is submitted to the same
+     * single-thread dispatcher after every earlier mirror write, preventing a
+     * delayed insert from resurrecting an old server's work after the switch.
+     */
+    suspend fun clearAndAwaitPersistence() {
+        synchronized(this) {
+            queue.clear()
+        }
+        val dao = queuedFileDao ?: return
+        val deletion = persistenceScope.async {
+            dao.deleteAll()
+        }
+        deletion.await()
     }
 
     /**

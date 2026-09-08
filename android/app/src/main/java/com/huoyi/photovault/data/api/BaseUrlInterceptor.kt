@@ -1,6 +1,7 @@
 package com.huoyi.photovault.data.api
 
 import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.local.CredentialSessionSnapshot
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -22,17 +23,21 @@ class BaseUrlInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
+        val session = credentialManager.getSessionSnapshot()
+        val requestWithSession = original.newBuilder()
+            .tag(CredentialSessionSnapshot::class.java, session)
+            .build()
 
-        val serverAddress = credentialManager.getServerAddress()
+        val serverAddress = session.serverAddress
         if (serverAddress.isNullOrBlank()) {
             android.util.Log.w("PhotoVaultBackup", "BaseUrlInterceptor: server address is null/blank, using original ${original.url}")
-            return chain.proceed(original)
+            return chain.proceed(requestWithSession)
         }
 
         val serverUrl = normalize(serverAddress).toHttpUrlOrNull()
         if (serverUrl == null) {
             android.util.Log.w("PhotoVaultBackup", "BaseUrlInterceptor: cannot parse server address '$serverAddress'")
-            return chain.proceed(original)
+            return chain.proceed(requestWithSession)
         }
 
         val newUrl = original.url.newBuilder()
@@ -42,7 +47,7 @@ class BaseUrlInterceptor @Inject constructor(
             .build()
 
         android.util.Log.i("PhotoVaultBackup", "BaseUrlInterceptor: ${original.url} -> $newUrl")
-        return chain.proceed(original.newBuilder().url(newUrl).build())
+        return chain.proceed(requestWithSession.newBuilder().url(newUrl).build())
     }
 
     private fun normalize(address: String): String {

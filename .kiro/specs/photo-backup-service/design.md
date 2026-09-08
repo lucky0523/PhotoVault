@@ -173,6 +173,8 @@ class AuthService:
 - 密码存储：bcrypt 哈希（cost factor = 12）
 - 令牌有效期：access_token 24小时，refresh_token 7天
 - 最大用户数：20
+- 稳定实例身份：SQLite `server_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)` 保存 `instance_id`；`init_db` 使用 UUID4 + `INSERT OR IGNORE`，使同一数据库重启、升级和迁移后保持不变
+- 认证响应契约：登录、注册和刷新令牌统一返回 `TokenPair(access_token, refresh_token, token_type, instance_id, user_id)`；`user_id` 是当前用户数据库主键
 
 #### 3. 上传管理模块 (UploadService)
 
@@ -379,6 +381,48 @@ graph TD
 4. 点击"登录"前验证三个字段非空，空字段高亮红色边框并显示提示文字
 5. 登录过程中按钮显示加载状态，禁止重复点击
 6. 登录失败在表单上方显示红色错误横幅（如"用户名或密码错误"、"服务器不可达"）
+
+#### Android 稳定服务器身份与会话切换
+
+服务端认证响应提供稳定身份，Android 定义 `Account_Scope = StableAccountIdentity(instanceId, userId)`：
+
+- `instance_id` 是与 PhotoVault SQLite 数据库一起持久化的 UUID。同一数据库在服务重启、IP/域名/端口/base path/HTTP↔HTTPS 变化或迁移到新机器后保持不变；独立新数据库生成不同 UUID。
+- `user_id` 是当前认证用户的数据库主键。即使 username 文本相同，只要属于不同实例或重建后的不同用户，Account_Scope 就不同。
+- Server_Endpoint 只决定请求路由，不参与身份相等性比较。因此同一 `(instance_id, user_id)` 可安全地在 LAN/WAN、IP/域名和 HTTP/HTTPS 地址之间切换而不重置备份状态。
+- Android wire model 将两个字段声明为 nullable，以便识别旧服务端缺字段的 JSON；Repository 必须在发布任何 endpoint/token 前验证字段非空有效，缺失时提示升级服务端。
+
+登录成功后的状态机：
+
+```mermaid
+stateDiagram-v2
+    [*] --> ValidateIdentity
+    ValidateIdentity --> RejectLogin: instance_id/user_id 缺失或无效
+    ValidateIdentity --> CompareIdentity: 身份有效
+    CompareIdentity --> PublishCredentials: Account_Scope 相同
+    CompareIdentity --> CancelOldWork: Account_Scope 不同或旧安装无稳定身份
+    CancelOldWork --> AwaitOldProducers
+    AwaitOldProducers --> ClearSessionState
+    ClearSessionState --> PublishCredentials
+    PublishCredentials --> KeepExistingSchedule: 身份相同
+    PublishCredentials --> RescheduleAndFullScan: 身份变化
+    RejectLogin --> [*]
+    KeepExistingSchedule --> [*]
+    RescheduleAndFullScan --> [*]
+```
+
+切换顺序与边界：
+
+1. `AuthRepository.login` 先验证响应中的 `instance_id/user_id`，只返回有效登录响应，不提前保存 token，避免「新 token + 旧地址」窗口。
+2. `AccountSessionManager` 读取 `CredentialManager.getStableAccountIdentity()` 并只比较 `(instance_id, user_id)`；旧安装没有稳定身份时保守判定为变化，执行一次安全重置。
+3. 身份变化时取消周期/一次性/全量/测试/恢复 WorkManager 任务，通过 `SessionOperationGuard` 等待执行中的扫描离开完整读-网络-写周期，再由 `BackupForegroundService.stopAndAwait` 等待上传协程停止。
+4. `StatusSyncManager.resetForSessionSwitch` 等待旧状态同步并重置节流；`BackupQueue.clearAndAwaitPersistence` 在同一串行持久化通道上建立删除屏障，避免延迟 insert 复活旧队列。
+5. 在 Room 事务中清除 `photo_status`、`upload_records`、`queued_files`、`backup_history`，并将所有 `BackupFolder` 统计及 `lastScanTime` 归零；保留文件夹行、SAF 授权、Storage_Policy 和自动备份设置。
+6. `CredentialManager.saveSession` 在一个加密 SharedPreferences edit 中原子发布 endpoint、username、密码策略、token、`instance_id` 与 `user_id`。退出登录的 `clearTokens` 保留稳定身份；完整清理凭据时才删除稳定身份。
+7. `BaseUrlInterceptor` 获取不可变的 endpoint/token 快照并挂到请求；`AuthInterceptor` 只使用同一快照的 token，防止切换瞬间跨 endpoint 泄漏凭据。
+8. 身份变化后恢复用户配置的扫描周期并触发 `runNow(manual=false)`。自动备份开启时重新查重/上传；关闭时遵循 R-3.10，仅扫描刷新，等待用户「立即备份」。身份相同则只替换路由和凭据，不额外扫描。
+9. `AuthRepository.refreshToken` 同样验证稳定身份。刷新响应缺字段或与已保存 Account_Scope 不同时清除 token 并要求交互式登录，不允许刷新流程静默切换实例或账户。
+
+此版本仍采用「Account_Scope 变化时重置」而非多作用域 Room 表：切回旧实例或账户会再次安全扫描和查重，但同一稳定身份仅改变访问地址不会重置。服务端 SHA-256 去重确保重扫不会重复传输已存在内容。
 
 #### 功能主界面 — 本地 Tab
 
@@ -596,6 +640,29 @@ interface ConnectionManager {
 1. 先尝试局域网地址（10秒超时）
 2. 局域网失败后尝试公网地址（15秒超时）
 3. 均失败则报错，等待下次 Backup_Condition 满足时重试
+
+#### 1A. 账户会话管理器 (AccountSessionManager)
+
+```kotlin
+interface AccountSessionManager {
+    suspend fun activate(
+        serverAddress: String,
+        username: String,
+        password: String?,
+        rememberPassword: Boolean,
+        loginResponse: LoginResponse
+    ): Boolean // true = Account_Scope changed or legacy identity was unknown
+}
+```
+
+职责边界：
+
+- 从已验证的 `LoginResponse` 构造 `StableAccountIdentity(instanceId, userId)`，只比较稳定 Account_Scope；endpoint 和 username 仅作为连接/显示属性。
+- 同一 Account_Scope 只替换 endpoint 与凭据，不扰动本地备份状态；旧安装缺少稳定身份时保守地执行一次切换。
+- 身份变化时编排 `WorkManager → SessionOperationGuard → BackupForegroundService → StatusSyncManager → BackupQueue → Room` 的停止与清理顺序。
+- 在旧生产者全部退出后，清除 Session_Bound_State、重置文件夹统计，再原子发布新凭据和稳定身份。
+- 发布成功后恢复周期扫描并请求全量扫描；WorkManager 调度失败属于可恢复的 post-commit 错误，不应把已成功的认证显示为登录失败。
+- `SessionOperationGuard` 是扫描与会话切换共享的互斥门：扫描持有该门完成整个周期；切换在取消任务后取得该门，确保旧扫描不能在清理后重新入队或写状态。
 
 #### 2. 后台扫描服务 (BackgroundScanService)
 
@@ -975,6 +1042,12 @@ interface PolicyConfigManager {
 ### 服务端数据库模型
 
 ```sql
+-- 服务端稳定实例元数据；instance_id 使用 UUID4 字符串
+CREATE TABLE server_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- 用户表
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1066,12 +1139,26 @@ data class StoragePolicy(
     val useYearMonthLayer: Boolean  // 是否按年月分层
 )
 
-// 连接配置
+// 稳定账户身份；唯一的本地会话相等性输入
+data class StableAccountIdentity(
+    val instanceId: String,
+    val userId: Long
+)
+
+// 连接配置（Server_Endpoint 仅用于路由）
 data class ConnectionConfig(
-    val serverAddress: String,
-    val username: String,
+    val serverAddress: String,      // 当前 endpoint，不参与 Account_Scope 比较
+    val username: String,           // 表单填充与显示，不作为稳定账户标识
     val passwordEncrypted: String?, // 加密存储的密码（记住密码时）
-    val rememberPassword: Boolean
+    val rememberPassword: Boolean,
+    val instanceId: String?,        // 旧安装升级前可能不存在
+    val userId: Long?               // 与 instanceId 一起组成 Account_Scope
+)
+
+// 单个请求使用的不可变会话快照
+data class CredentialSessionSnapshot(
+    val serverAddress: String?,
+    val accessToken: String?
 )
 
 // 扫描状态
@@ -1081,6 +1168,24 @@ data class ScanState(
     val lastFileTimestamp: Long     // 上次扫描到的最新文件时间
 )
 ```
+
+### Android 会话绑定本地状态（需求 13A）
+
+当前 Room schema 未给每行增加 `session_id`；客户端在任一时刻只维护 Active_Backup_Session 的服务端派生状态。因此以下数据的语义都是「仅属于当前活动会话」，身份变化时必须整体失效：
+
+| 状态 | 切换会话时的处理 | 原因 |
+| --- | --- | --- |
+| `photo_status` | 全部清除 | 旧服务器/用户的 `active` 不得让新会话跳过查重和上传 |
+| `upload_records` | 全部清除 | 服务端上传 session ID 不可跨服务器或用户续传 |
+| `queued_files` + 内存 `BackupQueue` | 建立持久化屏障后清除 | 防止旧任务用新 endpoint/token 上传 |
+| `backup_history` | 全部清除 | 失败退避和历史展示不得跨会话混合 |
+| `BackupFolder` 行、SAF 授权、Storage_Policy | 保留 | 它们代表设备端用户选择；无需重新授权和选目录 |
+| 文件夹状态计数与 `lastScanTime` | 重置为 0 | 新会话必须重新建立统计和扫描水位，不能继承「全部已备份」 |
+| 状态同步节流时间、用户暂停提示 | 重置 | 新服务器首次同步不得被旧会话节流或暂停状态阻塞 |
+
+身份未变化时，上述数据全部保留，仅由 `CredentialManager.saveSession` 原子替换 endpoint、凭据和稳定身份。Server_Endpoint 任意变化（包括 IP/域名/端口/base path/HTTP↔HTTPS）只要认证响应仍是同一 `(instance_id, user_id)`，就属于身份未变化。身份变化后调用 `BackgroundScanWorker.runNow(manual=false)`：自动备份开启则入队并向新 Account_Scope 查重/上传；关闭则只扫描刷新状态和计数。
+
+该重置方案无需给 Room 业务表增加 scope 列，但代价是切回曾登录过的不同 Account_Scope 时会重新扫描和计算哈希。服务端 SHA-256 去重保证已存在文件不会重复传输。当前实现不同时保留多个 scope 的本地缓存；未来若需要无扫描切回，可再迁移为 `(account_scope_id, file_uri)` 等复合键，这不是稳定身份识别本身的前置条件。
 
 ### 断点续传记录扩展（Upload_Record，需求 25-33）
 
@@ -1373,6 +1478,30 @@ class ResumeInfoResponse(BaseModel):
 *对于任意*两个或更多 `AUTO_OFF` 来源的 Paused_Task，当用户对其中一个点击"继续"时，其余未被点击的 Paused_Task 的 `pause_source`、`paused_at` 与存在性均保持不变。
 
 **Validates: Requirements 30.5**
+
+### Property 25: 相同稳定 Account_Scope 保留状态
+
+*对于任意*两个认证响应，只要其 `instance_id` 与 `user_id` 分别相同，无论 Server_Endpoint 的 IP、域名、端口、base path 或 HTTP/HTTPS 是否变化，连续登录 SHALL 产生相同 Account_Scope；第二次登录只替换路由和凭据，`photo_status`、断点、队列、历史、文件夹统计与扫描水位均保持不变。
+
+**Validates: Requirements 13A.4, 13A.5**
+
+### Property 26: 不同稳定 Account_Scope 不复用备份结果
+
+*对于任意* `instance_id` 或 `user_id` 不同的两个认证响应，激活新会话后，旧会话中的任意 `photo_status`、Upload_Record、QueuedFile 或失败历史均不可被新会话查询或恢复；Source_Folder、SAF 授权与 Storage_Policy 保留，但状态计数和 `lastScanTime` 必须为初始值。
+
+**Validates: Requirements 13A.6, 13A.7, 13A.8**
+
+### Property 27: 未知或异常稳定身份安全失败
+
+*对于任意*缺少/无效 `instance_id` 或 `user_id` 的登录响应，客户端 SHALL 不发布 endpoint/token；对于旧安装中不存在已保存稳定身份的首次有效登录，客户端 SHALL 恰好执行一次保守重置。对于缺字段或 Account_Scope 变化的刷新响应，客户端 SHALL 清除 token 并要求交互式登录，不得静默切换会话。
+
+**Validates: Requirements 13A.3, 13A.9, 13A.10**
+
+### Property 28: 自动备份开关在稳定身份切换后仍生效
+
+*对于任意*新的 Active_Backup_Session，自动备份开启时切换后的全量扫描可入队并上传，自动备份关闭时同一扫描只能刷新状态/计数而不可入队或启动上传；用户随后执行「立即备份」时不受该开关限制。
+
+**Validates: Requirements 13A.11, 13A.12, 3.10, 3.12**
 
 ## 错误处理
 

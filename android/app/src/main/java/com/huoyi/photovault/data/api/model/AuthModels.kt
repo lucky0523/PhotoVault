@@ -10,7 +10,9 @@ data class LoginRequest(
 data class LoginResponse(
     @SerializedName("access_token") val accessToken: String,
     @SerializedName("refresh_token") val refreshToken: String,
-    @SerializedName("expires_in") val expiresIn: Int
+    @SerializedName("expires_in") val expiresIn: Int,
+    @SerializedName("instance_id") val instanceId: String? = null,
+    @SerializedName("user_id") val userId: Long? = null
 )
 
 data class RefreshRequest(
@@ -20,7 +22,9 @@ data class RefreshRequest(
 data class RefreshResponse(
     @SerializedName("access_token") val accessToken: String,
     @SerializedName("refresh_token") val refreshToken: String,
-    @SerializedName("expires_in") val expiresIn: Int
+    @SerializedName("expires_in") val expiresIn: Int,
+    @SerializedName("instance_id") val instanceId: String? = null,
+    @SerializedName("user_id") val userId: Long? = null
 )
 
 data class ConnectionTestResponse(

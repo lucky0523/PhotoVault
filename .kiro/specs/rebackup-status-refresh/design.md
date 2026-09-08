@@ -17,7 +17,8 @@
 - **Property (P)**: 期望行为——UI 展示的角标、透明度、筛选分组最终收敛到 `photo_status` 表的当前值，且未完成/失败的上传不提前显示为「已备份」。
 - **Preservation**: 修复必须保持不变的既有行为——首次加载的四态展示、无 `photo_status` 记录即「未备份」、筛选逻辑、以及仅对 `trashed`/`purged` 弹出重新备份对话框。
 - **`FolderDetailViewModel`**: `android/.../ui/main/FolderDetailViewModel.kt` 中的 ViewModel，负责查询 MediaStore、关联 `photo_status`、并向 UI 暴露 `images: StateFlow<List<FolderImage>>`。
-- **`photo_status` 表 / `PhotoStatus`**: Room 实体，以 `file_uri` 为主键记录每个文件的服务端状态（`active` / `trashed` / `purged`）；无记录视为「未备份」。这是照片状态的**唯一权威来源（single source of truth）**。
+- **Active_Backup_Session**: 当前 Android 已认证的稳定 `Account_Scope = (instance_id, user_id)` 会话；Server_Endpoint 仅用于路由，不参与会话相等性判断。本专项中的所有状态读取和 UI 展示都只对该活动会话成立。
+- **`photo_status` 表 / `PhotoStatus`**: Room 实体，以 `file_uri` 为主键记录 **Active_Backup_Session** 中每个文件的服务端状态（`active` / `trashed` / `purged`）；无记录视为「未备份」。这是当前活动会话内照片状态的**唯一权威来源（single source of truth）**。现行 schema 不同时保存多个会话；会话身份变化时该表由 `AccountSessionManager` 清空并重新同步/扫描。
 - **`PhotoStatusDao`**: `android/.../data/local/dao/PhotoStatusDao.kt`，`photo_status` 表的访问接口。
 - **`FolderImage`**: UI 数据模型，携带 `uri`、元数据、`isMotionPhoto` 以及关联的 `status: PhotoStatus?`；派生出 `isBackedUp`/`isTrashed`/`isPurged`。
 - **`StatusSyncManager.markActive`**: 上传成功后把 `photo_status` 记录置为 `active` 的写入点，是「状态真正变更」的时刻。
@@ -109,9 +110,10 @@ _For any_ 不触发 bug 条件的输入（`isBugCondition` 返回 false，即展
 **Function**: 新增观察式查询
 
 **Specific Changes**:
-1. **新增 `observeAll()`**：增加返回 `Flow<List<PhotoStatus>>` 的响应式查询，供 ViewModel 观察整表变化。
+1. **新增 `observeAll()`**：增加返回 `Flow<List<PhotoStatus>>` 的响应式查询，供 ViewModel 观察当前 Active_Backup_Session 的整表变化。
    - `@Query("SELECT * FROM photo_status") fun observeAll(): Flow<List<PhotoStatus>>`
    - 保留既有 `suspend fun getAll(): List<PhotoStatus>` 供 `reloadStatuses()` 的一次性读取（兜底路径）复用，避免破坏其他调用方。
+   - 现行表没有 `session_id` 列；这里的“整表”仅代表当前活动会话，因为 `AccountSessionManager` 会在 `(instance_id, user_id)` 变化或旧安装尚无稳定身份时先清空旧表，再发布新会话并触发全量扫描。仅 Server_Endpoint 变化而稳定身份相同时不清表。
 
 **File**: `android/app/src/main/java/com/photovault/ui/main/FolderDetailViewModel.kt`
 
@@ -131,6 +133,16 @@ _For any_ 不触发 bug 条件的输入（`isBugCondition` 返回 false，即展
 6. **ON_RESUME 兜底刷新**：仿照 `LocalTab`，加入 `LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.reloadStatuses() }`，覆盖「切走→上传完成→切回」场景（2.6）。保留既有 `LaunchedEffect(folderUri) { viewModel.loadImages(folderUri) }` 作为首次加载入口。
 7. **展示层无需改动映射逻辑**：`StatusBadge`、alpha、`filteredImages` 仍基于 `FolderImage.status` 派生；由于 `images` 现在会随表变化自动更新，这些既有逻辑无改动即可收敛（保持防回归）。
 
+### 与稳定服务器/账户切换的兼容约束
+
+响应式刷新不得把 `photo_status` 重新解释为跨服务器全局状态。主规格需求 13A 的会话切换流程必须保证：
+
+1. 同一 `instance_id`、同一 `user_id` 重登时不清表，`observeAll()` 继续提供原会话状态；IP、域名、端口、base path 或 HTTP/HTTPS 的变化只更新 Server_Endpoint，不改变该结论。
+2. `instance_id` 或 `user_id` 变化，或旧安装尚无已保存稳定身份时，先由 `SessionOperationGuard` 等待旧扫描退出，再清空 `photo_status`；Room invalidation 使当前 Flow 发射空集合，UI 立即回到「未备份」，不得继续保留旧 `FolderImage.status`。
+3. 新会话全量扫描/上传成功后，只有新 Account_Scope 的服务器响应触发的 `StatusSyncManager.markActive` 才能重新写入 `active`。
+4. `StatusSyncManager` 的所有同步入口共享互斥锁；`resetForSessionSwitch` 必须等待旧同步完成并清除节流时间，避免 A 的延迟响应在 B 清表后重新写入。
+5. 当前方案不为多个 Account_Scope 同时保留状态；切回不同 scope 会再次清表并安全查重。未来若改为 `(account_scope_id, file_uri)` 复合键，本专项的 `observeAll/getAll/markActive` 必须同时增加 scope 过滤，不能恢复为无条件整表观察。
+
 ## Testing Strategy
 
 ### Validation Approach
@@ -148,6 +160,10 @@ _For any_ 不触发 bug 条件的输入（`isBugCondition` 返回 false，即展
 2. **Purged→Active 不刷新**：同上，初始 `purged`（未修复代码将失败）。
 3. **ON_RESUME 兜底缺失**：模拟表在加载后发生变更、调用 `reloadStatuses()`，断言状态对齐（未修复代码无此方法/不刷新，将失败）。
 4. **边界 - 未完成不误报**：`rebackup()` 入队但未 `markActive` 时，断言照片仍为 `trashed`/`purged`（此为期望行为，修复后仍须通过）。
+5. **跨服务器状态不复用**：A 会话中 `markActive(uri)` 后切换到 B，断言清表发射使同一 URI 变为「未备份」，直到 B 自己查重或上传成功。
+6. **同服务器不同用户状态不复用**：A/user1 的 `active` 不得出现在 A/user2；文件夹选择保留但状态关联为空。
+7. **同稳定会话重登保持响应式状态**：`instance_id` 与 `user_id` 均相同的重登（包括 endpoint 任意变化）不清表，已有 `active/trashed/purged` 状态保持并继续响应后续 Flow 更新。
+8. **旧同步延迟写入被阻断**：持有 A 的状态同步/扫描操作，发起 B 切换，断言切换等待旧操作完成并在清理后不存在 A 状态回写。
 
 **Expected Counterexamples**:
 - `markActive` 后 `images` 中对应项 `status` 仍为旧值，`isBackedUp` 为 false。

@@ -23,6 +23,8 @@
     <string name="error_invalid_credentials">用户名或密码错误。</string>
     <string name="error_login_http">登录失败（HTTP %1$d）。</string>
     <string name="error_server_connection_failed">无法连接服务器。</string>
+    <string name="error_server_identity_missing">服务器版本过旧或返回了无效身份，请升级 PhotoVault 服务端后重试。</string>
+    <string name="error_server_identity_changed">服务器身份已变化，请重新登录以安全切换本地备份状态。</string>
     <string name="error_missing_refresh_token">没有可用的刷新令牌。</string>
     <string name="error_missing_server_address">尚未配置服务器地址。</string>
     <string name="error_token_refresh_failed">登录状态刷新失败。</string>

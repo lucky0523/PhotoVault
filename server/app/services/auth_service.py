@@ -14,6 +14,7 @@ import jwt
 import aiosqlite
 
 from app.core.config import get_settings
+from app.core.database import get_instance_id
 from app.models.auth import TokenPair, UserInfo
 
 logger = logging.getLogger("photovault.auth")
@@ -68,7 +69,7 @@ class AuthService:
         if not _verify_password(password, password_hash):
             raise ValueError("Invalid credentials")
 
-        return self._generate_token_pair(user_id, db_username, bool(is_admin))
+        return await self._generate_token_pair(user_id, db_username, bool(is_admin))
 
     async def verify_token(self, token: str) -> UserInfo:
         """Verify a JWT access token and return user info.
@@ -141,7 +142,7 @@ class AuthService:
         if row is None:
             raise ValueError("User no longer exists")
 
-        return self._generate_token_pair(user_id, username, is_admin)
+        return await self._generate_token_pair(user_id, username, is_admin)
 
     # ------------------------------------------------------------------
     # User management
@@ -285,10 +286,10 @@ class AuthService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _generate_token_pair(
+    async def _generate_token_pair(
         self, user_id: int, username: str, is_admin: bool
     ) -> TokenPair:
-        """Generate an access + refresh token pair."""
+        """Generate tokens bound to the stable server and database user IDs."""
         now = datetime.now(timezone.utc)
 
         access_expires = timedelta(hours=self._settings.access_token_expire_hours)
@@ -323,6 +324,8 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=int(access_expires.total_seconds()),
+            instance_id=await get_instance_id(self._db),
+            user_id=user_id,
         )
 
 

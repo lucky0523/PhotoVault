@@ -1,6 +1,7 @@
 package com.huoyi.photovault.data.api
 
 import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.local.CredentialSessionSnapshot
 import okhttp3.Interceptor
 import okhttp3.Response
 import javax.inject.Inject
@@ -18,7 +19,15 @@ class AuthInterceptor @Inject constructor(
             return chain.proceed(originalRequest)
         }
 
-        val accessToken = credentialManager.getAccessToken()
+        // Shared API requests are tagged by BaseUrlInterceptor with the exact
+        // address/token snapshot used for routing. The fallback supports the
+        // temporary AuthRepository client, which has no BaseUrlInterceptor.
+        val session = originalRequest.tag(CredentialSessionSnapshot::class.java)
+        val accessToken = if (session != null) {
+            session.accessToken
+        } else {
+            credentialManager.getAccessToken()
+        }
         if (accessToken.isNullOrEmpty()) {
             return chain.proceed(originalRequest)
         }

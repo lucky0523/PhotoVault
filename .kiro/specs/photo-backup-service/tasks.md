@@ -201,6 +201,15 @@
   - [x] 27.12 检查点 - 确保所有测试通过
     - Ensure all tests pass, ask the user if questions arise.
 
+- [x] 28. 稳定 `instance_id + user_id` 会话身份与 Android 隔离
+  - [x] 28.1 服务端新增 `server_metadata` 表，以 UUID4 + `INSERT OR IGNORE` 为同一 SQLite 数据库生成并持久化稳定 `instance_id`；fnOS 接管已有数据库时先执行初始化
+  - [x] 28.2 扩展 `TokenPair`，让登录、注册和刷新令牌统一返回 `instance_id` 与当前账户数据库主键 `user_id`
+  - [x] 28.3 Android 登录/刷新 wire model 接收 nullable 身份字段；`CredentialManager` 原子保存 `instance_id/user_id`，退出登录仅清 token 并保留稳定身份
+  - [x] 28.4 `AccountSessionManager` 仅比较 `(instance_id, user_id)`；同身份更换 IP/域名/端口/base path/HTTP↔HTTPS 只更新路由和凭据，不清状态
+  - [x] 28.5 不同实例/用户或旧安装无稳定身份时，取消旧任务并清除 Session_Bound_State，保留 Source_Folder/SAF/Storage_Policy 后重扫；刷新身份异常时清 token 并要求交互登录
+  - [x] 28.6 增加服务端实例 ID/认证契约测试、Android 稳定身份与旧 JSON 测试，并同步 README、requirements/design 与 `rebackup-status-refresh` 专项设计
+  - _Requirements: 13A.1-13A.12_
+
 ## Task Dependency Graph
 
 ```mermaid
@@ -216,6 +225,9 @@ graph TD
     26 --> 25
     27 --> 24
     27 --> 25
+    28 --> 13
+    28 --> 16
+    28 --> 17
     subgraph 任务27内部依赖
         T271["27.1 数据层/迁移/DAO"] --> T272["27.2 迁移单测"]
         T271 --> T273["27.3 服务层 currentFileUri/纯函数"]
@@ -246,11 +258,12 @@ graph TD
 ## Notes
 
 - Tasks 1-18 are already implemented and verified
-- Task 19 partially implemented (backup conditions group done, needs storage strategy management, account info, logout)
+- Task 19 已实现存储策略管理、账户信息和退出登录；Task 28 在此基础上补充稳定服务器/账户身份、地址变化保留状态以及身份变化时的本地状态隔离与并发停止边界
 - Tasks 20-21 are iOS client (new platform)
 - Tasks 22-23 are testing and deployment (depend on server being complete)
 - Tasks 24-25 修复"运行中关闭自动备份"的逻辑缺陷并新增备份任务手动开始/暂停控制（Android）；Task 26 为 iOS 对齐（可选）
 - Task 27 覆盖需求 25-33 的 Android 实现（关闭自动备份后保留正在上传文件为 AUTO_OFF 已暂停任务、任务页展示、继续/长按清除、文案与通知区分、边界处理与属性/单元测试）；仅 Android，iOS 对齐为可选子任务 27.13（需求 33，后续迭代）。27.1 为其余子任务的数据层前置；任务 27 依赖任务 24/25 已落地的 `isManualRun`/`stopAuto`/`shouldStopAutoOnDisable`/`PauseReason` 基础
+- Task 28 覆盖需求 13A 的稳定身份实现：服务端持久化 `instance_id` 并在认证响应返回 `instance_id/user_id`；Android 仅以二者组成 Account_Scope，同 scope 地址变化不清理，不同 scope 或旧安装未知身份时停止旧生产者并重置 Session_Bound_State；当前不是多 scope 持久化，切回不同 scope 会重新扫描/查重
 - 标记 `*` 的子任务为测试类可选任务；核心实现子任务不标记
-- Requirements referenced: 1-33 (see requirements.md)
-- Design referenced: see design.md（含"关闭自动备份后保留已暂停任务（需求 25-33）"章节与 Property 18-24）
+- Requirements referenced: 1-33 and 13A (see requirements.md)
+- Design referenced: see design.md（含“Android 服务器身份解析与会话切换”“Android 会话绑定本地状态”、Property 18-28）

@@ -144,6 +144,8 @@ class TestLogin:
         assert token_pair.access_token != ""
         assert token_pair.refresh_token != ""
         assert token_pair.expires_in == 24 * 3600  # 24 hours in seconds
+        assert token_pair.user_id > 0
+        assert token_pair.instance_id != ""
 
     @pytest.mark.asyncio
     async def test_login_wrong_password(self, auth_service):
@@ -242,6 +244,8 @@ class TestRefreshToken:
         assert new_pair.access_token != ""
         assert new_pair.refresh_token != ""
         assert new_pair.expires_in == 24 * 3600
+        assert new_pair.instance_id == original.instance_id
+        assert new_pair.user_id == original.user_id
 
         # Verify the new access token is valid
         user_info = await auth_service.verify_token(new_pair.access_token)

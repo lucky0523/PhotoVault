@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from uuid import UUID
 
 import aiosqlite
 import pytest
@@ -12,6 +13,7 @@ from app.core.database import (
     startup_db,
     shutdown_db,
     _create_connection,
+    get_instance_id,
 )
 
 
@@ -93,6 +95,31 @@ class TestInitDb:
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == "idx_upload_session_user"
+
+    async def test_instance_id_is_valid_and_stable(self, db_path):
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            first = await get_instance_id(db)
+
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            second = await get_instance_id(db)
+
+        assert UUID(first).version == 4
+        assert second == first
+
+    async def test_independent_databases_have_different_instance_ids(self, tmp_path):
+        first_path = str(tmp_path / "first.db")
+        second_path = str(tmp_path / "second.db")
+        await init_db(first_path)
+        await init_db(second_path)
+
+        async with aiosqlite.connect(first_path) as first_db:
+            first = await get_instance_id(first_db)
+        async with aiosqlite.connect(second_path) as second_db:
+            second = await get_instance_id(second_db)
+
+        assert first != second
 
 
 class TestUsersSchema:

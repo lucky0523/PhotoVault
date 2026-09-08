@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -112,6 +113,9 @@ class BackupForegroundService : Service() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        @Volatile
+        private var activeInstance: BackupForegroundService? = null
 
         /**
          * Live upload progress of the current In_Flight_File for the UI, or null
@@ -249,6 +253,24 @@ class BackupForegroundService : Service() {
         }
 
         /**
+         * Stops an old account's upload loop and waits until its coroutine has
+         * actually finished, so it cannot write a stale success status after the
+         * next account's local state has been cleared.
+         */
+        suspend fun stopAndAwait(context: Context, timeoutMs: Long = 5_000L): Boolean {
+            val runningJob = activeInstance?.backupJob?.isActive == true
+            if (!isRunning && !runningJob) return true
+
+            stop(context)
+            return withTimeoutOrNull(timeoutMs) {
+                while (isRunning || activeInstance?.backupJob?.isActive == true) {
+                    delay(25)
+                }
+                true
+            } ?: false
+        }
+
+        /**
          * Decides whether turning OFF the "自动备份" switch should stop the backup
          * and clear its queue. Pure function so the gating can be unit-tested
          * without a running service.
@@ -381,6 +403,7 @@ class BackupForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         createNotificationChannel()
     }
 
@@ -472,6 +495,7 @@ class BackupForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (activeInstance === this) activeInstance = null
         isRunning = false
         isPaused = false
         isUserPaused = false

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from uuid import uuid4
 
 import aiosqlite
 
@@ -25,7 +26,16 @@ from app.core.config import (
 
 logger = logging.getLogger("photovault.database")
 
+INSTANCE_ID_KEY = "instance_id"
+
 # SQL schema definitions
+_CREATE_SERVER_METADATA_TABLE = """
+CREATE TABLE IF NOT EXISTS server_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 _CREATE_USERS_TABLE = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,6 +183,11 @@ async def init_db(db_path: str) -> None:
         await db.execute("PRAGMA foreign_keys=ON;")
 
         # Create tables
+        await db.execute(_CREATE_SERVER_METADATA_TABLE)
+        await db.execute(
+            "INSERT OR IGNORE INTO server_metadata (key, value) VALUES (?, ?)",
+            (INSTANCE_ID_KEY, str(uuid4())),
+        )
         await db.execute(_CREATE_USERS_TABLE)
         await db.execute(_CREATE_FILE_RECORDS_TABLE)
         await db.execute(_CREATE_UPLOAD_SESSIONS_TABLE)
@@ -229,6 +244,41 @@ async def init_db(db_path: str) -> None:
             await db.execute(index_sql)
 
         await db.commit()
+
+
+async def get_instance_id(db: aiosqlite.Connection) -> str:
+    """Return the stable identity of the PhotoVault database instance.
+
+    ``init_db`` creates this row for new and existing databases. The defensive
+    insert keeps authentication functional for non-standard callers that opened
+    a legacy database without running startup initialization first. The primary
+    key plus ``INSERT OR IGNORE`` makes concurrent first reads converge on one ID.
+    """
+    await db.execute(_CREATE_SERVER_METADATA_TABLE)
+    cursor = await db.execute(
+        "SELECT value FROM server_metadata WHERE key = ?",
+        (INSTANCE_ID_KEY,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        candidate = str(uuid4())
+        await db.execute(
+            "INSERT OR IGNORE INTO server_metadata (key, value) VALUES (?, ?)",
+            (INSTANCE_ID_KEY, candidate),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT value FROM server_metadata WHERE key = ?",
+            (INSTANCE_ID_KEY,),
+        )
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise RuntimeError("PhotoVault instance_id is unavailable")
+    value = row[0] if isinstance(row, tuple) else row["value"]
+    if not value:
+        raise RuntimeError("PhotoVault instance_id is empty")
+    return str(value)
 
 
 # ---------------------------------------------------------------------------

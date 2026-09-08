@@ -8,6 +8,12 @@
 
 - **Backup_Server**: 部署在 x86 Linux NAS 上的 Python 服务端程序，负责接收、存储和管理备份图片
 - **Mobile_Client**: 运行在 Android 或 iOS 设备上的手机客户端应用程序
+- **Server_Endpoint**: Mobile_Client 当前用于访问 Backup_Server 的 URL；包含 scheme、host、port 和 base path，仅作为网络路由与请求安全边界
+- **Server_Identity**: Backup_Server 持久化在 SQLite `server_metadata` 表中的稳定 UUID `instance_id`；服务重启、访问地址变化和数据库迁移后保持不变，全新数据库使用不同值
+- **Account_Identity**: 当前认证账户在 Backup_Server 数据库中的稳定主键 `user_id`
+- **Account_Scope**: Android 用于隔离本地备份会话的稳定身份键 `(instance_id, user_id)`；Server_Endpoint 与 username 不参与相等性判断
+- **Active_Backup_Session**: 当前已认证且允许读取/写入本地备份状态、队列和断点的 Account_Scope
+- **Session_Bound_State**: 仅对 Active_Backup_Session 有效的本地状态，包括 `photo_status`、`upload_records`、持久待上传队列、备份历史及 Source_Folder 的统计/扫描游标
 - **Backup_Task**: 一次从 Mobile_Client 向 Backup_Server 传输图片文件的操作
 - **Backup_Condition**: Mobile_Client 发起备份所需满足的前置条件集合（电量大于50%且处于WiFi网络）
 - **File_Hash**: 用于唯一标识文件内容的 SHA-256 哈希值，用于检测重复备份
@@ -214,6 +220,25 @@
 5. IF 用户未勾选"记住密码"，THEN THE Mobile_Client SHALL 仅保存服务器地址和用户名，不保存密码
 6. WHEN 用户点击登录按钮时，THE Mobile_Client SHALL 验证三个输入框均不为空，若有空字段则提示用户填写
 7. IF 登录失败（凭证错误或服务器不可达），THEN THE Mobile_Client SHALL 在登录界面显示具体的错误原因，不跳转到功能界面
+
+### 需求 13A：Android 稳定服务器与账户身份
+
+**用户故事：** 作为 Android 用户，我希望客户端用服务端提供的稳定实例和账户标识隔离备份状态，使同一实例更换访问地址时保留状态，而切换实例或账户时不会继承旧会话的「已备份」结果和任务。
+
+#### 验收标准
+
+1. WHEN Backup_Server 初始化或接管已有 SQLite 数据库时，THE Backup_Server SHALL 在 `server_metadata` 中以 UUID4 和原子 `INSERT OR IGNORE` 创建并持久化唯一 `instance_id`，并 SHALL 在登录、注册和刷新令牌的成功响应中返回非空 `instance_id` 与当前账户的正整数 `user_id`
+2. WHILE 使用同一 SQLite 数据库时，THE `instance_id` SHALL 在服务重启、升级、访问地址变化以及数据库迁移到其他机器后保持不变；WHEN 使用独立新数据库时，THE Backup_Server SHALL 生成不同的 `instance_id`
+3. WHEN Android Mobile_Client 收到登录响应时，THE Mobile_Client SHALL 在发布 Server_Endpoint 或令牌前验证 `instance_id` 非空且 `user_id` 有效；IF 任一字段缺失或无效，THEN THE Mobile_Client SHALL 拒绝登录并提示用户升级 Backup_Server
+4. THE Mobile_Client SHALL 仅使用 `Account_Scope = (instance_id, user_id)` 判断会话是否变化；Server_Endpoint、IP、域名、端口、base path、HTTP/HTTPS 和 username SHALL NOT 参与 Account_Scope 的相等性比较
+5. WHEN 登录后的 Account_Scope 与上次保存的身份相同，THE Mobile_Client SHALL 在单个原子操作中更新 Server_Endpoint、用户名、记住密码设置、稳定身份与认证令牌，SHALL NOT 清除 Session_Bound_State 或额外触发全量扫描；同一网络请求 SHALL 使用不可变的 endpoint/token 快照
+6. WHEN `instance_id` 或 `user_id` 变化时，THE Mobile_Client SHALL 在发布新令牌前取消旧扫描、等待旧前台上传与状态同步停止，并阻止旧任务跨越会话切换边界
+7. WHEN Account_Scope 变化时，THE Mobile_Client SHALL 清除旧会话的 `photo_status`、`upload_records`、持久待上传队列和备份历史，并清空内存 Backup_Queue
+8. WHEN Account_Scope 变化时，THE Mobile_Client SHALL 保留已选择的 Source_Folder、Android SAF 持久授权、Storage_Policy 和 Auto_Backup_Switch，但 SHALL 将文件夹总数、已备份数、回收站数、已删除数及 `lastScanTime` 重置为初始值
+9. IF 升级前的 Android 本地凭据没有保存稳定 Account_Scope，THEN THE Mobile_Client SHALL 将首次成功登录保守地视为身份变化，执行一次安全重置；成功保存稳定身份后，后续退出登录 SHALL 仅清除令牌并保留 `instance_id/user_id`，避免重复重置
+10. WHEN 刷新令牌响应缺少稳定身份或其 Account_Scope 与本地保存值不同，THE Mobile_Client SHALL 清除令牌并要求交互式登录，SHALL NOT 静默发布新的服务器或账户会话
+11. WHEN 新 Active_Backup_Session 发布后，THE Mobile_Client SHALL 恢复配置的周期扫描并立即请求一次全量扫描；WHILE Auto_Backup_Switch 开启时，该扫描 SHALL 对新 Account_Scope 重新查重并上传缺失文件
+12. WHILE Auto_Backup_Switch 关闭时，Account_Scope 变化后的全量扫描 SHALL 仅刷新当前会话的状态与计数，SHALL NOT 自动入队或上传；WHEN 用户点击「立即备份」时，THE Mobile_Client SHALL 按需求 3.12 对当前 Account_Scope 查重并上传
 
 ### 需求 14：功能界面布局
 

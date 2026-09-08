@@ -60,7 +60,7 @@ class StatusSyncManager @Inject constructor(
     }
 
     /** Serializes throttled syncs and guards the stale-check + timestamp read/write. */
-    private val staleSyncMutex = Mutex()
+    private val syncMutex = Mutex()
 
     /** Wall-clock time of the last successful [syncStatus], for throttling. */
     @Volatile
@@ -78,14 +78,24 @@ class StatusSyncManager @Inject constructor(
      * @return the [syncStatus] result, or [RESULT_SKIPPED_THROTTLED] if throttled.
      */
     suspend fun syncStatusIfStale(minIntervalMs: Long = DEFAULT_MIN_SYNC_INTERVAL_MS): Int {
-        return staleSyncMutex.withLock {
+        return syncMutex.withLock {
             val sinceLast = System.currentTimeMillis() - lastSuccessfulSyncAtMs
             if (sinceLast < minIntervalMs) {
                 Log.i(TAG, "status-sync skipped (throttled, ${sinceLast}ms since last)")
                 RESULT_SKIPPED_THROTTLED
             } else {
-                syncStatus()
+                syncStatusLocked()
             }
+        }
+    }
+
+    /**
+     * Waits for a UI-triggered sync already in progress and invalidates its
+     * throttle timestamp so the newly activated server is synchronized at once.
+     */
+    suspend fun resetForSessionSwitch() {
+        syncMutex.withLock {
+            lastSuccessfulSyncAtMs = 0L
         }
     }
 
@@ -95,7 +105,11 @@ class StatusSyncManager @Inject constructor(
      *
      * @return the number of local records updated, or -1 on failure
      */
-    suspend fun syncStatus(): Int {
+    suspend fun syncStatus(): Int = syncMutex.withLock {
+        syncStatusLocked()
+    }
+
+    private suspend fun syncStatusLocked(): Int {
         return try {
             val response = fileApi.getStatusSync()
             if (!response.isSuccessful) {

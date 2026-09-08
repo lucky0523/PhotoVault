@@ -396,6 +396,10 @@ async def _init_with_work_dir(
     # the administrator is pointing at an existing library. Adopt it instead of
     # writing a second account into it — their original credentials still apply.
     if await _count_users(db_path) > 0:
+        # Apply idempotent schema migrations before adopting an existing library.
+        # This creates server_metadata/instance_id immediately, so the first login
+        # after a reinstall does not have to wait for a process restart.
+        await init_db(db_path)
         # Adopting is a success, not an error: provisioning is now complete and the
         # library is usable. Reported with adopted=True so the wizard can send the
         # administrator to the login page instead of claiming an account was made.

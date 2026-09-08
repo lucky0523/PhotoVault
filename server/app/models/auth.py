@@ -7,11 +7,13 @@ from pydantic import BaseModel
 
 
 class TokenPair(BaseModel):
-    """JWT token pair returned after successful authentication."""
+    """JWT token pair plus stable server/account identity."""
 
     access_token: str
     refresh_token: str
     expires_in: int  # seconds until access_token expires
+    instance_id: str
+    user_id: int
 
 
 class UserInfo(BaseModel):
