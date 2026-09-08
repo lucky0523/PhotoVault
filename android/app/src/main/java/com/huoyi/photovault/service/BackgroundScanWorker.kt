@@ -540,7 +540,7 @@ class BackgroundScanWorker @AssistedInject constructor(
         }
 
         val notification = androidx.core.app.NotificationCompat.Builder(applicationContext, channelId)
-            .setContentTitle("PhotoVault")
+            .setContentTitle(applicationContext.getString(R.string.app_name))
             .setContentText(applicationContext.getString(R.string.notification_scan_in_progress))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)

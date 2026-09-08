@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +53,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.network.ConnectionState
 import com.huoyi.photovault.data.network.ConnectionType
 import com.huoyi.photovault.ui.main.tabs.CloudTab
@@ -330,7 +332,7 @@ private fun GlassHeader(connectionState: ConnectionState, heartbeatCountdown: In
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "PhotoVault",
+            text = stringResource(R.string.app_name),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground

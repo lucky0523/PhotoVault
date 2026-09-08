@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PhotoVault</string>
+    <string name="app_name">Photo Vault</string>
 
     <!-- Shared actions and error labels -->
     <string name="action_retry">Retry</string>
