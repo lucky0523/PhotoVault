@@ -97,6 +97,7 @@ private enum class PhotoFilter(val label: String, val color: Color) {
     // 全部 has no dedicated status color, so it reuses the "未备份" blue as a
     // neutral accent.
     ALL("全部", CloudStatusColors.Pending),
+    NOT_BACKED_UP("未备份", CloudStatusColors.Pending),
     BACKED_UP("已备份", CloudStatusColors.BackedUp),
     TRASHED("回收站", CloudStatusColors.Trashed),
     PURGED("已删除", CloudStatusColors.Purged)
@@ -146,6 +147,7 @@ fun FolderDetailScreen(
     val filteredImages = remember(images, selectedFilter) {
         when (selectedFilter) {
             PhotoFilter.ALL -> images
+            PhotoFilter.NOT_BACKED_UP -> images.filter { it.status == null }
             PhotoFilter.BACKED_UP -> images.filter { it.isBackedUp }
             PhotoFilter.TRASHED -> images.filter { it.isTrashed }
             PhotoFilter.PURGED -> images.filter { it.isPurged }
