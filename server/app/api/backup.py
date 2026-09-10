@@ -226,6 +226,9 @@ class InitUploadRequest(BaseModel):
     source_folder: str
     storage_policy: StoragePolicyDTO
     exif_time: Optional[str] = None
+    # Unix timestamp in milliseconds supplied by Android MediaStore.  This is
+    # used only when no capture/EXIF time is available.
+    file_modified_time: Optional[str] = None
     mime_type: Optional[str] = None
 
 class InitUploadResponse(BaseModel):
@@ -301,14 +304,32 @@ async def init_upload(
         use_year_month_layer=body.storage_policy.use_year_month_layer,
     )
 
-    file_metadata = FileMetadata()
-    if body.exif_time:
-        from datetime import datetime as dt
+    from datetime import datetime as dt, timezone
 
+    exif_time = None
+    if body.exif_time:
         try:
-            file_metadata = FileMetadata(exif_time=dt.fromisoformat(body.exif_time))
+            exif_time = dt.fromisoformat(body.exif_time.replace("Z", "+00:00"))
         except (ValueError, TypeError):
             pass
+
+    # Android sends MediaStore.DATE_MODIFIED as a Unix timestamp in
+    # milliseconds.  Keep it as a lower-priority fallback so images and videos
+    # without usable capture metadata still receive a dated destination.
+    file_created_time = None
+    if body.file_modified_time:
+        try:
+            timestamp = int(body.file_modified_time)
+            if abs(timestamp) >= 100_000_000_000:
+                timestamp /= 1000
+            file_created_time = dt.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
+
+    file_metadata = FileMetadata(
+        exif_time=exif_time,
+        file_created_time=file_created_time,
+    )
 
     file_info = InitUploadInfo(
         file_hash=body.file_hash,

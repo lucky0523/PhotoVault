@@ -471,9 +471,15 @@ class ChunkUploader @Inject constructor(
     }
 
     /**
-     * Extracts the EXIF capture time (DateTimeOriginal) from an image, if present.
-     * Returns an ISO-8601 formatted string, or null if unavailable/unreadable.
+     * Extracts a capture time as an ISO-8601 string.
+     *
+     * Images use EXIF metadata, while videos normally store their capture time
+     * in the media container.  The latter prevents videos from being backed up
+     * into the server's `unknown_date` directory.
      */
+    private fun extractCaptureTime(context: Context, fileUri: Uri): String? =
+        extractExifTime(context, fileUri) ?: extractVideoCaptureTime(context, fileUri)
+
     private fun extractExifTime(context: Context, fileUri: Uri): String? {
         return try {
             mediaBytesReader.openOriginal(context, fileUri).use { inputStream ->
@@ -486,12 +492,56 @@ class ChunkUploader @Inject constructor(
                 val exifFormat = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
                 val date = exifFormat.parse(dateStr) ?: return null
 
-                val isoFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-                isoFormat.format(date)
+                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                    .format(date)
             }
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun extractVideoCaptureTime(context: Context, fileUri: Uri): String? {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, fileUri)
+            val date = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DATE)
+                ?: return null
+            parseVideoCaptureTime(date)
+        } catch (e: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (e: Exception) {
+                // Metadata is optional for backup; release failures are non-fatal.
+            }
+        }
+    }
+
+    private fun parseVideoCaptureTime(value: String): String? {
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        val outputFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            .apply { timeZone = utc }
+        val formats = listOf(
+            "yyyyMMdd'T'HHmmss.SSSZ",
+            "yyyyMMdd'T'HHmmssZ",
+            "yyyyMMdd'T'HHmmss.SSS'Z'",
+            "yyyyMMdd'T'HHmmss'Z'"
+        )
+
+        for (pattern in formats) {
+            try {
+                val inputFormat = java.text.SimpleDateFormat(pattern, java.util.Locale.US).apply {
+                    isLenient = false
+                    timeZone = utc
+                }
+                val date = inputFormat.parse(value) ?: continue
+                return outputFormat.format(date)
+            } catch (e: java.text.ParseException) {
+                // Try the next container date format.
+            }
+        }
+        return null
     }
 
     /**
@@ -505,7 +555,7 @@ class ChunkUploader @Inject constructor(
         storagePolicy: StoragePolicyConfig
     ): SessionInfo? {
         return try {
-            val exifTime = extractExifTime(context, Uri.parse(fileInfo.uri))
+            val exifTime = extractCaptureTime(context, Uri.parse(fileInfo.uri))
             val response = backupApi.initUpload(
                 InitUploadRequest(
                     fileHash = fileHash,

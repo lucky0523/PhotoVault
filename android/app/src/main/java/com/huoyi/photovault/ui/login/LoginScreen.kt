@@ -493,16 +493,16 @@ fun LoginScreen(
  *
  * All twelve are public domain in the United States — either published before
  * 1929, or made for the U.S. government (FSA / OWI / NPS) and therefore free of
- * copyright. Each was retrieved from Wikimedia Commons, which reports
- * "Public domain" for every one, and centre-cropped to a uniform 3:4 tile.
+ * copyright. Each was retrieved from Wikimedia Commons or museum open access
+ * collections, and centre-cropped to a uniform 3:4 tile.
  *
  *  01 Dorothea Lange — Migrant Mother, 1936 (FSA)
- *  02 Ansel Adams — The Tetons and the Snake River, 1942 (NPS / NARA)
+ *  02 Ansel Adams — The Tetons and the Snake River, 1942 (NPS/NARA)
  *  03 Gordon Parks — American Gothic, Washington D.C., 1942 (FSA/OWI)
- *  04 Walker Evans — Penny Picture Display, Savannah, 1936
+ *  04 Walker Evans — Penny Picture Display, Savannah, 1936 (FSA)
  *  05 Alfred Stieglitz — The Steerage, 1907
- *  06 Eugène Atget — Street Paver, Paris, 1899–1900
- *  07 Julia Margaret Cameron — Charles Darwin, c. 1868
+ *  06 Eugène Atget — Boulevard de Strasbourg, Paris, 1912
+ *  07 Julia Margaret Cameron — Ophelia Study No. 2, 1867
  *  08 Carleton Watkins — Cathedral Rock, Yosemite, 1861
  *  09 Eadweard Muybridge — The Horse in Motion, 1878
  *  10 Lewis Hine — Spinner in Globe Cotton Mill, Augusta, 1909
