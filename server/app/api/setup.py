@@ -1,17 +1,18 @@
 """Setup/initialization API endpoints.
 
 Endpoints:
-- GET  /api/v1/setup/status   (check if initialized / what setup still needs)
-- POST /api/v1/setup/init     (first-time admin creation, optionally with a work dir)
+- GET  /api/v1/setup/status           (check if initialized / what setup still needs)
+- GET  /api/v1/setup/work-dir-options (directories the wizard may offer)
+- POST /api/v1/setup/work-dir/check   (is this directory usable / does it hold a library)
+- POST /api/v1/setup/init             (finish setup, optionally with a work dir)
 
 Two-phase provisioning (fnOS)
 -----------------------------
 On the fnOS package the photos and the database must live in a directory the
 platform has granted the app user an ACL for, and that grant can only be obtained
 from inside the running app (``trim.file.sharedAccess``). So the server starts with
-**no database**, the wizard collects the administrator account *and* the working
-directory, and this module then creates everything inside the chosen directory in
-one shot:
+**no database**, the wizard asks for the working directory *first*, and this module
+then creates everything inside the chosen directory in one shot:
 
     1. verify the directory is usable (exists / creatable / actually writable)
     2. create the database there and its schema
@@ -22,6 +23,13 @@ Nothing is persisted before step 4, so an abandoned or failed wizard leaves the
 server exactly as it was and the next start runs the wizard again. That is also why
 the credentials arrive together with the directory in a single request instead of
 being held server-side between two calls.
+
+The directory comes first because it decides whether an account is needed at all:
+a directory that already holds ``photovault.db`` with accounts in it is an existing
+library (reinstall, or a re-authorized folder), and adopting it must not create a
+second administrator — the original credentials still apply. ``/work-dir/check``
+lets the wizard find that out before it bothers asking for a username, and
+``/init`` accordingly accepts a work_dir with no credentials in that case.
 
 Deployments that do not opt in (``require_workdir_setup`` false: Docker, local
 development) keep the original single-step behaviour — the database already exists
@@ -107,6 +115,12 @@ class WorkDirOptionsResponse(BaseModel):
             directory brings the old library back, and since the picker only lists
             authorized directories the administrator would otherwise have no way to
             find it again.
+        library_paths: The subset of the offered paths that already holds a usable
+            library. Reported here, with the list itself, so the wizard knows the
+            moment a directory is picked that no administrator has to be created —
+            it can label the button "finish" instead of "next" before the click
+            rather than discovering it afterwards. Read-only: unlike
+            ``/work-dir/check`` this creates nothing and writes nothing.
     """
 
     default_path: str
@@ -114,13 +128,80 @@ class WorkDirOptionsResponse(BaseModel):
     gateway_available: bool = False
     gateway_reason: str = ""
     previous_path: str = ""
+    library_paths: list[str] = []
+
+
+def _normalise_work_dir(v: Optional[str]) -> Optional[str]:
+    """Reject paths that cannot possibly be a valid photo location.
+
+    Shared by every endpoint that takes a working directory so that the wizard's
+    pre-flight check and the final commit apply exactly the same rules — a path
+    accepted by ``/work-dir/check`` must never be refused by ``/init``.
+    """
+    if v is None:
+        return None
+
+    candidate = v.strip()
+    if not candidate:
+        return None
+
+    if not os.path.isabs(candidate):
+        raise ValueError("工作目录必须是以 / 开头的绝对路径")
+    if any(ch in candidate for ch in ("\n", "\r", "\t", "\0")):
+        raise ValueError("工作目录不能包含控制字符")
+    if ".." in Path(candidate).parts:
+        raise ValueError("工作目录不能包含 .. 路径段，请填写展开后的完整路径")
+
+    normalised = candidate.rstrip("/") or "/"
+    if normalised == "/" or normalised in _FORBIDDEN_PREFIXES:
+        raise ValueError(f"'{normalised}' 是系统目录，不能用作工作目录")
+    for prefix in _FORBIDDEN_PREFIXES:
+        if normalised.startswith(prefix + "/"):
+            raise ValueError(f"'{normalised}' 位于系统目录下，不能用作工作目录")
+
+    return normalised
+
+
+class WorkDirCheckRequest(BaseModel):
+    """Request body for the working-directory pre-flight check."""
+
+    work_dir: str
+
+    @field_validator("work_dir")
+    @classmethod
+    def work_dir_must_be_sane(cls, v: str) -> str:
+        normalised = _normalise_work_dir(v)
+        if not normalised:
+            raise ValueError("请选择一个工作目录")
+        return normalised
+
+
+class WorkDirCheckResponse(BaseModel):
+    """Verdict on a candidate working directory.
+
+    Attributes:
+        work_dir: The normalised path that was checked.
+        has_existing_library: The directory already holds a PhotoVault database
+            with accounts in it. Setup can finish immediately: no administrator
+            has to be created, the existing one keeps working.
+        message: Human-readable note for the wizard to display.
+    """
+
+    work_dir: str
+    has_existing_library: bool = False
+    message: str = ""
 
 
 class SetupInitRequest(BaseModel):
-    """Request body for initial admin account creation."""
+    """Request body for finishing setup.
 
-    username: str
-    password: str
+    ``username``/``password`` are optional at the schema level because adopting an
+    existing library needs neither: the accounts already in that database are the
+    ones that will be used. The endpoint requires them for every other path.
+    """
+
+    username: Optional[str] = None
+    password: Optional[str] = None
 
     #: Absolute path to the working directory for photos and the database.
     #: Required when the server reports ``needs_work_dir``, rejected otherwise.
@@ -128,14 +209,18 @@ class SetupInitRequest(BaseModel):
 
     @field_validator("username")
     @classmethod
-    def username_must_not_be_empty(cls, v: str) -> str:
-        if not v or not v.strip():
+    def username_must_not_be_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if not v.strip():
             raise ValueError("Username must not be empty")
         return v.strip()
 
     @field_validator("password")
     @classmethod
-    def password_must_be_long_enough(cls, v: str) -> str:
+    def password_must_be_long_enough(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
         return v
@@ -143,29 +228,7 @@ class SetupInitRequest(BaseModel):
     @field_validator("work_dir")
     @classmethod
     def work_dir_must_be_sane(cls, v: Optional[str]) -> Optional[str]:
-        """Reject paths that cannot possibly be a valid photo location."""
-        if v is None:
-            return None
-
-        candidate = v.strip()
-        if not candidate:
-            return None
-
-        if not os.path.isabs(candidate):
-            raise ValueError("工作目录必须是以 / 开头的绝对路径")
-        if any(ch in candidate for ch in ("\n", "\r", "\t", "\0")):
-            raise ValueError("工作目录不能包含控制字符")
-        if ".." in Path(candidate).parts:
-            raise ValueError("工作目录不能包含 .. 路径段，请填写展开后的完整路径")
-
-        normalised = candidate.rstrip("/") or "/"
-        if normalised == "/" or normalised in _FORBIDDEN_PREFIXES:
-            raise ValueError(f"'{normalised}' 是系统目录，不能用作工作目录")
-        for prefix in _FORBIDDEN_PREFIXES:
-            if normalised.startswith(prefix + "/"):
-                raise ValueError(f"'{normalised}' 位于系统目录下，不能用作工作目录")
-
-        return normalised
+        return _normalise_work_dir(v)
 
 
 class SetupInitResponse(BaseModel):
@@ -206,6 +269,35 @@ async def _count_users(db_path: str) -> int:
         return 0
     finally:
         await db.close()
+
+
+def _library_db_path(work_dir: str) -> str:
+    """Where the database lives inside a working directory."""
+    return str(Path(work_dir) / "photovault.db")
+
+
+async def _has_existing_library(work_dir: str) -> bool:
+    """Whether ``work_dir`` already holds a usable PhotoVault library.
+
+    "Usable" means the database is there *and* has at least one account: a database
+    with no accounts cannot be logged into, so it is treated as a fresh directory
+    and the wizard goes on to create the administrator (``init_db`` is idempotent).
+    """
+    return await _count_users(_library_db_path(work_dir)) > 0
+
+
+def _require_credentials(body: SetupInitRequest) -> tuple[str, str]:
+    """Return the administrator credentials, or 400 when they are missing.
+
+    Enforced here instead of in the schema because one path — adopting an existing
+    library — legitimately has none to send.
+    """
+    if not body.username or not body.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请填写管理员用户名和密码。",
+        )
+    return body.username, body.password
 
 
 async def _is_initialized(db: aiosqlite.Connection) -> bool:
@@ -263,7 +355,7 @@ def _prepare_work_dir(path: str) -> None:
             detail=(
                 f"目录 {target} 不可写：{exc.strerror or exc}。"
                 "飞牛只会自动为应用自己申请的共享文件夹授予写权限，"
-                "请在上一步用「选择目录」完成授权后再提交。"
+                "请先用「选择目录并授权」完成授权，再重新选择该目录。"
             ),
         ) from exc
     finally:
@@ -355,7 +447,55 @@ async def get_work_dir_options() -> WorkDirOptionsResponse:
         response.gateway_reason = str(exc)
         logger.warning("Unexpected error listing authorized folders", exc_info=True)
 
+    # Which of the offered directories are existing libraries. Same strings as in
+    # the two lists above so the wizard can match them without normalising.
+    offered = [*response.authorized_paths, response.default_path]
+    response.library_paths = [p for p in offered if await _has_existing_library(p)]
+
     return response
+
+
+@router.post("/setup/work-dir/check", response_model=WorkDirCheckResponse)
+async def check_work_dir(body: WorkDirCheckRequest) -> WorkDirCheckResponse:
+    """Pre-flight a candidate working directory before the wizard moves on.
+
+    Answers the one question that decides the rest of the wizard: does this
+    directory already contain a library? If it does, setup is finished by adopting
+    it and no administrator account is asked for. It also surfaces an unusable or
+    unauthorized directory here, while the user is still looking at the directory
+    picker, instead of after they have typed a password.
+
+    Side effect: the directory is created if missing, and a probe file is written
+    and removed, because POSIX permission bits lie about the ACL-backed shares —
+    only a real write says whether the app may use it. An abandoned wizard can
+    therefore leave an empty directory behind; nothing else is persisted, no
+    pointer is written, and the next start runs the wizard again.
+
+    Unauthenticated for the same reason as ``/work-dir-options``: there is no
+    account yet. Served only while provisioning is pending, 403 afterwards.
+    """
+    settings = get_settings()
+
+    if not needs_provisioning(settings):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="System already initialized",
+        )
+
+    work_dir = body.work_dir
+    _prepare_work_dir(work_dir)
+
+    if await _has_existing_library(work_dir):
+        return WorkDirCheckResponse(
+            work_dir=work_dir,
+            has_existing_library=True,
+            message=(
+                "该目录中已存在 PhotoVault 数据，将直接沿用，无需创建管理员账户。"
+                "完成后请使用原有的管理员账号登录。"
+            ),
+        )
+
+    return WorkDirCheckResponse(work_dir=work_dir, has_existing_library=False)
 
 
 @router.post("/setup/init", response_model=SetupInitResponse)
@@ -365,6 +505,9 @@ async def setup_init(body: SetupInitRequest) -> SetupInitResponse:
     Creates the administrator account, and — when the deployment defers storage to
     the wizard — the working directory and the database inside it. Everything
     happens in one request so that an abandoned wizard leaves nothing behind.
+
+    Credentials may be omitted only when the chosen ``work_dir`` already holds a
+    library, which is adopted as-is.
 
     Only works while the system has no users; afterwards it returns 403.
     """
@@ -390,11 +533,13 @@ async def _init_with_work_dir(
     work_dir = body.work_dir
     _prepare_work_dir(work_dir)
 
-    db_path = str(Path(work_dir) / "photovault.db")
+    db_path = _library_db_path(work_dir)
 
     # Reinstall recovery: a database already sitting in the chosen directory means
     # the administrator is pointing at an existing library. Adopt it instead of
     # writing a second account into it — their original credentials still apply.
+    # Checked before the credentials are demanded, because this is exactly the case
+    # the wizard is allowed to submit without any.
     if await _count_users(db_path) > 0:
         # Apply idempotent schema migrations before adopting an existing library.
         # This creates server_metadata/instance_id immediately, so the first login
@@ -410,10 +555,15 @@ async def _init_with_work_dir(
             work_dir=work_dir,
             adopted=True,
             message=(
-                "该目录中已存在 PhotoVault 数据，已直接沿用。"
-                "请使用原有的管理员账号登录，本次填写的账号未被创建。"
+                "该目录中已存在 PhotoVault 数据，已直接沿用。请使用原有的管理员账号登录。"
+                # Only reachable from a client that asked for an account before
+                # checking the directory; say so rather than let them wonder why the
+                # account they just typed does not work.
+                + ("本次填写的账号未被创建。" if body.username else "")
             ),
         )
+
+    username, password = _require_credentials(body)
 
     await init_db(db_path)
 
@@ -424,8 +574,8 @@ async def _init_with_work_dir(
         auth_service = AuthService(db)
         try:
             user_info = await auth_service.create_user(
-                username=body.username,
-                password=body.password,
+                username=username,
+                password=password,
                 is_admin=True,
             )
         except ValueError as e:
@@ -476,11 +626,13 @@ async def _init_existing_database(
                 ),
             )
 
+        username, password = _require_credentials(body)
+
         auth_service = AuthService(db)
         try:
             user_info = await auth_service.create_user(
-                username=body.username,
-                password=body.password,
+                username=username,
+                password=password,
                 is_admin=True,
             )
         except ValueError as e:

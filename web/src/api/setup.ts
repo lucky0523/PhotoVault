@@ -28,11 +28,34 @@ export interface WorkDirOptions {
    * 授权被收回后它不会出现在列表里，而界面上也没有手填路径的地方。
    */
   previous_path: string
+  /**
+   * 上面两个列表中已经存在可用 PhotoVault 数据的目录。
+   *
+   * 选中这些目录就意味着「沿用已有库」，不需要再创建管理员账户。随列表一起返回，
+   * 界面才能在用户点按钮之前就把它标出来、把按钮文字改成「完成设置」。
+   * 字符串与列表里的原样一致，可直接比较。
+   */
+  library_paths: string[]
+}
+
+export interface WorkDirCheckResult {
+  /** 规范化后的目录路径。 */
+  work_dir: string
+  /**
+   * 该目录里已经有 PhotoVault 数据库且其中存在账号。
+   *
+   * 此时初始化不需要再创建管理员：直接沿用这个库，原有账号继续有效。
+   */
+  has_existing_library: boolean
+  /** 供界面展示的说明文字。 */
+  message: string
 }
 
 export interface InitSetupParams {
-  username: string
-  password: string
+  /** 管理员用户名。沿用已有库时不需要。 */
+  username?: string
+  /** 管理员密码。沿用已有库时不需要。 */
+  password?: string
   /** 工作目录绝对路径。needs_work_dir 为 true 时必填。 */
   work_dir?: string
 }
@@ -69,10 +92,26 @@ export async function getWorkDirOptions(): Promise<WorkDirOptions> {
 }
 
 /**
- * 完成初始化：创建管理员账户，必要时同时定下工作目录。
+ * 检查候选工作目录是否可用，以及里面是否已经有 PhotoVault 数据。
+ *
+ * 只对全新目录调用：结果决定还要不要问管理员账号，同时把「目录不可写／未授权」
+ * 这类问题提前暴露在用户还在看目录选择器的时候。已经在 work-dir-options 的
+ * library_paths 里的目录不必再探，那边已经给出结论。
+ *
+ * 副作用：目录不存在时会被创建，并写入一个探测文件再删掉——共享目录用的是
+ * ACL，POSIX 权限位会给出假阴性，只有真的写一次才算准。
+ */
+export async function checkWorkDir(workDir: string): Promise<WorkDirCheckResult> {
+  const response = await http.post('/setup/work-dir/check', { work_dir: workDir })
+  return response.data
+}
+
+/**
+ * 完成初始化：定下工作目录，并在需要时创建管理员账户。
  *
  * 账号与工作目录在**同一个请求**里提交，服务端要么全部建好、要么什么都不留。
  * 因此中途放弃向导不会留下半初始化状态，下次启动会重新走一遍。
+ * 沿用已有库时不传账号密码，服务端不会创建新账号。
  */
 export async function initSetup(params: InitSetupParams): Promise<InitSetupResult> {
   const response = await http.post('/setup/init', params)
