@@ -3,6 +3,7 @@ package com.huoyi.photovault.service
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.google.gson.JsonParseException
 import com.huoyi.photovault.R
 import com.huoyi.photovault.data.api.BackupApi
 import com.huoyi.photovault.data.api.model.CompleteUploadRequest
@@ -20,9 +21,16 @@ import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLException
 
 /**
  * Handles chunked file upload with resume capability.
@@ -231,11 +239,22 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val sessionInfo = resolveSession(context, fileUri, upload, fileHash, totalChunks, storagePolicy)
-            ?: return UploadResult.Failed(
-                context.getString(R.string.backup_error_init_session),
-                shouldRetry = true
+        val sessionInfo = when (
+            val resolution = resolveSession(
+                context,
+                fileUri,
+                upload,
+                fileHash,
+                totalChunks,
+                storagePolicy
             )
+        ) {
+            is SessionResolution.Success -> resolution.sessionInfo
+            is SessionResolution.Failure -> return UploadResult.Failed(
+                error = resolution.error,
+                shouldRetry = resolution.shouldRetry
+            )
+        }
 
         val sessionId = sessionInfo.sessionId
         val startChunkIndex = sessionInfo.startChunkIndex
@@ -418,15 +437,24 @@ class ChunkUploader @Inject constructor(
         fileHash: String,
         totalChunks: Int,
         storagePolicy: StoragePolicyConfig
-    ): SessionInfo? {
-        // Check for existing upload record (resume case)
-        val existingRecord = uploadRecordDao.getByFileUri(fileInfo.uri)
+    ): SessionResolution {
+        val existingRecord = try {
+            uploadRecordDao.getByFileUri(fileInfo.uri)
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultBackup", "Unable to read local upload session", e)
+            return SessionResolution.Failure(
+                context.getString(
+                    R.string.backup_error_init_local_state,
+                    diagnosticMessage(e)
+                ),
+                shouldRetry = false
+            )
+        }
 
         if (existingRecord != null) {
             // Verify session not expired (7 days)
             val elapsed = System.currentTimeMillis() - existingRecord.createdAt
             if (elapsed > SESSION_EXPIRE_MS) {
-                // Session expired — delete record and start fresh
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
                 return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
@@ -436,37 +464,45 @@ class ChunkUploader @Inject constructor(
             if (existingRecord.fileSize != fileInfo.fileSize ||
                 existingRecord.fileModifiedTime != currentModifiedTime
             ) {
-                // File modified — delete record and start fresh
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
                 return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
 
-            // Query server for received chunks
+            // A stale or unreachable resume session falls back to a fresh session.
+            // If that fresh init also fails, its structured error is returned to UI.
             return try {
                 val response = backupApi.getResumeInfo(existingRecord.sessionId)
-                if (response.isSuccessful) {
-                    val resumeInfo = response.body()!!
+                val resumeInfo = response.body()
+                if (response.isSuccessful && resumeInfo != null) {
                     val receivedChunks = resumeInfo.receivedChunks
                     val startChunk = if (receivedChunks.isEmpty()) 0
                     else receivedChunks.max() + 1
 
-                    SessionInfo(
-                        sessionId = existingRecord.sessionId,
-                        startChunkIndex = startChunk
+                    SessionResolution.Success(
+                        SessionInfo(
+                            sessionId = existingRecord.sessionId,
+                            startChunkIndex = startChunk
+                        )
                     )
                 } else {
-                    // Server doesn't recognize session — start fresh
+                    android.util.Log.w(
+                        "PhotoVaultBackup",
+                        "Resume session rejected: HTTP ${response.code()}, starting fresh"
+                    )
                     uploadRecordDao.deleteByFileUri(fileInfo.uri)
                     initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
                 }
             } catch (e: Exception) {
-                // Network error querying resume — start fresh
+                android.util.Log.w(
+                    "PhotoVaultBackup",
+                    "Resume session failed (${e.javaClass.simpleName}), starting fresh",
+                    e
+                )
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
                 initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
             }
         }
 
-        // No existing record — initialize new session
         return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
     }
 
@@ -553,61 +589,94 @@ class ChunkUploader @Inject constructor(
         fileHash: String,
         totalChunks: Int,
         storagePolicy: StoragePolicyConfig
-    ): SessionInfo? {
-        return try {
-            val exifTime = extractCaptureTime(context, Uri.parse(fileInfo.uri))
-            val response = backupApi.initUpload(
-                InitUploadRequest(
-                    fileHash = fileHash,
-                    fileName = fileInfo.fileName,
-                    fileSize = fileInfo.fileSize,
-                    filePath = fileInfo.uri,
-                    // Marketing name where the OEM publishes one, else Build.MODEL.
-                    // The server uses this verbatim as a storage directory segment.
-                    deviceName = DeviceNameProvider.deviceName,
-                    sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
-                    storagePolicy = storagePolicy,
-                    exifTime = exifTime,
-                    fileModifiedTime = fileInfo.createdTime.toString(),
-                    mimeType = fileInfo.mimeType
-                )
+    ): SessionResolution {
+        val request = InitUploadRequest(
+            fileHash = fileHash,
+            fileName = fileInfo.fileName,
+            fileSize = fileInfo.fileSize,
+            filePath = fileInfo.uri,
+            // Marketing name where the OEM publishes one, else Build.MODEL.
+            // The server uses this verbatim as a storage directory segment.
+            deviceName = DeviceNameProvider.deviceName,
+            sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
+            storagePolicy = storagePolicy,
+            exifTime = extractCaptureTime(context, Uri.parse(fileInfo.uri)),
+            fileModifiedTime = fileInfo.createdTime.toString(),
+            mimeType = fileInfo.mimeType
+        )
+
+        val response = try {
+            backupApi.initUpload(request)
+        } catch (e: Exception) {
+            android.util.Log.e(
+                "PhotoVaultBackup",
+                "initUpload exception: ${e.javaClass.simpleName}: ${e.message}",
+                e
             )
+            return SessionResolution.Failure(
+                error = formatInitException(context, e),
+                shouldRetry = isRetryableInitException(e)
+            )
+        }
 
-            if (response.isSuccessful) {
-                val initResponse = response.body()!!
-
-                // Persist upload record for resume capability
-                val record = UploadRecord(
-                    fileUri = fileInfo.uri,
-                    sessionId = initResponse.sessionId,
-                    fileHash = fileHash,
-                    fileName = fileInfo.fileName,
-                    fileSize = fileInfo.fileSize,
-                    fileModifiedTime = fileInfo.createdTime,
-                    // Persist folder + MIME so the upload can be rebuilt and
-                    // resumed after a process kill (see UploadRecord docs).
-                    folderUri = fileInfo.folderUri,
-                    mimeType = fileInfo.mimeType,
-                    totalChunks = initResponse.totalChunks,
-                    uploadedChunkIndex = -1,
-                    createdAt = System.currentTimeMillis(),
-                    updatedAt = System.currentTimeMillis()
-                )
-                uploadRecordDao.insertOrUpdate(record)
-
-                SessionInfo(
-                    sessionId = initResponse.sessionId,
-                    startChunkIndex = 0
-                )
-            } else {
-                val errBody = try { response.errorBody()?.string() } catch (e: Exception) { null }
-                android.util.Log.e("PhotoVaultBackup", "initUpload HTTP ${response.code()}: $errBody")
+        if (!response.isSuccessful) {
+            val errorBody = try {
+                response.errorBody()?.string()
+            } catch (e: Exception) {
                 null
             }
-        } catch (e: Exception) {
-            android.util.Log.e("PhotoVaultBackup", "initUpload exception: ${e.javaClass.simpleName}: ${e.message}", e)
-            null
+            android.util.Log.e(
+                "PhotoVaultBackup",
+                "initUpload HTTP ${response.code()}: $errorBody"
+            )
+            return SessionResolution.Failure(
+                error = formatInitHttpError(context, response.code(), errorBody),
+                shouldRetry = isRetryableInitHttpCode(response.code())
+            )
         }
+
+        val initResponse = response.body()
+            ?: return SessionResolution.Failure(
+                context.getString(R.string.backup_error_init_empty_response),
+                shouldRetry = false
+            )
+
+        val record = UploadRecord(
+            fileUri = fileInfo.uri,
+            sessionId = initResponse.sessionId,
+            fileHash = fileHash,
+            fileName = fileInfo.fileName,
+            fileSize = fileInfo.fileSize,
+            fileModifiedTime = fileInfo.createdTime,
+            // Persist folder + MIME so the upload can be rebuilt and
+            // resumed after a process kill (see UploadRecord docs).
+            folderUri = fileInfo.folderUri,
+            mimeType = fileInfo.mimeType,
+            totalChunks = initResponse.totalChunks,
+            uploadedChunkIndex = -1,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
+        )
+
+        try {
+            uploadRecordDao.insertOrUpdate(record)
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultBackup", "Unable to persist upload session", e)
+            return SessionResolution.Failure(
+                context.getString(
+                    R.string.backup_error_init_local_state,
+                    diagnosticMessage(e)
+                ),
+                shouldRetry = false
+            )
+        }
+
+        return SessionResolution.Success(
+            SessionInfo(
+                sessionId = initResponse.sessionId,
+                startChunkIndex = 0
+            )
+        )
     }
 
     /** Converts a SAF tree URI string into a clean relative folder path. */
@@ -848,6 +917,107 @@ class ChunkUploader @Inject constructor(
      */
     private fun calculateTotalChunks(fileSize: Long): Int {
         return ((fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt()
+    }
+
+    private fun formatInitHttpError(
+        context: Context,
+        code: Int,
+        errorBody: String?
+    ): String {
+        val detail = extractServerDetail(errorBody)
+            ?: context.getString(R.string.backup_error_init_no_detail)
+        return when (code) {
+            401 -> context.getString(R.string.backup_error_init_auth)
+            403 -> context.getString(R.string.backup_error_init_forbidden)
+            404 -> context.getString(R.string.backup_error_init_endpoint)
+            400, 409, 413, 422 -> context.getString(
+                R.string.backup_error_init_request,
+                code,
+                detail
+            )
+            429 -> context.getString(R.string.backup_error_init_rate_limited)
+            in 500..599 -> context.getString(
+                R.string.backup_error_init_server,
+                code,
+                detail
+            )
+            else -> context.getString(
+                R.string.backup_error_init_http,
+                code,
+                detail
+            )
+        }
+    }
+
+    private fun isRetryableInitHttpCode(code: Int): Boolean =
+        code == 408 || code == 425 || code == 429 || code in 500..599
+
+    private fun formatInitException(context: Context, error: Exception): String {
+        val cause = rootCause(error)
+        return when (cause) {
+            is UnknownHostException -> context.getString(R.string.backup_error_init_dns)
+            is ConnectException -> context.getString(R.string.backup_error_init_connect)
+            is SocketTimeoutException -> context.getString(R.string.backup_error_init_timeout)
+            is SSLException -> context.getString(R.string.backup_error_init_tls)
+            is JsonParseException, is EOFException ->
+                context.getString(R.string.backup_error_init_invalid_response)
+            is IOException -> context.getString(
+                R.string.backup_error_init_network,
+                diagnosticMessage(cause)
+            )
+            else -> context.getString(
+                R.string.backup_error_init_unexpected,
+                cause.javaClass.simpleName,
+                diagnosticMessage(cause)
+            )
+        }
+    }
+
+    private fun isRetryableInitException(error: Exception): Boolean {
+        val cause = rootCause(error)
+        return when (cause) {
+            is UnknownHostException, is SSLException, is JsonParseException, is EOFException -> false
+            is ConnectException, is SocketTimeoutException, is IOException -> true
+            else -> false
+        }
+    }
+
+    private fun rootCause(error: Throwable): Throwable {
+        var current = error
+        val visited = HashSet<Throwable>()
+        while (current.cause != null && visited.add(current)) {
+            current = current.cause!!
+        }
+        return current
+    }
+
+    private fun extractServerDetail(errorBody: String?): String? {
+        val raw = errorBody?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val parsed = runCatching {
+            val json = JSONObject(raw)
+            sequenceOf("detail", "message", "error")
+                .mapNotNull { key ->
+                    json.optString(key)
+                        .takeIf { it.isNotBlank() && it != "null" }
+                }
+                .firstOrNull()
+        }.getOrNull()
+        val detail = parsed ?: raw.takeUnless { it.startsWith("<") } ?: return null
+        return sanitizeDiagnostic(detail)
+    }
+
+    private fun diagnosticMessage(error: Throwable): String =
+        sanitizeDiagnostic(error.message ?: error.javaClass.simpleName)
+
+    private fun sanitizeDiagnostic(value: String): String =
+        value.replace(Regex("\\s+"), " ").trim().take(200)
+
+    private sealed class SessionResolution {
+        data class Success(val sessionInfo: SessionInfo) : SessionResolution()
+        data class Failure(
+            val error: String,
+            val shouldRetry: Boolean
+        ) : SessionResolution()
     }
 
     /**
