@@ -17,7 +17,7 @@
 # 通用选项:
 #   --version X.Y.Z    版本号（默认从 server/pyproject.toml 读取）
 #   --port N           服务端口（默认 8000）
-#   --with-analysis    额外打入 onnxruntime / pillow-heif（体积 +130MB 左右）
+#   --with-analysis    额外打入 onnxruntime（HEIC 解码属于核心依赖）
 #   --skip-web         复用已有的 web/dist，不重新构建前端
 #   --tag NAME         Docker 镜像 tag
 #   --arch ARCH        fpk 目标架构: x86_64 | aarch64（可重复指定）
@@ -619,6 +619,7 @@ PY
   # === 依赖 ===
   assert "uvicorn 已打入依赖目录" test -d "$pkg/app/pylibs/uvicorn"
   assert "fastapi 已打入依赖目录" test -d "$pkg/app/pylibs/fastapi"
+  assert "pillow_heif 已打入核心依赖" test -d "$pkg/app/pylibs/pillow_heif"
 
   local first_so; first_so="$(find "$pkg/app/pylibs" -name '*.so' -print -quit 2>/dev/null || true)"
   if [ -z "$first_so" ]; then
@@ -641,7 +642,6 @@ PY
 
   if [ "$WITH_ANALYSIS" -eq 1 ]; then
     assert "onnxruntime 已打入（--with-analysis）" test -d "$pkg/app/pylibs/onnxruntime"
-    assert "pillow_heif 已打入（--with-analysis）"  test -d "$pkg/app/pylibs/pillow_heif"
   fi
 
   # === 泄漏检查 ===

@@ -18,6 +18,8 @@ from typing import AsyncGenerator, Optional
 
 import aiosqlite
 
+from app.services.image_utils import open_image
+
 logger = logging.getLogger("photovault.file_browse")
 
 
@@ -1018,7 +1020,8 @@ class FileBrowseService:
     def _generate_thumbnail(self, file_path: str, size: str) -> Optional[bytes]:
         """Generate a thumbnail for the given file.
 
-        Uses Pillow to resize images. Supports JPEG, PNG, WebP, GIF, BMP, TIFF.
+        Uses Pillow with the registered HEIF opener to resize images. Supports
+        HEIC, HEIF, JPEG, PNG, WebP, GIF, BMP, and TIFF.
 
         Args:
             file_path: Path to the source image file.
@@ -1033,7 +1036,7 @@ class FileBrowseService:
 
             target_size = self.THUMBNAIL_SIZES[size]
 
-            with Image.open(file_path) as img:
+            with open_image(file_path) as img:
                 # Pillow does not automatically apply EXIF Orientation. Bake it
                 # into the derived image before resizing; save then safely emits
                 # ordinary pixels without requiring orientation metadata.

@@ -1,13 +1,12 @@
-"""Shared image-opening helpers for the analysis pipeline.
+"""Shared image-opening helpers used throughout the server.
 
-Centralises Pillow ``Image.open`` so HEIC/HEIF support can be enabled in one
-place. Apple devices commonly store photos as ``.heic``; plain Pillow cannot
-decode them, which means their EXIF/GPS and pixels (for face/scene) are missed.
+Centralises Pillow ``Image.open`` so HEIC/HEIF support is enabled in one place.
+Apple devices commonly store photos as ``.heic``; plain Pillow cannot decode
+them, so PhotoVault installs ``pillow-heif`` as a core dependency and registers
+its opener lazily before the first image is opened.
 
-If the optional ``pillow-heif`` package is installed we register its opener so
-``Image.open`` transparently handles ``.heic`` / ``.heif`` files. When it is not
-installed everything else keeps working; only HEIC files are skipped (logged
-once), consistent with PhotoVault's optional-dependency model.
+Registration remains defensive: if a damaged deployment is missing the package,
+other image formats keep working and HEIC failures are logged once.
 """
 
 from __future__ import annotations

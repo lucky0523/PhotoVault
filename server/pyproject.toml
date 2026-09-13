@@ -13,6 +13,7 @@ dependencies = [
     "PyJWT>=2.8.0",
     "bcrypt>=4.1.0",
     "Pillow>=10.1.0",
+    "pillow-heif==1.4.0",
     "aiosqlite>=0.19.0",
     "python-multipart>=0.0.6",
     "pydantic>=2.5.0",

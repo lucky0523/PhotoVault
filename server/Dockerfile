@@ -41,9 +41,9 @@ WORKDIR /app
 COPY server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Optional analysis dependencies (onnxruntime / pillow-heif) for the
-# people / scenes dimensions. Off by default: it adds ~130MB to the image and
-# both features ship disabled (enable_scene / enable_face default to False).
+# Optional analysis dependency (onnxruntime) for the people / scenes
+# dimensions. Off by default because the models and runtime add substantial
+# image size; HEIC/HEIF decoding is already installed as a core dependency.
 # Enable with: docker build --build-arg WITH_ANALYSIS=1 ...
 ARG WITH_ANALYSIS=0
 COPY server/requirements-analysis.txt ./
