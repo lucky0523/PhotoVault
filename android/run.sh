@@ -95,29 +95,9 @@ else
   done
 fi
 
-# 只编译(build-only)时不需要 adb；否则安装/运行都依赖 adb
-if [[ "$BUILD_ONLY" == false ]]; then
-  [[ -n "$ADB" ]] || fail "未找到 adb，请安装 Android SDK platform-tools 或设置 ANDROID_HOME。"
-fi
-
 adb_cmd() {
-  if [[ -n "$DEVICE_SERIAL" ]]; then
-    "$ADB" -s "$DEVICE_SERIAL" "$@"
-  else
-    "$ADB" "$@"
-  fi
+  "$ADB" -s "$DEVICE_SERIAL" "$@"
 }
-
-# ---- 若需安装/运行，检查设备连接 ----
-if [[ "$BUILD_ONLY" == false ]]; then
-  DEVICE_COUNT="$("$ADB" devices | grep -cw "device" || true)"
-  if [[ "$DEVICE_COUNT" -eq 0 ]]; then
-    fail "没有检测到已连接的设备/模拟器。请连接设备并开启 USB 调试，或启动模拟器。"
-  fi
-  if [[ -z "$DEVICE_SERIAL" && "$DEVICE_COUNT" -gt 1 ]]; then
-    warn "检测到多台设备，将使用 adb 默认目标。可用 -s <serial> 指定。"
-  fi
-fi
 
 GRADLEW="./gradlew"
 [[ -x "$GRADLEW" ]] || GRADLEW="sh ./gradlew"
@@ -140,12 +120,41 @@ info "编译 assemble${VARIANT_CAP} ..."
 $GRADLEW ":app:assemble${VARIANT_CAP}"
 ok "编译完成"
 
+APK_DIR="app/build/outputs/apk/${VARIANT}"
 if [[ "$BUILD_ONLY" == true ]]; then
-  APK_DIR="app/build/outputs/apk/${VARIANT}"
   ok "APK 输出目录: $APK_DIR"
   ls -1 "$APK_DIR"/*.apk 2>/dev/null || true
   exit 0
 fi
+
+# ---- 检查部署设备（不影响已经完成的编译）----
+if [[ -z "$ADB" ]]; then
+  warn "未找到 adb，跳过安装和启动。APK 输出目录: $APK_DIR"
+  exit 0
+fi
+
+ADB_DEVICES="$("$ADB" devices 2>/dev/null || true)"
+DEVICE_COUNT="$(awk '$2 == "device" { count++ } END { print count + 0 }' <<< "$ADB_DEVICES")"
+
+if [[ -n "$DEVICE_SERIAL" ]]; then
+  if ! awk -v serial="$DEVICE_SERIAL" \
+      '$1 == serial && $2 == "device" { found=1 } END { exit !found }' \
+      <<< "$ADB_DEVICES"; then
+    warn "指定设备 $DEVICE_SERIAL 不可用，跳过安装和启动。APK 输出目录: $APK_DIR"
+    exit 0
+  fi
+else
+  DEVICE_SERIAL="$(awk '$2 == "device" { print $1; exit }' <<< "$ADB_DEVICES")"
+  if [[ -z "$DEVICE_SERIAL" ]]; then
+    warn "没有检测到可用的 ADB 设备，跳过安装和启动。APK 输出目录: $APK_DIR"
+    exit 0
+  fi
+  if [[ "$DEVICE_COUNT" -gt 1 ]]; then
+    warn "检测到多台设备，将使用 $DEVICE_SERIAL。可用 -s <serial> 指定。"
+  fi
+fi
+
+info "使用 ADB 设备: $DEVICE_SERIAL"
 
 # ---- 安装 ----
 info "安装 install${VARIANT_CAP} 到设备 ..."
