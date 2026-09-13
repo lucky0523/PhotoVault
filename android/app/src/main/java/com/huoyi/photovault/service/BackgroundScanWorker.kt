@@ -11,6 +11,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.huoyi.photovault.R
+import com.huoyi.photovault.data.api.AuthReadiness
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.SettingsPreferences
 import com.huoyi.photovault.data.local.dao.BackupFolderDao
@@ -432,22 +433,30 @@ class BackgroundScanWorker @AssistedInject constructor(
             } else {
                 true
             }
-            val allowBackup = backupAllowedBySettings && serverReachable
+            val authReadiness = if (backupAllowedBySettings && serverReachable) {
+                authRepository.ensureAuthenticated()
+            } else {
+                AuthReadiness.TERMINAL_FAILURE
+            }
+            val sessionReady = authReadiness == AuthReadiness.VALID
+            val authTransientFailure = backupAllowedBySettings && serverReachable &&
+                authReadiness == AuthReadiness.TRANSIENT_FAILURE
+            val allowBackup = backupAllowedBySettings && serverReachable && sessionReady
             android.util.Log.i(
                 "PhotoVaultScan",
-                "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, allowBackup=$allowBackup, serverReachable=$serverReachable)"
+                "BackgroundScanWorker started (forceFullScan=$forceFullScan, manual=$manual, " +
+                    "allowBackup=$allowBackup, serverReachable=$serverReachable, sessionReady=$sessionReady)"
             )
             com.huoyi.photovault.util.FileLogger.log(
                 "Scan",
                 "scan start forceFull=$forceFullScan manual=$manual allowBackup=$allowBackup " +
-                    "serverReachable=$serverReachable"
+                    "serverReachable=$serverReachable sessionReady=$sessionReady"
             )
 
-            // Sync photo status from server before scanning, so trashed/purged
-            // files (deleted via web UI) are skipped. Only attempt sync when the
-            // user has a valid auth token AND the server is reachable (skip the
-            // doomed call when the preflight already found it unreachable).
-            if (serverReachable && credentialManager.hasValidToken()) {
+            // Refresh an expired access token before status sync and before any
+            // queue/service work. A terminal refresh failure publishes LoggedOut;
+            // this run remains scan-only and does not create a retry storm.
+            if (serverReachable && sessionReady) {
                 val synced = statusSyncManager.syncStatus()
                 android.util.Log.i("PhotoVaultScan", "Status sync result: $synced records updated")
             }
@@ -502,9 +511,21 @@ class BackgroundScanWorker @AssistedInject constructor(
                 }
             }
 
-            android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
-            com.huoyi.photovault.util.FileLogger.log("Scan", "doWork SUCCESS")
-            Result.success()
+            if (authTransientFailure) {
+                android.util.Log.w(
+                    "PhotoVaultScan",
+                    "Authentication refresh was temporarily unavailable; scheduling retry"
+                )
+                com.huoyi.photovault.util.FileLogger.log(
+                    "Scan",
+                    "doWork RETRY transient auth refresh failure"
+                )
+                Result.retry()
+            } else {
+                android.util.Log.i("PhotoVaultScan", "BackgroundScanWorker finished successfully")
+                com.huoyi.photovault.util.FileLogger.log("Scan", "doWork SUCCESS")
+                Result.success()
+            }
         } catch (e: Exception) {
             android.util.Log.e("PhotoVaultScan", "BackgroundScanWorker failed: ${e.message}", e)
             com.huoyi.photovault.util.FileLogger.log(

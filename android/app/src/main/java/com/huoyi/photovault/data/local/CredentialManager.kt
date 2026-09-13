@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,6 +26,7 @@ class CredentialManager @Inject constructor(
         private const val KEY_TOKEN_EXPIRY = "token_expiry"
         private const val KEY_INSTANCE_ID = "instance_id"
         private const val KEY_USER_ID = "user_id"
+        private const val KEY_SESSION_GENERATION = "session_generation"
     }
 
     private val encryptedPrefs: SharedPreferences by lazy {
@@ -38,6 +42,12 @@ class CredentialManager @Inject constructor(
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     }
+
+    // Keep construction side-effect free: many workers/view-models inject this
+    // singleton in JVM tests where Android Keystore is unavailable. The first
+    // authentication check publishes the persisted state lazily.
+    private val _authSessionState = MutableStateFlow(AuthSessionState.UNAUTHENTICATED)
+    val authSessionState: StateFlow<AuthSessionState> = _authSessionState.asStateFlow()
 
     fun saveCredentials(
         serverAddress: String,
@@ -67,7 +77,9 @@ class CredentialManager @Inject constructor(
         )
     }
 
+    @Synchronized
     fun clearCredentials() {
+        val nextGeneration = nextGeneration()
         encryptedPrefs.edit().apply {
             remove(KEY_SERVER_ADDRESS)
             remove(KEY_USERNAME)
@@ -78,13 +90,15 @@ class CredentialManager @Inject constructor(
             remove(KEY_TOKEN_EXPIRY)
             remove(KEY_INSTANCE_ID)
             remove(KEY_USER_ID)
+            putLong(KEY_SESSION_GENERATION, nextGeneration)
             apply()
         }
+        publishAuthSessionState()
     }
 
     /**
-     * Publishes a successfully authenticated session in one preferences edit so
-     * dynamic API requests never observe a new token paired with the old server.
+     * Publishes a successfully authenticated session atomically. Incrementing the
+     * generation invalidates refresh responses that were started by an older login.
      */
     @Synchronized
     fun saveSession(
@@ -99,6 +113,7 @@ class CredentialManager @Inject constructor(
         userId: Long
     ) {
         val expiryTime = System.currentTimeMillis() + (expiresIn * 1000L)
+        val nextGeneration = nextGeneration()
         encryptedPrefs.edit().apply {
             putString(KEY_SERVER_ADDRESS, serverAddress)
             putString(KEY_USERNAME, username)
@@ -113,10 +128,14 @@ class CredentialManager @Inject constructor(
             putLong(KEY_TOKEN_EXPIRY, expiryTime)
             putString(KEY_INSTANCE_ID, instanceId)
             putLong(KEY_USER_ID, userId)
+            putLong(KEY_SESSION_GENERATION, nextGeneration)
             apply()
         }
+        publishAuthSessionState()
     }
 
+    /** Retained for callers that already own the current session transaction. */
+    @Synchronized
     fun saveTokens(accessToken: String, refreshToken: String, expiresIn: Int) {
         val expiryTime = System.currentTimeMillis() + (expiresIn * 1000L)
         encryptedPrefs.edit().apply {
@@ -125,66 +144,130 @@ class CredentialManager @Inject constructor(
             putLong(KEY_TOKEN_EXPIRY, expiryTime)
             apply()
         }
+        publishAuthSessionState()
     }
 
     /**
-     * Returns the address and currently valid token under the same lock used by
-     * [saveSession]. BaseUrlInterceptor attaches this immutable snapshot to the
-     * request so AuthInterceptor cannot observe a different login generation.
+     * Saves refreshed tokens only if the login generation, endpoint and stable
+     * account still match the session that initiated the refresh.
+     */
+    @Synchronized
+    fun saveRefreshedTokensIfCurrent(
+        expected: CredentialSessionSnapshot,
+        accessToken: String,
+        refreshToken: String,
+        expiresIn: Int
+    ): Boolean {
+        if (!getSessionSnapshot().isSameSession(expected)) return false
+        val expiryTime = System.currentTimeMillis() + (expiresIn * 1000L)
+        encryptedPrefs.edit().apply {
+            putString(KEY_ACCESS_TOKEN, accessToken)
+            putString(KEY_REFRESH_TOKEN, refreshToken)
+            putLong(KEY_TOKEN_EXPIRY, expiryTime)
+            apply()
+        }
+        publishAuthSessionState()
+        return true
+    }
+
+    /** Clears only the session that initiated a terminally failed refresh. */
+    @Synchronized
+    fun clearTokensIfCurrent(expected: CredentialSessionSnapshot): Boolean {
+        if (!getSessionSnapshot().isSameSession(expected)) return false
+        clearTokensLocked()
+        return true
+    }
+
+    /**
+     * Returns one immutable endpoint/token/account snapshot. The access token is
+     * returned even when expired; callers decide whether to refresh it. This lets
+     * a 401 retry remain bound to the exact server/account generation it started on.
      */
     @Synchronized
     fun getSessionSnapshot(): CredentialSessionSnapshot {
-        val expiry = encryptedPrefs.getLong(KEY_TOKEN_EXPIRY, 0)
-        val token = if (System.currentTimeMillis() < expiry) {
-            encryptedPrefs.getString(KEY_ACCESS_TOKEN, null)
+        val instanceId = encryptedPrefs.getString(KEY_INSTANCE_ID, null)
+            ?.takeIf { it.isNotBlank() }
+        val userId = if (encryptedPrefs.contains(KEY_USER_ID)) {
+            encryptedPrefs.getLong(KEY_USER_ID, -1L).takeIf { it > 0L }
+        } else {
+            null
+        }
+        val identity = if (instanceId != null && userId != null) {
+            StableAccountIdentity(instanceId, userId)
         } else {
             null
         }
         return CredentialSessionSnapshot(
             serverAddress = encryptedPrefs.getString(KEY_SERVER_ADDRESS, null),
-            accessToken = token
+            accessToken = encryptedPrefs.getString(KEY_ACCESS_TOKEN, null),
+            refreshToken = encryptedPrefs.getString(KEY_REFRESH_TOKEN, null),
+            accessTokenExpiresAt = encryptedPrefs.getLong(KEY_TOKEN_EXPIRY, 0L),
+            identity = identity,
+            generation = encryptedPrefs.getLong(KEY_SESSION_GENERATION, 0L)
         )
     }
 
-    fun getAccessToken(): String? {
-        val expiry = encryptedPrefs.getLong(KEY_TOKEN_EXPIRY, 0)
-        if (System.currentTimeMillis() >= expiry) {
-            return null
-        }
-        return encryptedPrefs.getString(KEY_ACCESS_TOKEN, null)
-    }
+    fun getAccessToken(): String? = getSessionSnapshot()
+        .takeIf { it.isAccessTokenValid() }
+        ?.accessToken
 
-    fun getRefreshToken(): String? {
-        return encryptedPrefs.getString(KEY_REFRESH_TOKEN, null)
-    }
+    @Synchronized
+    fun getRefreshToken(): String? = encryptedPrefs.getString(KEY_REFRESH_TOKEN, null)
 
-    fun hasValidToken(): Boolean {
-        return getAccessToken() != null
-    }
+    fun hasValidToken(): Boolean = getAccessToken() != null
 
-    fun getServerAddress(): String? {
-        return encryptedPrefs.getString(KEY_SERVER_ADDRESS, null)
-    }
+    @Synchronized
+    fun getServerAddress(): String? = encryptedPrefs.getString(KEY_SERVER_ADDRESS, null)
 
     /** Stable server/database account identity; absent for pre-upgrade installs. */
-    fun getStableAccountIdentity(): StableAccountIdentity? {
-        val instanceId = encryptedPrefs.getString(KEY_INSTANCE_ID, null)
-            ?.takeIf { it.isNotBlank() }
-            ?: return null
-        if (!encryptedPrefs.contains(KEY_USER_ID)) return null
-        val userId = encryptedPrefs.getLong(KEY_USER_ID, -1L)
-        if (userId <= 0L) return null
-        return StableAccountIdentity(instanceId = instanceId, userId = userId)
+    fun getStableAccountIdentity(): StableAccountIdentity? = getSessionSnapshot().identity
+
+    @Synchronized
+    fun clearTokens() {
+        clearTokensLocked()
     }
 
-    fun clearTokens() {
+    private fun clearTokensLocked() {
+        val nextGeneration = nextGeneration()
         encryptedPrefs.edit().apply {
             remove(KEY_ACCESS_TOKEN)
             remove(KEY_REFRESH_TOKEN)
             remove(KEY_TOKEN_EXPIRY)
+            putLong(KEY_SESSION_GENERATION, nextGeneration)
             apply()
         }
+        publishAuthSessionState()
     }
+
+    private fun nextGeneration(): Long =
+        encryptedPrefs.getLong(KEY_SESSION_GENERATION, 0L) + 1L
+
+    /** Publishes persisted state after the first lazy authentication check. */
+    @Synchronized
+    fun refreshAuthSessionState() {
+        publishAuthSessionState()
+    }
+
+    private fun publishAuthSessionState() {
+        _authSessionState.value = readAuthSessionState()
+    }
+
+    private fun readAuthSessionState(): AuthSessionState {
+        val snapshot = getSessionSnapshot()
+        return when {
+            snapshot.identity == null || snapshot.serverAddress.isNullOrBlank() ->
+                AuthSessionState.UNAUTHENTICATED
+            snapshot.isAccessTokenValid() -> AuthSessionState.AUTHENTICATED
+            !snapshot.refreshToken.isNullOrBlank() -> AuthSessionState.REFRESHABLE
+            else -> AuthSessionState.UNAUTHENTICATED
+        }
+    }
+}
+
+enum class AuthSessionState {
+    AUTHENTICATED,
+    REFRESHABLE,
+    UNAUTHENTICATED
 }
 
 data class StableAccountIdentity(
@@ -194,8 +277,23 @@ data class StableAccountIdentity(
 
 data class CredentialSessionSnapshot(
     val serverAddress: String?,
-    val accessToken: String?
-)
+    val accessToken: String?,
+    val refreshToken: String?,
+    val accessTokenExpiresAt: Long,
+    val identity: StableAccountIdentity?,
+    val generation: Long
+) {
+    fun isAccessTokenValid(
+        nowMillis: Long = System.currentTimeMillis(),
+        minimumValidityMillis: Long = 0L
+    ): Boolean = !accessToken.isNullOrBlank() &&
+        accessTokenExpiresAt > nowMillis + minimumValidityMillis
+
+    fun isSameSession(other: CredentialSessionSnapshot): Boolean =
+        generation == other.generation &&
+            serverAddress == other.serverAddress &&
+            identity == other.identity
+}
 
 data class SavedCredentials(
     val serverAddress: String,

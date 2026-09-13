@@ -100,6 +100,8 @@
     <string name="notification_backup_paused_title">Backup paused</string>
     <string name="notification_backup_waiting_conditions">Waiting for conditions to recover…</string>
     <string name="notification_backup_server_disconnected">Server disconnected. Backup will continue after it reconnects.</string>
+    <string name="notification_backup_auth_required_title">Backup stopped · Sign-in required</string>
+    <string name="notification_backup_auth_required_content">Your session could not be refreshed. Open PhotoVault and sign in again.</string>
     <string name="notification_backup_active_title">Backing up</string>
     <string name="notification_backup_file_title">Backing up: %1$s</string>
     <string name="notification_backup_progress">Progress: %1$d/%2$d</string>

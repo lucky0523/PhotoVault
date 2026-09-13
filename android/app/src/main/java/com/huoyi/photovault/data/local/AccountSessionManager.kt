@@ -71,7 +71,10 @@ class AccountSessionManager @Inject constructor(
             ?.takeIf { it > 0L }
             ?: throw IllegalArgumentException(context.getString(R.string.error_server_identity_missing))
         val incomingIdentity = StableAccountIdentity(incomingInstanceId, incomingUserId)
-        val previousIdentity = credentialManager.getStableAccountIdentity()
+        val previousSession = credentialManager.getSessionSnapshot()
+        val previousIdentity = previousSession.identity
+        val reauthenticatedSameAccount = previousIdentity == incomingIdentity &&
+            previousSession.refreshToken.isNullOrBlank()
         // Unknown is the one-time migration state for pre-stable-ID installs.
         // It deliberately clears once rather than guessing from endpoint/username.
         val changed = hasSessionChanged(previousIdentity, incomingIdentity)
@@ -135,7 +138,10 @@ class AccountSessionManager @Inject constructor(
             )
         }
 
-        if (changed) {
+        if (changed || reauthenticatedSameAccount) {
+            // A changed account needs a clean rescan; re-authenticating the same
+            // account must also wake any queue retained after terminal refresh
+            // failure instead of waiting for the next periodic interval.
             // Post-commit scheduling is best-effort and independently recoverable
             // from the persisted periodic cadence. A WorkManager enqueue failure
             // must not report authentication failure after B is already active.

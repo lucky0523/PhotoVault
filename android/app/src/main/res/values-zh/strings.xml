@@ -100,6 +100,8 @@
     <string name="notification_backup_paused_title">备份已暂停</string>
     <string name="notification_backup_waiting_conditions">等待条件恢复…</string>
     <string name="notification_backup_server_disconnected">服务器连接已断开，恢复后继续。</string>
+    <string name="notification_backup_auth_required_title">备份已停止 · 需要登录</string>
+    <string name="notification_backup_auth_required_content">登录状态无法刷新，请打开 PhotoVault 重新登录。</string>
     <string name="notification_backup_active_title">正在备份</string>
     <string name="notification_backup_file_title">正在备份：%1$s</string>
     <string name="notification_backup_progress">进度：%1$d/%2$d</string>

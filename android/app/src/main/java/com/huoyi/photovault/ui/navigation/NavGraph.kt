@@ -3,12 +3,17 @@ package com.huoyi.photovault.ui.navigation
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import android.net.Uri
+import com.huoyi.photovault.data.local.AuthSessionState
 import com.huoyi.photovault.ui.login.LoginScreen
 import com.huoyi.photovault.ui.main.FolderDetailScreen
 import com.huoyi.photovault.ui.main.MainScreen
@@ -31,8 +36,25 @@ object Routes {
 }
 
 @Composable
-fun NavGraph() {
+fun NavGraph(
+    authSessionViewModel: AuthSessionViewModel = hiltViewModel()
+) {
     val navController = rememberNavController()
+    val sessionState by authSessionViewModel.sessionState.collectAsState()
+
+    // A terminal refresh failure (expired/revoked refresh token or identity
+    // mismatch) is the single runtime path back to Login, including failures
+    // originating in background backup work.
+    LaunchedEffect(sessionState) {
+        if (sessionState == AuthSessionState.UNAUTHENTICATED &&
+            navController.currentDestination?.route != Routes.LOGIN
+        ) {
+            navController.navigate(Routes.LOGIN) {
+                popUpTo(navController.graph.id) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
 
     NavHost(
         navController = navController,

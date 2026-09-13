@@ -4,6 +4,8 @@ import android.content.Context
 import com.huoyi.photovault.R
 import com.huoyi.photovault.data.api.AuthApi
 import com.huoyi.photovault.data.api.AuthInterceptor
+import com.huoyi.photovault.data.api.AuthReadiness
+import com.huoyi.photovault.data.api.TokenRefreshCoordinator
 import com.huoyi.photovault.data.api.model.ConnectionTestResponse
 import com.huoyi.photovault.data.api.model.LoginRequest
 import com.huoyi.photovault.data.api.model.LoginResponse
@@ -23,6 +25,7 @@ import javax.inject.Singleton
 class AuthRepository @Inject constructor(
     private val credentialManager: CredentialManager,
     private val authInterceptor: AuthInterceptor,
+    private val tokenRefreshCoordinator: TokenRefreshCoordinator,
     @ApplicationContext private val context: Context
 ) {
 
@@ -121,49 +124,38 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun refreshToken(): Result<RefreshResponse> {
-        val refreshToken = credentialManager.getRefreshToken()
-            ?: return Result.failure(Exception(context.getString(R.string.error_missing_refresh_token)))
-
-        val serverAddress = credentialManager.getServerAddress()
-            ?: return Result.failure(Exception(context.getString(R.string.error_missing_server_address)))
-
-        return try {
-            val api = createApiForServer(serverAddress)
-            val response = api.refreshToken(
-                com.huoyi.photovault.data.api.model.RefreshRequest(refreshToken)
-            )
-            if (response.isSuccessful) {
-                val refreshResponse = response.body()
-                    ?: return Result.failure(Exception(context.getString(R.string.error_empty_server_response)))
-                val refreshedIdentity = stableIdentity(
-                    refreshResponse.instanceId,
-                    refreshResponse.userId
-                )
-                val savedIdentity = credentialManager.getStableAccountIdentity()
-                if (refreshedIdentity == null) {
-                    credentialManager.clearTokens()
-                    return Result.failure(Exception(context.getString(R.string.error_server_identity_missing)))
-                }
-                if (savedIdentity == null || savedIdentity != refreshedIdentity) {
-                    // A refresh must never switch the local account projection.
-                    // Force an interactive login so AccountSessionManager can run
-                    // its stop/clear/rescan transition safely.
-                    credentialManager.clearTokens()
-                    return Result.failure(Exception(context.getString(R.string.error_server_identity_changed)))
-                }
-                credentialManager.saveTokens(
-                    accessToken = refreshResponse.accessToken,
-                    refreshToken = refreshResponse.refreshToken,
-                    expiresIn = refreshResponse.expiresIn
-                )
-                Result.success(refreshResponse)
-            } else {
-                credentialManager.clearTokens()
-                Result.failure(Exception(context.getString(R.string.error_token_refresh_failed)))
-            }
-        } catch (e: Exception) {
-            Result.failure(Exception(context.getString(R.string.error_token_refresh_failed), e))
+        if (ensureAuthenticated() != AuthReadiness.VALID) {
+            return Result.failure(Exception(context.getString(R.string.error_token_refresh_failed)))
         }
+        val session = credentialManager.getSessionSnapshot()
+        val identity = session.identity
+            ?: return Result.failure(Exception(context.getString(R.string.error_server_identity_missing)))
+        val accessToken = session.accessToken
+            ?: return Result.failure(Exception(context.getString(R.string.error_token_refresh_failed)))
+        val refreshToken = session.refreshToken
+            ?: return Result.failure(Exception(context.getString(R.string.error_missing_refresh_token)))
+        val expiresIn = ((session.accessTokenExpiresAt - System.currentTimeMillis()) / 1000L)
+            .coerceAtLeast(1L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        return Result.success(
+            RefreshResponse(
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                expiresIn = expiresIn,
+                instanceId = identity.instanceId,
+                userId = identity.userId
+            )
+        )
+    }
+
+    /** Used by UI, workers and services before beginning an authenticated batch. */
+    suspend fun ensureAuthenticated(): AuthReadiness {
+        if (credentialManager.getStableAccountIdentity() == null) {
+            credentialManager.clearTokens()
+            return AuthReadiness.TERMINAL_FAILURE
+        }
+        return tokenRefreshCoordinator.ensureValidAccessToken()
     }
 
     fun hasValidToken(): Boolean {

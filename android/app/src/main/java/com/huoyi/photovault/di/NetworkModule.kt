@@ -5,6 +5,8 @@ import com.huoyi.photovault.data.api.AuthInterceptor
 import com.huoyi.photovault.data.api.BackupApi
 import com.huoyi.photovault.data.api.BaseUrlInterceptor
 import com.huoyi.photovault.data.api.FileApi
+import com.huoyi.photovault.data.api.TokenAuthenticator
+import com.huoyi.photovault.data.api.TokenRefreshCoordinator
 import com.huoyi.photovault.data.local.CredentialManager
 import dagger.Module
 import dagger.Provides
@@ -23,8 +25,11 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideAuthInterceptor(credentialManager: CredentialManager): AuthInterceptor {
-        return AuthInterceptor(credentialManager)
+    fun provideAuthInterceptor(
+        credentialManager: CredentialManager,
+        tokenRefreshCoordinator: TokenRefreshCoordinator
+    ): AuthInterceptor {
+        return AuthInterceptor(credentialManager, tokenRefreshCoordinator)
     }
 
     @Provides
@@ -37,7 +42,8 @@ object NetworkModule {
     @Singleton
     fun provideOkHttpClient(
         authInterceptor: AuthInterceptor,
-        baseUrlInterceptor: BaseUrlInterceptor
+        baseUrlInterceptor: BaseUrlInterceptor,
+        tokenAuthenticator: TokenAuthenticator
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BODY
@@ -47,6 +53,7 @@ object NetworkModule {
             .addInterceptor(baseUrlInterceptor)
             .addInterceptor(authInterceptor)
             .addInterceptor(loggingInterceptor)
+            .authenticator(tokenAuthenticator)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)

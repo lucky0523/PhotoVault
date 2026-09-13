@@ -47,6 +47,7 @@ class LoginViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
+    private var authAttemptEpoch: Long = 0L
 
     init {
         checkAutoLogin()
@@ -54,8 +55,15 @@ class LoginViewModel @Inject constructor(
     }
 
     private fun checkAutoLogin() {
-        if (authRepository.hasValidToken()) {
-            _uiState.update { it.copy(hasValidToken = true) }
+        val attempt = authAttemptEpoch
+        viewModelScope.launch {
+            val readiness = authRepository.ensureAuthenticated()
+            if (readiness == com.huoyi.photovault.data.api.AuthReadiness.VALID &&
+                attempt == authAttemptEpoch &&
+                !_uiState.value.isLoading
+            ) {
+                _uiState.update { it.copy(hasValidToken = true) }
+            }
         }
     }
 
@@ -144,7 +152,10 @@ class LoginViewModel @Inject constructor(
             return
         }
 
-        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        val attempt = ++authAttemptEpoch
+        _uiState.update {
+            it.copy(isLoading = true, errorMessage = null, hasValidToken = false)
+        }
 
         viewModelScope.launch {
             val result = authRepository.login(
@@ -152,6 +163,7 @@ class LoginViewModel @Inject constructor(
                 username = state.username,
                 password = state.password
             )
+            if (attempt != authAttemptEpoch) return@launch
 
             if (result.isSuccess) {
                 val sessionResult = runCatching {

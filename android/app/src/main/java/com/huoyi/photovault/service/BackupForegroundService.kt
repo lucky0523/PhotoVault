@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.huoyi.photovault.MainActivity
 import com.huoyi.photovault.R
+import com.huoyi.photovault.data.api.AuthReadiness
 import com.huoyi.photovault.data.api.model.StoragePolicyConfig
 import com.huoyi.photovault.data.api.model.UploadProgress
 import com.huoyi.photovault.data.api.model.UploadResult
@@ -94,6 +95,7 @@ class BackupForegroundService : Service() {
          */
         const val AUTO_OFF_CHANNEL_ID = "backup_notice"
         const val AUTO_OFF_NOTIFICATION_ID = 1002
+        const val AUTH_REQUIRED_NOTIFICATION_ID = 1003
 
         const val ACTION_START = "com.huoyi.photovault.action.START_BACKUP"
         const val ACTION_PAUSE = "com.huoyi.photovault.action.PAUSE_BACKUP"
@@ -364,6 +366,51 @@ class BackupForegroundService : Service() {
 
             notificationManager.notify(AUTO_OFF_NOTIFICATION_ID, notification)
         }
+
+        /** Posts a standalone reminder after terminal refresh failure. */
+        fun postAuthRequiredNotification(context: Context) {
+            val notificationManager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                notificationManager.createNotificationChannel(
+                    NotificationChannel(
+                        AUTO_OFF_CHANNEL_ID,
+                        context.getString(R.string.notification_channel_backup_notice),
+                        NotificationManager.IMPORTANCE_LOW
+                    ).apply {
+                        description = context.getString(
+                            R.string.notification_channel_backup_notice_description
+                        )
+                        setShowBadge(false)
+                    }
+                )
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, AUTO_OFF_CHANNEL_ID)
+                .setContentTitle(
+                    context.getString(R.string.notification_backup_auth_required_title)
+                )
+                .setContentText(
+                    context.getString(R.string.notification_backup_auth_required_content)
+                )
+                .setStyle(
+                    NotificationCompat.BigTextStyle().bigText(
+                        context.getString(R.string.notification_backup_auth_required_content)
+                    )
+                )
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build()
+            notificationManager.notify(AUTH_REQUIRED_NOTIFICATION_ID, notification)
+        }
     }
 
     @Inject
@@ -519,6 +566,39 @@ class BackupForegroundService : Service() {
         completedFiles = 0
 
         backupJob = serviceScope.launch {
+            // Defensive gate for direct START/RESUME callers that bypass the scan
+            // worker. Keep the persisted queue intact on every failure.
+            when (authRepository.ensureAuthenticated()) {
+                AuthReadiness.VALID -> Unit
+                AuthReadiness.TRANSIENT_FAILURE -> {
+                    android.util.Log.w(
+                        "PhotoVaultBackup",
+                        "Backup paused: token refresh temporarily unavailable"
+                    )
+                    isPaused = true
+                    pauseReason = PauseReason.CONDITION
+                    updateNotification(
+                        getString(R.string.notification_backup_paused_title),
+                        getString(R.string.notification_backup_server_disconnected)
+                    )
+                    return@launch
+                }
+                AuthReadiness.TERMINAL_FAILURE -> {
+                    android.util.Log.w(
+                        "PhotoVaultBackup",
+                        "Backup stopped: authentication is no longer refreshable"
+                    )
+                    isRunning = false
+                    isPaused = false
+                    currentFileUri = null
+                    _uploadProgress.value = null
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    postAuthRequiredNotification(applicationContext)
+                    stopSelf()
+                    return@launch
+                }
+            }
+
             // Rebuild the queue from persistence first, so files that were only
             // queued (not yet started, hence no UploadRecord) survive a process
             // kill and still get uploaded. Idempotent: files already in the
