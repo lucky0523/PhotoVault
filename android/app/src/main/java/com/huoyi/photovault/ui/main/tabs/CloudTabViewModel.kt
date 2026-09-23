@@ -36,6 +36,12 @@ data class CloudTabUiState(
     val isRefreshing: Boolean = false,
     val error: String? = null,
     val isEmpty: Boolean = false,
+    // File pagination. The server pages only the `files` array (`directories`
+    // always come back complete), so these track how much of the current
+    // directory's file list has been pulled in so far.
+    val totalFiles: Int = 0,
+    val loadedPages: Int = 0,
+    val isLoadingMore: Boolean = false,
     // Recycle bin
     val viewMode: CloudViewMode = CloudViewMode.Browse,
     val trashTotal: Int = 0,
@@ -49,6 +55,9 @@ data class CloudTabUiState(
      * so treat both "" and "/" as root.
      */
     val showTrashEntry: Boolean get() = currentPath.isBlank() || currentPath == "/"
+
+    /** True while the current directory still has un-fetched files on the server. */
+    val hasMoreFiles: Boolean get() = files.size < totalFiles
 }
 
 /**
@@ -92,17 +101,24 @@ class CloudTabViewModel @Inject constructor(
     }
 
     /**
-     * Load the contents of a directory from the server.
+     * Load the first page of a directory's contents from the server, replacing
+     * any previously loaded listing. Subsequent pages are pulled in by
+     * [loadMoreFiles] as the user scrolls or swipes through the preview.
      */
     fun loadDirectory(path: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
+                isLoadingMore = false,
                 error = null
             )
 
             try {
-                val response = fileApi.browseDirectory(path = path)
+                val response = fileApi.browseDirectory(
+                    path = path,
+                    page = 1,
+                    pageSize = FILE_PAGE_SIZE
+                )
                 if (response.isSuccessful) {
                     val listing = response.body()
                     if (listing != null) {
@@ -114,8 +130,11 @@ class CloudTabViewModel @Inject constructor(
                             breadcrumbs = breadcrumbs,
                             directories = visibleDirectories,
                             files = listing.files,
+                            totalFiles = listing.totalFiles,
+                            loadedPages = 1,
                             isLoading = false,
                             isRefreshing = false,
+                            isLoadingMore = false,
                             isEmpty = visibleDirectories.isEmpty() && listing.files.isEmpty()
                         )
                         // Keep the pinned trash-entry badge count fresh while at root
@@ -168,6 +187,79 @@ class CloudTabViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isRefreshing = true)
             loadDirectory(_uiState.value.currentPath)
+        }
+    }
+
+    /**
+     * Append the next page of files for the current directory.
+     *
+     * The server caps `page_size` at 200, so a folder with more files than that
+     * needs several round trips; without this the browser (and the full-screen
+     * preview built from the same list) would only ever see the first page.
+     *
+     * Safe to call repeatedly: it no-ops while a load is already in flight,
+     * when the directory is fully loaded, or while the trash view is showing.
+     */
+    fun loadMoreFiles() {
+        val state = _uiState.value
+        if (state.viewMode != CloudViewMode.Browse) return
+        if (state.isLoading || state.isLoadingMore || !state.hasMoreFiles) return
+
+        val path = state.currentPath
+        val nextPage = state.loadedPages + 1
+
+        // Flip the in-flight flag synchronously (this is always called from the
+        // main thread) so back-to-back triggers from the scroll listener and the
+        // preview pager can't both start the same request.
+        _uiState.value = state.copy(isLoadingMore = true)
+
+        viewModelScope.launch {
+            try {
+                val response = fileApi.browseDirectory(
+                    path = path,
+                    page = nextPage,
+                    pageSize = FILE_PAGE_SIZE
+                )
+                val listing = response.body()
+                val current = _uiState.value
+
+                // The user may have navigated away or refreshed while the request
+                // was in flight — in that case the payload no longer applies.
+                if (current.currentPath != path || current.loadedPages != nextPage - 1) {
+                    _uiState.value = current.copy(isLoadingMore = false)
+                    return@launch
+                }
+
+                if (!response.isSuccessful || listing == null) {
+                    // Leave the list as-is; the scroll/swipe trigger will retry.
+                    _uiState.value = current.copy(isLoadingMore = false)
+                    return@launch
+                }
+
+                if (listing.files.isEmpty()) {
+                    // Nothing at this offset (files removed since the count was
+                    // taken). Clamp the total so we stop asking for more.
+                    _uiState.value = current.copy(
+                        totalFiles = current.files.size,
+                        isLoadingMore = false
+                    )
+                    return@launch
+                }
+
+                // Guard against overlap between pages (e.g. an upload shifted the
+                // ordering) so the pager never shows the same photo twice.
+                val seenIds = current.files.mapTo(HashSet()) { it.id }
+                val appended = listing.files.filter { seenIds.add(it.id) }
+
+                _uiState.value = current.copy(
+                    files = current.files + appended,
+                    totalFiles = listing.totalFiles,
+                    loadedPages = nextPage,
+                    isLoadingMore = false
+                )
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+            }
         }
     }
 
@@ -283,5 +375,14 @@ class CloudTabViewModel @Inject constructor(
         }
 
         return breadcrumbs
+    }
+
+    private companion object {
+        /**
+         * Files fetched per `/api/v1/files/browse` request. This is the server's
+         * hard maximum (`page_size` is validated with `le=200`); anything larger
+         * is rejected with HTTP 422.
+         */
+        const val FILE_PAGE_SIZE = 200
     }
 }

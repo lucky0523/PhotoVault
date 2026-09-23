@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,8 +80,37 @@ fun CloudTab(
     viewModel: CloudTabViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    var previewFile by remember { mutableStateOf<FileBrowseInfo?>(null) }
+    // Index into uiState.files of the item being previewed (null = no preview).
+    // An index rather than the file itself, so the pager can swipe across the
+    // whole folder — including pages fetched after the preview was opened.
+    var previewIndex by remember { mutableStateOf<Int?>(null) }
     val serverBaseUrl = viewModel.serverBaseUrl
+    val listState = rememberLazyListState()
+
+    // Reset the scroll position when we move to a different directory, otherwise
+    // the new (possibly shorter) listing opens scrolled part-way down. Seeded from
+    // the current path so simply returning to this tab keeps the restored
+    // position instead of jumping back to the top.
+    var lastPath by remember { mutableStateOf(uiState.currentPath) }
+    LaunchedEffect(uiState.currentPath) {
+        if (uiState.currentPath != lastPath) {
+            lastPath = uiState.currentPath
+            previewIndex = null
+            listState.scrollToItem(0)
+        }
+    }
+
+    // Infinite scroll: pull the next page as the tail of the list comes into view.
+    LaunchedEffect(listState, uiState.currentPath) {
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        }.collect { lastVisible ->
+            val totalRows = listState.layoutInfo.totalItemsCount
+            if (totalRows > 0 && lastVisible >= totalRows - LOAD_MORE_THRESHOLD) {
+                viewModel.loadMoreFiles()
+            }
+        }
+    }
 
     // In the recycle-bin view, the system back gesture returns to the browser
     // rather than leaving the Cloud Tab.
@@ -157,6 +187,7 @@ fun CloudTab(
                     else -> {
                         // Directory content list
                         LazyColumn(
+                            state = listState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
                                 top = 8.dp,
@@ -189,15 +220,32 @@ fun CloudTab(
                             }
 
                             // Files
-                            items(
+                            itemsIndexed(
                                 items = uiState.files,
-                                key = { "file_${it.id}" }
-                            ) { file ->
+                                key = { _, file -> "file_${file.id}" }
+                            ) { index, file ->
                                 FileItem(
                                     file = file,
                                     serverBaseUrl = serverBaseUrl,
-                                    onClick = { previewFile = file }
+                                    onClick = { previewIndex = index }
                                 )
+                            }
+
+                            // Footer spinner while the next page is on its way.
+                            if (uiState.isLoadingMore) {
+                                item(key = "files_loading_more") {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -206,16 +254,44 @@ fun CloudTab(
         }
     }
 
-    // Full-screen image preview dialog
-    previewFile?.let { file ->
-        val downloadUrl = "$serverBaseUrl/api/v1/files/download/${file.id}"
-        ImagePreviewDialog(
-            file = file,
-            downloadUrl = downloadUrl,
-            onDismiss = { previewFile = null }
-        )
+    // Full-screen, swipeable preview over the whole folder. The item list is
+    // derived from uiState.files, so pages appended by loadMoreFiles() extend the
+    // pager while it is open.
+    previewIndex?.let { index ->
+        val previewItems = remember(uiState.files, serverBaseUrl) {
+            uiState.files.map { file ->
+                PreviewMedia(
+                    fileName = file.fileName,
+                    model = "$serverBaseUrl/api/v1/files/download/${file.id}",
+                    isVideo = file.mimeType?.startsWith("video/") == true
+                )
+            }
+        }
+        if (index in previewItems.indices) {
+            MediaPagerPreviewDialog(
+                items = previewItems,
+                initialIndex = index,
+                onDismiss = { previewIndex = null },
+                onPageChanged = { page ->
+                    // Keep fetching ahead so swiping never dead-ends at a page
+                    // boundary in folders larger than one server page.
+                    if (page >= previewItems.lastIndex - LOAD_MORE_THRESHOLD) {
+                        viewModel.loadMoreFiles()
+                    }
+                }
+            )
+        } else {
+            // The list shrank out from under us (e.g. a refresh); close cleanly.
+            LaunchedEffect(Unit) { previewIndex = null }
+        }
     }
 }
+
+/**
+ * How close to the end of the loaded list (in rows / pages) the user has to get
+ * before the next page is requested.
+ */
+private const val LOAD_MORE_THRESHOLD = 5
 
 /**
  * Pinned "回收站" entry row, styled to match [CloudDirectoryRow] so it sits

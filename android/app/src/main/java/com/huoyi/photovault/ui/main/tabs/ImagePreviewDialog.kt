@@ -185,7 +185,8 @@ private fun android.content.Context.findActivityWindow(): android.view.Window? {
 fun MediaPagerPreviewDialog(
     items: List<PreviewMedia>,
     initialIndex: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onPageChanged: (Int) -> Unit = {}
 ) {
     if (items.isEmpty()) return
     Dialog(
@@ -201,7 +202,8 @@ fun MediaPagerPreviewDialog(
             items = items,
             initialIndex = initialIndex,
             onDismiss = onDismiss,
-            originBoundsFor = { null }
+            originBoundsFor = { null },
+            onPageChanged = onPageChanged
         )
     }
 }
@@ -216,7 +218,8 @@ private fun MediaPagerContent(
     items: List<PreviewMedia>,
     initialIndex: Int,
     onDismiss: () -> Unit,
-    originBoundsFor: (Int) -> androidx.compose.ui.geometry.Rect?
+    originBoundsFor: (Int) -> androidx.compose.ui.geometry.Rect?,
+    onPageChanged: (Int) -> Unit = {}
 ) {
     val pagerState = rememberPagerState(
         initialPage = initialIndex.coerceIn(0, items.lastIndex)
@@ -230,10 +233,13 @@ private fun MediaPagerContent(
     // dismiss. Fades the black backdrop (revealing the grid beneath) and the
     // chrome, iOS-Photos style.
     var dismissProgress by remember { mutableFloatStateOf(0f) }
-    // Settling on a new page always starts unzoomed and un-dragged.
+    // Settling on a new page always starts unzoomed and un-dragged. The callback
+    // lets the host extend [items] (e.g. fetch the next server page) as the user
+    // approaches the end — the pager's page count follows the list size.
     LaunchedEffect(pagerState.currentPage) {
         currentScale = 1f
         dismissProgress = 0f
+        onPageChanged(pagerState.currentPage)
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -254,7 +260,9 @@ private fun MediaPagerContent(
             modifier = Modifier.fillMaxSize(),
             userScrollEnabled = currentScale <= 1f
         ) { page ->
-            val item = items[page]
+            // [items] can grow while the pager is open (paged remote listings), so
+            // tolerate a page index that is momentarily out of range.
+            val item = items.getOrNull(page) ?: return@HorizontalPager
             val active = page == pagerState.currentPage
             if (item.isVideo) {
                 VideoPageContent(model = item.model, active = active)
