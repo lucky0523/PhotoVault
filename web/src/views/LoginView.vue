@@ -117,16 +117,10 @@ async function handleLogin() {
     errorMessage.value = ''
 
     try {
-      await authStore.login(form.username, form.password)
-
-      // If "remember login" is unchecked, tokens will only persist in memory
-      // (auth store already saves to localStorage by default)
-      // If unchecked, clear localStorage so session doesn't persist across browser restarts
-      if (!form.rememberLogin) {
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('user_info')
-      }
+      // 不勾"记住登录状态"时凭证只写进 sessionStorage：关掉浏览器就失效，但本次
+      // 会话里照样能用。原来的做法是登录成功后立刻把令牌从 localStorage 删掉，
+      // 等于刚登录就退出，随后每个请求都是 401。
+      await authStore.login(form.username, form.password, form.rememberLogin)
 
       const redirect = (route.query.redirect as string) || '/photos'
       router.push(redirect)

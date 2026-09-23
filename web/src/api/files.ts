@@ -1,4 +1,5 @@
 import http from './http'
+import { getAccessToken } from '@/utils/authTokens'
 
 export interface DirectoryInfo {
   name: string
@@ -179,7 +180,7 @@ export async function listAllFiles(
  * Get thumbnail URL for a file
  */
 export function getThumbnailUrl(fileId: number, size: 'small' | 'medium' = 'small'): string {
-  const token = localStorage.getItem('access_token')
+  const token = getAccessToken()
   return `/api/v1/files/thumbnail/${fileId}?size=${size}&token=${token}`
 }
 
@@ -187,7 +188,7 @@ export function getThumbnailUrl(fileId: number, size: 'small' | 'medium' = 'smal
  * Get download URL for a file
  */
 export function getDownloadUrl(fileId: number): string {
-  const token = localStorage.getItem('access_token')
+  const token = getAccessToken()
   return `/api/v1/files/download/${fileId}?token=${token}`
 }
 
@@ -195,7 +196,7 @@ export function getDownloadUrl(fileId: number): string {
  * Get the embedded motion-photo video URL (动态照片) for a file
  */
 export function getMotionVideoUrl(fileId: number): string {
-  const token = localStorage.getItem('access_token')
+  const token = getAccessToken()
   return `/api/v1/files/motion/${fileId}?token=${token}`
 }
 

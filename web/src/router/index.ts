@@ -197,9 +197,19 @@ router.beforeEach(async (to, _from, next) => {
 
   const authStore = useAuthStore()
 
-  if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
-    next({ name: 'Login', query: { redirect: to.fullPath } })
-    return
+  if (to.meta.requiresAuth !== false) {
+    // 进页面前先把会话确认一遍：访问令牌过期就当场用刷新令牌换新，两个都过期则
+    // 结束会话。只看"令牌是否存在"是不够的 —— 过期令牌会让这里放行，然后页面上
+    // 每个请求都 401。
+    const alive = await authStore.ensureValidSession()
+    if (!alive) {
+      next({ name: 'Login', query: { redirect: to.fullPath } })
+      return
+    }
+  } else {
+    // 免登录页面（登录、注册、向导、飞牛回调）不强制会话，但过期凭证要顺手清掉，
+    // 否则下面"已登录就跳回主页"那条规则会拿着废令牌把人弹出登录页。
+    authStore.checkSession()
   }
 
   if (to.meta.requiresAdmin && !authStore.isAdmin) {

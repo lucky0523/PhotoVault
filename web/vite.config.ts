@@ -3,12 +3,26 @@ import vue from '@vitejs/plugin-vue'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-// package.json is read at config time (instead of imported) so tsconfig.node
-// doesn't need resolveJsonModule. Exposed to the app as __APP_VERSION__ so the
-// 关于服务端 page can show the Web build version next to the server version.
-const pkg = JSON.parse(
-  readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
-) as { version: string }
+// 产品版本号：从 server/app/__init__.py 的 __version__ 读，那是全仓库唯一的修改
+// 入口（原因见该文件的说明）。以 __APP_VERSION__ 注入，「关于服务端」页面用它显示
+// 「Web 端版本」。
+//
+// 之前这里读的是 web/package.json，于是 Web 和服务端各有一份版本号，页面上并排显示
+// 两个不同的数字——但它们本就是同一次发布：server/app/main.py 会把 web/dist 挂到
+// 根路径上托管，Docker 镜像和 .fpk 也都是把两者打进同一个包。
+//
+// 读不到就直接失败，不做静默回落：一个假版本号比构建失败更难发现。
+function readProductVersion(): string {
+  const versionFile = resolve(__dirname, '../server/app/__init__.py')
+  const source = readFileSync(versionFile, 'utf-8')
+  const match = source.match(/^__version__\s*=\s*"([^"]+)"/m)
+  if (!match) {
+    throw new Error(`在 ${versionFile} 里找不到 __version__，无法确定产品版本号`)
+  }
+  return match[1]
+}
+
+const productVersion = readProductVersion()
 
 // 飞牛（fnOS）专属功能的编译期开关，由 scripts/build.sh 的 fpk 目标设置
 // PHOTOVAULT_FNOS_BUILD=1 打开。
@@ -24,7 +38,7 @@ const isFnosBuild = process.env.PHOTOVAULT_FNOS_BUILD === '1'
 export default defineConfig({
   plugins: [vue()],
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    __APP_VERSION__: JSON.stringify(productVersion),
     __FNOS_BUILD__: JSON.stringify(isFnosBuild),
   },
   resolve: {
