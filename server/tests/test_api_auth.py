@@ -12,6 +12,7 @@ import pytest
 import aiosqlite
 from httpx import AsyncClient, ASGITransport
 
+from app import __version__
 from app.core.config import reset_settings
 from app.core.database import init_db
 from app.services.auth_service import AuthService
@@ -85,7 +86,8 @@ class TestConnectionTest:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["version"] == "1.0"
+        # 比对唯一真源，而不是写死一个字面量：否则每次改版本号这条都会挂。
+        assert body["version"] == __version__
 
     @pytest.mark.asyncio
     async def test_connection_test_no_auth_required(self, seeded_db, async_client):

@@ -14,8 +14,7 @@
 #   ./scripts/build.sh verify [--arch ARCH]             对已组装的包目录重跑自检
 #   ./scripts/build.sh clean                            清理 build/fnos
 #
-# 通用选项:
-#   --version X.Y.Z    版本号（默认从 server/pyproject.toml 读取）
+# 通用选项（必须写在目标之后，例如 ./scripts/build.sh fpk --arch aarch64）:
 #   --port N           服务端口（默认 8000）
 #   --with-analysis    额外打入 onnxruntime（HEIC 解码属于核心依赖）
 #   --skip-web         复用已有的 web/dist，不重新构建前端
@@ -88,6 +87,8 @@ resolve_arch() {
 # 参数解析
 # ---------------------------------------------------------------------------
 
+# 版本号不是可配置项，只能从 server/app/__init__.py 读（见 detect_version）。
+# 这里先置空，detect_version 用它做一次性缓存。
 VERSION=""
 PORT="8000"
 WITH_ANALYSIS=0
@@ -102,17 +103,27 @@ usage() {
   awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
 }
 
+TARGETS="web docker fpk all verify clean"
+
 [ $# -gt 0 ] || { usage; exit 1; }
 
 case "$1" in
   -h|--help|help) usage; exit 0 ;;
+  # 第一个参数必须是构建目标。选项写在目标前面时，它会被当成目标吃掉，紧跟其后
+  # 的值又会掉进下面的选项循环里，报出「未知参数: 1.1」这种指向完全错误的提示。
+  # 所以在这里就拦住，并把正确的命令直接拼给用户。
+  -*)
+    echo "缺少构建目标：'$1' 是选项，不是目标。" >&2
+    echo "用法: $0 <${TARGETS// /|}> [选项]" >&2
+    echo "例如: $0 fpk $*" >&2
+    exit 1
+    ;;
 esac
 
 TARGET="$1"; shift
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version)       VERSION="${2:?--version 需要一个值}"; shift 2 ;;
     --port)          PORT="${2:?--port 需要一个值}"; shift 2 ;;
     --tag)           DOCKER_TAG="${2:?--tag 需要一个值}"; shift 2 ;;
     --arch)          ARCHES+=("${2:?--arch 需要一个值}"); shift 2 ;;
@@ -120,7 +131,16 @@ while [ $# -gt 0 ]; do
     --skip-web)      SKIP_WEB=1; shift ;;
     --fnos)          WEB_FNOS=1; shift ;;
     -h|--help)       usage; exit 0 ;;
-    *) echo "未知参数: $1" >&2; exit 1 ;;
+    *)
+      echo "未知参数: $1" >&2
+      case "$1" in
+        -*) echo "可用选项见 $0 --help" >&2 ;;
+        # 非选项的裸参数，几乎总是某个选项的值多写了或少写了名字
+        *)  echo "'$1' 看起来是某个选项的值；目标 '$TARGET' 只接受选项，不接受额外的位置参数。" >&2
+            echo "可用选项见 $0 --help" >&2 ;;
+      esac
+      exit 1
+      ;;
   esac
 done
 
@@ -137,10 +157,19 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1${2:+（$2）}"
 }
 
+# 产品版本号的唯一来源是 server/app/__init__.py 的 __version__，参见该文件的说明。
+# pyproject.toml 不再写死版本（改成了 hatch 的 dynamic），所以这里也不能再读它。
+#
+# 刻意不提供 --version 之类的覆盖选项：包里的服务端源码是原样复制进去的（见
+# stage_fpk 第 6 步），覆盖只会让 manifest／镜像 tag 与包内代码自报的版本对不上，
+# 而 verify 的断言比的是同一个被覆盖的值，发现不了。要改版本就改那一行。
+# 需要给镜像另起个名字用 --tag，那不涉及包内容。
+VERSION_FILE="server/app/__init__.py"
+
 detect_version() {
   [ -n "$VERSION" ] && return 0
-  VERSION="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$ROOT/server/pyproject.toml" | head -1)"
-  [ -n "$VERSION" ] || die "无法从 server/pyproject.toml 解析版本号，请用 --version 指定"
+  VERSION="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$ROOT/$VERSION_FILE" | head -1)"
+  [ -n "$VERSION" ] || die "无法从 $VERSION_FILE 解析 __version__（期望形如 __version__ = \"1.3\"）"
   return 0
 }
 
@@ -876,7 +905,9 @@ case "$TARGET" in
     ok "已清理"
     ;;
   *)
-    echo "未知目标: $TARGET" >&2
+    # ${TARGET} 必须带花括号：macOS 自带的 bash 3.2 会把紧跟其后的多字节字符
+    # 的首字节并进变量名，在 set -u 下变成 "TARGET?: unbound variable"。
+    echo "未知目标: ${TARGET}（可选 ${TARGETS// /、}）" >&2
     usage
     exit 1
     ;;

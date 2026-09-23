@@ -3,6 +3,7 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 
+from app import __version__
 from app.main import (
     app,
     PhotoVaultException,
@@ -176,4 +177,5 @@ async def test_unhandled_exception_handler(async_client):
 def test_app_metadata():
     """App is configured with correct title and version."""
     assert app.title == "PhotoVault"
-    assert app.version == "1.0"
+    # 比对唯一真源，而不是写死一个字面量：否则每次改版本号这条都会挂。
+    assert app.version == __version__

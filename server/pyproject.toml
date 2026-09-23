@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "photovault"
-version = "1.2"
+# 版本号来自 app/__init__.py 的 __version__（见 [tool.hatch.version]）。
+# 那里是唯一的修改入口：服务端运行时只能读到那个字面量，所以包元数据反过来派生。
+dynamic = ["version"]
 description = "Photo backup service for NAS - server component"
 requires-python = ">=3.11"
 dependencies = [
@@ -38,6 +40,9 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "performance: marks tests as performance tests",
 ]
+
+[tool.hatch.version]
+path = "app/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

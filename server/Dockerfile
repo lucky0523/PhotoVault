@@ -10,11 +10,16 @@
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS builder-web
 
-WORKDIR /build
+# 仓库布局在构建阶段里原样复刻（/build/web + /build/server），因为 vite.config.ts
+# 要从 ../server/app/__init__.py 读产品版本号——那是全仓库唯一的版本修改入口。
+WORKDIR /build/web
 
 # Install dependencies first (layer cache optimization)
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
+
+# 只带版本号那一个文件，不是整个 server/：服务端源码变动不该让前端依赖层失效。
+COPY server/app/__init__.py /build/server/app/__init__.py
 
 # Copy source and build
 COPY web/ ./
@@ -57,7 +62,7 @@ COPY server/ ./
 # Copy Vue.js build output from builder stage
 # main.py resolves web/dist relative to 3 levels up from app/main.py
 # With WORKDIR=/app and main.py at /app/app/main.py, it resolves to /web/dist
-COPY --from=builder-web /build/dist /web/dist
+COPY --from=builder-web /build/web/dist /web/dist
 
 # Create directories for runtime data
 RUN mkdir -p /data/photovault /app/config
