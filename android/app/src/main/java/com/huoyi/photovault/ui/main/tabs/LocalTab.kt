@@ -74,6 +74,9 @@ import com.huoyi.photovault.ui.main.components.StatusChip
 import com.huoyi.photovault.ui.main.components.StoragePolicySheet
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
 import com.huoyi.photovault.ui.theme.SurfaceLiquidButton
+import com.huoyi.photovault.ui.theme.appBackgroundBrush
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -165,6 +168,20 @@ fun LocalTab(
         }
     }
 
+    // Content backdrop (gradient + folder list), sampled by the FABs so they
+    // genuinely refract the rows beneath them — same setup as
+    // FolderDetailScreen. The shell's LocalGlassBackdrop is gradient-only, which
+    // made these buttons look like opaque tinted discs. Passed to the FABs
+    // explicitly (not via LocalGlassBackdrop) so glass elements inside the list
+    // keep sampling the gradient and never sample the layer they belong to.
+    val backgroundBrush = appBackgroundBrush()
+    val contentBackdrop = rememberLayerBackdrop(
+        onDraw = {
+            drawRect(backgroundBrush)
+            drawContent()
+        }
+    )
+
     Scaffold(
         containerColor = Color.Transparent,
         // The outer shell already handles the bottom (nav bar + floating tab bar)
@@ -172,10 +189,15 @@ fun LocalTab(
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
             // Lift the buttons above the floating tab bar so they don't overlap it.
-            Column(modifier = Modifier.padding(bottom = LocalBottomBarPadding.current)) {
+            Column(
+                modifier = Modifier.padding(bottom = LocalBottomBarPadding.current),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 // Backup button — reuses the pull-to-refresh indicator for feedback.
                 SurfaceLiquidButton(
                     onClick = onBackupClick,
+                    backdrop = contentBackdrop,
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
@@ -184,10 +206,10 @@ fun LocalTab(
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
-                Spacer(modifier = Modifier.height(16.dp))
                 // Add folder button.
                 SurfaceLiquidButton(
                     onClick = { folderPickerLauncher.launch(null) },
+                    backdrop = contentBackdrop,
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
@@ -205,7 +227,10 @@ fun LocalTab(
             state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
+                .padding(paddingValues)
+                // Record the list into contentBackdrop for the FABs (siblings in
+                // the Scaffold's FAB slot, so they never sample themselves).
+                .layerBackdrop(contentBackdrop),
             indicator = {
                 // Fully custom indicator (cloud glyph) driven by the pull
                 // distance fraction and the refreshing flag.
