@@ -240,7 +240,7 @@ class ChunkUploaderSnapshotValidationTest {
             return Response.success(
                 CompleteUploadResponse(
                     success = true,
-                    fileId = "file-1",
+                    fileId = 1,
                     storedPath = "/stored/photo.jpg"
                 )
             )

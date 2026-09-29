@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import List, Optional
+from urllib.parse import quote
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -483,13 +484,20 @@ async def download_file(
 
     chunk_size = 64 * 1024
 
-    # RFC 5987 encoding for filenames with non-ASCII characters
-    safe_filename = file_name.encode("ascii", errors="ignore").decode("ascii") or "download"
+    # RFC 5987 encoding for Unicode plus a quoted ASCII fallback. Strip line
+    # breaks from the fallback and escape quoted-string metacharacters so an
+    # untrusted filename cannot inject or truncate response headers.
+    ascii_filename = file_name.replace("\r", "").replace("\n", "")
+    ascii_filename = (
+        ascii_filename.encode("ascii", errors="ignore").decode("ascii") or "download"
+    )
+    ascii_filename = ascii_filename.replace("\\", "\\\\").replace('"', '\\"')
+    encoded_filename = quote(file_name, safe="")
     is_media = mime_type.startswith(("image/", "video/", "audio/"))
     disposition_type = "inline" if is_media else "attachment"
     content_disposition = (
-        f"{disposition_type}; filename=\"{safe_filename}\"; "
-        f"filename*=UTF-8''{file_name}"
+        f'{disposition_type}; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{encoded_filename}"
     )
 
     range_header = request.headers.get("range") or request.headers.get("Range")

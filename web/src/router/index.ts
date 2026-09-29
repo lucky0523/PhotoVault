@@ -155,21 +155,37 @@ const router = createRouter({
   routes,
 })
 
-// Cache setup status to avoid re-fetching on every navigation
+// Cache a confirmed setup state for the SPA lifetime. Request failures are
+// cached separately as "unknown" for a short interval: normal navigation may
+// fail open, while /setup itself must remain reachable during that interval.
 let setupStatusCache: boolean | null = null
+let setupStatusRequest: Promise<boolean | null> | null = null
+let setupFailureCacheUntil = 0
+const SETUP_FAILURE_CACHE_MS = 30_000
 
-async function checkSetupStatus(): Promise<boolean> {
-  if (setupStatusCache !== null) {
-    return setupStatusCache
+async function checkSetupStatus(forSetupRoute = false): Promise<boolean> {
+  if (setupStatusCache !== null) return setupStatusCache
+  if (Date.now() < setupFailureCacheUntil) return forSetupRoute ? false : true
+
+  if (!setupStatusRequest) {
+    setupStatusRequest = getSetupStatus()
+      .then((status) => {
+        setupStatusCache = status.initialized
+        setupFailureCacheUntil = 0
+        return status.initialized
+      })
+      .catch(() => {
+        setupFailureCacheUntil = Date.now() + SETUP_FAILURE_CACHE_MS
+        return null
+      })
+      .finally(() => {
+        setupStatusRequest = null
+      })
   }
-  try {
-    const status = await getSetupStatus()
-    setupStatusCache = status.initialized
-    return setupStatusCache
-  } catch {
-    // If the endpoint fails, assume initialized to avoid blocking navigation
-    return true
-  }
+
+  const result = await setupStatusRequest
+  // Unknown must not lock an uninitialized deployment out of its setup page.
+  return result ?? (forSetupRoute ? false : true)
 }
 
 /**
@@ -177,11 +193,12 @@ async function checkSetupStatus(): Promise<boolean> {
  */
 export function resetSetupStatusCache(): void {
   setupStatusCache = null
+  setupFailureCacheUntil = 0
 }
 
 // Navigation guard: check initialization and authentication
 router.beforeEach(async (to, _from, next) => {
-  const initialized = await checkSetupStatus()
+  const initialized = await checkSetupStatus(to.name === 'Setup')
 
   // If not initialized, redirect everything to /setup
   if (!initialized && to.name !== 'Setup') {

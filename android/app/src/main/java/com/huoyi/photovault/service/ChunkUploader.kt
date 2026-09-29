@@ -224,8 +224,10 @@ class ChunkUploader @Inject constructor(
         // Authoritative size = snapshot length, which matches the hashed bytes.
         val upload = fileInfo.copy(fileSize = actualSize)
 
-        // Step 3: Determine total chunks
-        val totalChunks = calculateTotalChunks(upload.fileSize)
+        // Use a local estimate only while init is in flight. The server response
+        // is authoritative for both chunk size and total chunk count.
+        val estimatedTotalChunks = calculateTotalChunks(upload.fileSize)
+        val fileModifiedTime = getFileModifiedTime(context, fileUri)
 
         // Step 4: Check for resume or initialize new session
         onProgress(
@@ -234,7 +236,7 @@ class ChunkUploader @Inject constructor(
                 totalBytes = upload.fileSize,
                 uploadedBytes = 0,
                 currentChunk = 0,
-                totalChunks = totalChunks,
+                totalChunks = estimatedTotalChunks,
                 state = UploadState.INITIALIZING
             )
         )
@@ -242,14 +244,28 @@ class ChunkUploader @Inject constructor(
         val sessionInfo = when (
             val resolution = resolveSession(
                 context,
-                fileUri,
                 upload,
                 fileHash,
-                totalChunks,
+                fileModifiedTime,
                 storagePolicy
             )
         ) {
             is SessionResolution.Success -> resolution.sessionInfo
+            is SessionResolution.Duplicate -> {
+                uploadRecordDao.deleteByFileUri(upload.uri)
+                statusSyncManager.markActive(upload.uri, fileHash)
+                onProgress(
+                    UploadProgress(
+                        fileName = upload.fileName,
+                        totalBytes = upload.fileSize,
+                        uploadedBytes = upload.fileSize,
+                        currentChunk = 0,
+                        totalChunks = 0,
+                        state = UploadState.SKIPPED_DUPLICATE
+                    )
+                )
+                return UploadResult.Duplicate(resolution.fileId)
+            }
             is SessionResolution.Failure -> return UploadResult.Failed(
                 error = resolution.error,
                 shouldRetry = resolution.shouldRetry
@@ -258,11 +274,12 @@ class ChunkUploader @Inject constructor(
 
         val sessionId = sessionInfo.sessionId
         val startChunkIndex = sessionInfo.startChunkIndex
+        val chunkSize = sessionInfo.chunkSize
+        val totalChunks = sessionInfo.totalChunks
 
         // Step 5: Upload chunks sequentially
-        var lastUploadedChunk = startChunkIndex - 1
         for (chunkIndex in startChunkIndex until totalChunks) {
-            val uploadedBytes = chunkIndex.toLong() * CHUNK_SIZE
+            val uploadedBytes = minOf(upload.fileSize, chunkIndex.toLong() * chunkSize)
             onProgress(
                 UploadProgress(
                     fileName = upload.fileName,
@@ -274,27 +291,35 @@ class ChunkUploader @Inject constructor(
                 )
             )
 
-            val chunkData = readChunkFromFile(snapshot, chunkIndex, upload.fileSize)
+            val chunkData = readChunkFromFile(
+                file = snapshot,
+                chunkIndex = chunkIndex,
+                fileSize = upload.fileSize,
+                chunkSize = chunkSize
+            )
                 ?: return UploadResult.Failed(
                     context.getString(R.string.backup_error_read_chunk, chunkIndex),
                     shouldRetry = true
                 )
 
             val chunkResult = uploadChunkWithRetry(sessionId, chunkIndex, chunkData)
-            if (!chunkResult) {
-                // All retries exhausted — mark as failed for later retry
-                return UploadResult.Failed(
+            if (chunkResult != ChunkUploadOutcome.SUCCESS) {
+                val error = if (chunkResult == ChunkUploadOutcome.RETRYABLE_FAILURE) {
                     context.getString(
                         R.string.backup_error_upload_chunk_retries,
                         chunkIndex,
                         MAX_RETRIES
-                    ),
-                    shouldRetry = true
+                    )
+                } else {
+                    context.getString(R.string.backup_error_upload_chunk_rejected, chunkIndex)
+                }
+                return UploadResult.Failed(
+                    error = error,
+                    shouldRetry = chunkResult == ChunkUploadOutcome.RETRYABLE_FAILURE
                 )
             }
 
             // Update local progress record
-            lastUploadedChunk = chunkIndex
             uploadRecordDao.updateProgress(upload.uri, chunkIndex)
         }
 
@@ -310,7 +335,7 @@ class ChunkUploader @Inject constructor(
             )
         )
 
-        val completeResult = completeUpload(context, sessionId, fileHash)
+        val completeResult = completeUpload(sessionId, fileHash)
         if (completeResult != null) {
             // Clean up local record on success
             uploadRecordDao.deleteByFileUri(upload.uri)
@@ -432,10 +457,9 @@ class ChunkUploader @Inject constructor(
      */
     private suspend fun resolveSession(
         context: Context,
-        fileUri: Uri,
         fileInfo: FileInfo,
         fileHash: String,
-        totalChunks: Int,
+        fileModifiedTime: Long,
         storagePolicy: StoragePolicyConfig
     ): SessionResolution {
         val existingRecord = try {
@@ -456,16 +480,20 @@ class ChunkUploader @Inject constructor(
             val elapsed = System.currentTimeMillis() - existingRecord.createdAt
             if (elapsed > SESSION_EXPIRE_MS) {
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+                return initNewSession(context, fileInfo, fileHash, fileModifiedTime, storagePolicy)
             }
 
-            // Verify source file not modified (size and modification time)
-            val currentModifiedTime = getFileModifiedTime(context, fileUri)
-            if (existingRecord.fileSize != fileInfo.fileSize ||
-                existingRecord.fileModifiedTime != currentModifiedTime
+            // Records from before schema v10 have chunkSize=0. Records whose
+            // historical file_modified_time was polluted with createdTime also
+            // differ here; both cases are discarded and initialized once using
+            // the real MediaStore DATE_MODIFIED value.
+            if (existingRecord.chunkSize <= 0 ||
+                existingRecord.totalChunks <= 0 ||
+                existingRecord.fileSize != fileInfo.fileSize ||
+                existingRecord.fileModifiedTime != fileModifiedTime
             ) {
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+                return initNewSession(context, fileInfo, fileHash, fileModifiedTime, storagePolicy)
             }
 
             // A stale or unreachable resume session falls back to a fresh session.
@@ -473,15 +501,19 @@ class ChunkUploader @Inject constructor(
             return try {
                 val response = backupApi.getResumeInfo(existingRecord.sessionId)
                 val resumeInfo = response.body()
-                if (response.isSuccessful && resumeInfo != null) {
+                if (response.isSuccessful && resumeInfo != null &&
+                    resumeInfo.totalChunks == existingRecord.totalChunks
+                ) {
                     val receivedChunks = resumeInfo.receivedChunks
                     val startChunk = if (receivedChunks.isEmpty()) 0
-                    else receivedChunks.max() + 1
+                    else (receivedChunks.max() + 1).coerceAtMost(existingRecord.totalChunks)
 
                     SessionResolution.Success(
                         SessionInfo(
                             sessionId = existingRecord.sessionId,
-                            startChunkIndex = startChunk
+                            startChunkIndex = startChunk,
+                            chunkSize = existingRecord.chunkSize,
+                            totalChunks = existingRecord.totalChunks
                         )
                     )
                 } else {
@@ -490,7 +522,7 @@ class ChunkUploader @Inject constructor(
                         "Resume session rejected: HTTP ${response.code()}, starting fresh"
                     )
                     uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                    initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+                    initNewSession(context, fileInfo, fileHash, fileModifiedTime, storagePolicy)
                 }
             } catch (e: Exception) {
                 android.util.Log.w(
@@ -499,11 +531,11 @@ class ChunkUploader @Inject constructor(
                     e
                 )
                 uploadRecordDao.deleteByFileUri(fileInfo.uri)
-                initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+                initNewSession(context, fileInfo, fileHash, fileModifiedTime, storagePolicy)
             }
         }
 
-        return initNewSession(context, fileInfo, fileHash, totalChunks, storagePolicy)
+        return initNewSession(context, fileInfo, fileHash, fileModifiedTime, storagePolicy)
     }
 
     /**
@@ -587,7 +619,7 @@ class ChunkUploader @Inject constructor(
         context: Context,
         fileInfo: FileInfo,
         fileHash: String,
-        totalChunks: Int,
+        fileModifiedTime: Long,
         storagePolicy: StoragePolicyConfig
     ): SessionResolution {
         val request = InitUploadRequest(
@@ -601,7 +633,7 @@ class ChunkUploader @Inject constructor(
             sourceFolder = treeUriToRelativePath(fileInfo.folderUri),
             storagePolicy = storagePolicy,
             exifTime = extractCaptureTime(context, Uri.parse(fileInfo.uri)),
-            fileModifiedTime = fileInfo.createdTime.toString(),
+            fileModifiedTime = fileModifiedTime.toString(),
             mimeType = fileInfo.mimeType
         )
 
@@ -641,18 +673,42 @@ class ChunkUploader @Inject constructor(
                 shouldRetry = false
             )
 
+        // /backup/init may deduplicate atomically even when the earlier check
+        // missed a concurrent upload. A duplicate has no session and must never
+        // create a local resume row or send chunks.
+        if (initResponse.isDuplicate) {
+            return SessionResolution.Duplicate(initResponse.fileId)
+        }
+
+        val sessionId = initResponse.sessionId?.takeIf { it.isNotBlank() }
+            ?: return SessionResolution.Failure(
+                context.getString(R.string.backup_error_init_empty_response),
+                shouldRetry = false
+            )
+        if (initResponse.chunkSize <= 0 || initResponse.totalChunks <= 0) {
+            return SessionResolution.Failure(
+                context.getString(
+                    R.string.backup_error_init_invalid_chunks,
+                    initResponse.chunkSize,
+                    initResponse.totalChunks
+                ),
+                shouldRetry = false
+            )
+        }
+
         val record = UploadRecord(
             fileUri = fileInfo.uri,
-            sessionId = initResponse.sessionId,
+            sessionId = sessionId,
             fileHash = fileHash,
             fileName = fileInfo.fileName,
             fileSize = fileInfo.fileSize,
-            fileModifiedTime = fileInfo.createdTime,
+            fileModifiedTime = fileModifiedTime,
             // Persist folder + MIME so the upload can be rebuilt and
             // resumed after a process kill (see UploadRecord docs).
             folderUri = fileInfo.folderUri,
             mimeType = fileInfo.mimeType,
             totalChunks = initResponse.totalChunks,
+            chunkSize = initResponse.chunkSize,
             uploadedChunkIndex = -1,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
@@ -673,8 +729,10 @@ class ChunkUploader @Inject constructor(
 
         return SessionResolution.Success(
             SessionInfo(
-                sessionId = initResponse.sessionId,
-                startChunkIndex = 0
+                sessionId = sessionId,
+                startChunkIndex = 0,
+                chunkSize = initResponse.chunkSize,
+                totalChunks = initResponse.totalChunks
             )
         )
     }
@@ -687,13 +745,13 @@ class ChunkUploader @Inject constructor(
      * Uploads a single chunk with retry logic.
      * Retries up to MAX_RETRIES times with RETRY_DELAY_MS between attempts.
      *
-     * @return true if chunk was successfully uploaded, false if all retries exhausted
+     * @return classified success, retryable failure, or terminal failure
      */
     private suspend fun uploadChunkWithRetry(
         sessionId: String,
         chunkIndex: Int,
         chunkData: ByteArray
-    ): Boolean {
+    ): ChunkUploadOutcome {
         val md5Checksum = fileHasher.computeMd5(chunkData)
 
         for (attempt in 1..MAX_RETRIES) {
@@ -718,16 +776,23 @@ class ChunkUploader @Inject constructor(
                     val body = response.body()
                     if (body != null && body.received && body.checksumValid) {
                         android.util.Log.d("PhotoVaultBackup", "  chunk $chunkIndex upload success")
-                        return true
+                        return ChunkUploadOutcome.SUCCESS
                     } else {
                         android.util.Log.w("PhotoVaultBackup", "  chunk $chunkIndex upload failed: received=${body?.received}, checksumValid=${body?.checksumValid}")
                     }
                 } else {
                     val errBody = try { response.errorBody()?.string() } catch (e: Exception) { null }
                     android.util.Log.w("PhotoVaultBackup", "  chunk $chunkIndex HTTP ${response.code()}: $errBody")
+                    if (!isRetryableChunkHttpCode(response.code())) {
+                        return ChunkUploadOutcome.NON_RETRYABLE_FAILURE
+                    }
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 android.util.Log.w("PhotoVaultBackup", "  chunk $chunkIndex attempt $attempt failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                if (rootCause(e) !is IOException) {
+                    return ChunkUploadOutcome.NON_RETRYABLE_FAILURE
+                }
             }
 
             // Wait before retrying (unless this was the last attempt)
@@ -736,17 +801,22 @@ class ChunkUploader @Inject constructor(
             }
         }
 
-        return false
+        return ChunkUploadOutcome.RETRYABLE_FAILURE
+    }
+
+    private enum class ChunkUploadOutcome {
+        SUCCESS,
+        RETRYABLE_FAILURE,
+        NON_RETRYABLE_FAILURE
     }
 
     /**
      * Calls the complete upload endpoint after all chunks are uploaded.
      */
     private suspend fun completeUpload(
-        context: Context,
         sessionId: String,
         fileHash: String
-    ): UploadResult? {
+    ): UploadResult.Success? {
         return try {
             val response = backupApi.completeUpload(
                 CompleteUploadRequest(
@@ -756,21 +826,16 @@ class ChunkUploader @Inject constructor(
             )
 
             if (response.isSuccessful) {
-                val body = response.body()!!
-                // The server only returns a 2xx with success=true AFTER it has
-                // verified the merged file's SHA-256 against the expected hash.
-                // On integrity failure it responds with HTTP 422 (handled by the
-                // !isSuccessful branch below), so a successful body is authoritative.
-                if (body.success) {
+                val body = response.body() ?: return null
+                // A 2xx with success=true is authoritative only when the response
+                // also contains the stored path needed by the success result.
+                if (body.success && body.storedPath != null) {
                     UploadResult.Success(
                         fileId = body.fileId,
                         storedPath = body.storedPath
                     )
                 } else {
-                    UploadResult.Failed(
-                        context.getString(R.string.backup_error_complete),
-                        shouldRetry = true
-                    )
+                    null
                 }
             } else {
                 // Non-2xx (e.g. HTTP 422 integrity verification failed) — retryable
@@ -806,12 +871,18 @@ class ChunkUploader @Inject constructor(
      *
      * @return the chunk bytes, or null on failure.
      */
-    private fun readChunkFromFile(file: java.io.File, chunkIndex: Int, fileSize: Long): ByteArray? {
+    private fun readChunkFromFile(
+        file: java.io.File,
+        chunkIndex: Int,
+        fileSize: Long,
+        chunkSize: Int
+    ): ByteArray? {
+        if (chunkSize <= 0) return null
         return try {
-            val offset = chunkIndex.toLong() * CHUNK_SIZE
+            val offset = chunkIndex.toLong() * chunkSize
             val remaining = fileSize - offset
             if (remaining <= 0) return null
-            val chunkLength = minOf(remaining, CHUNK_SIZE.toLong()).toInt()
+            val chunkLength = minOf(remaining, chunkSize.toLong()).toInt()
             val buffer = ByteArray(chunkLength)
             java.io.RandomAccessFile(file, "r").use { raf ->
                 raf.seek(offset)
@@ -837,12 +908,14 @@ class ChunkUploader @Inject constructor(
         context: Context,
         fileUri: Uri,
         chunkIndex: Int,
-        fileSize: Long
+        fileSize: Long,
+        chunkSize: Int
     ): ByteArray? {
+        if (chunkSize <= 0) return null
         return try {
-            val offset = chunkIndex.toLong() * CHUNK_SIZE
+            val offset = chunkIndex.toLong() * chunkSize
             val remaining = fileSize - offset
-            val chunkLength = minOf(remaining, CHUNK_SIZE.toLong()).toInt()
+            val chunkLength = minOf(remaining, chunkSize.toLong()).toInt()
 
             context.contentResolver.openInputStream(fileUri)?.use { inputStream ->
                 // Skip to the chunk offset
@@ -949,6 +1022,9 @@ class ChunkUploader @Inject constructor(
         }
     }
 
+    private fun isRetryableChunkHttpCode(code: Int): Boolean =
+        code == 408 || code == 429 || code in 500..599
+
     private fun isRetryableInitHttpCode(code: Int): Boolean =
         code == 408 || code == 425 || code == 429 || code in 500..599
 
@@ -1014,6 +1090,7 @@ class ChunkUploader @Inject constructor(
 
     private sealed class SessionResolution {
         data class Success(val sessionInfo: SessionInfo) : SessionResolution()
+        data class Duplicate(val fileId: Int?) : SessionResolution()
         data class Failure(
             val error: String,
             val shouldRetry: Boolean
@@ -1025,7 +1102,9 @@ class ChunkUploader @Inject constructor(
      */
     private data class SessionInfo(
         val sessionId: String,
-        val startChunkIndex: Int
+        val startChunkIndex: Int,
+        val chunkSize: Int,
+        val totalChunks: Int
     )
 }
 

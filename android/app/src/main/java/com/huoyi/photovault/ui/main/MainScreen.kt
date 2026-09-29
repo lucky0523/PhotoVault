@@ -143,16 +143,36 @@ fun MainScreen(
         }
     }
 
-    // Request media-read runtime permission (required for MediaStore image/video scanning).
+    // Request media-read and Android 13+ notification runtime permissions in
+    // one launcher, avoiding overlapping system dialogs. Notification denial is
+    // non-blocking and only degrades out-of-app progress visibility.
+    val notificationDeniedMessage = stringResource(R.string.notification_permission_denied)
     val mediaPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* result handled implicitly; scanning checks at runtime */ }
+    ) { grants ->
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            grants[android.Manifest.permission.POST_NOTIFICATIONS] == false
+        ) {
+            android.widget.Toast.makeText(
+                promptContext,
+                notificationDeniedMessage,
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    LaunchedEffect(Unit) {
         val permissions = buildList {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 add(android.Manifest.permission.READ_MEDIA_IMAGES)
                 add(android.Manifest.permission.READ_MEDIA_VIDEO)
+                if (androidx.core.content.ContextCompat.checkSelfPermission(
+                        promptContext,
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    add(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
             } else {
                 add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
             }

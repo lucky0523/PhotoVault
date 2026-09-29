@@ -149,7 +149,7 @@
 
         <div class="pv-page-body">
           <!-- Loading state -->
-          <div v-if="loading" class="pv-loading">
+          <div v-if="loading && allFiles.length === 0" class="pv-loading">
             <el-icon class="is-loading" :size="32"><Loading /></el-icon>
             <span>加载中...</span>
           </div>
@@ -238,10 +238,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { Timer, ArrowRight, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listAllFiles, getThumbnailUrl, downloadFile, deleteFile } from '@/api/files'
+import {
+  listAllFiles,
+  getThumbnailUrl,
+  downloadFile,
+  deleteFile,
+  normalizeTimestamp,
+} from '@/api/files'
 import type { FileInfo } from '@/api/files'
 import ImagePreview from '@/components/ImagePreview.vue'
 import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
@@ -351,18 +357,26 @@ const focalOptions = computed(() => {
   return FOCAL_BUCKETS.filter((b) => present.has(b.key))
 })
 
+function parseFileDate(file: FileInfo): Date | null {
+  const dateStr = file.exif_time || file.created_at
+  if (!dateStr) return null
+  const date = new Date(normalizeTimestamp(dateStr))
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
 const filteredFiles = computed(() => {
   let result = allFiles.value
 
-  // Date range
+  // Date range. Compare local calendar keys directly: Date parses a bare
+  // YYYY-MM-DD as UTC, which otherwise selects the previous day in negative
+  // timezones.
   if (dateRange.value && dateRange.value[0] && dateRange.value[1]) {
-    const startDate = new Date(dateRange.value[0])
-    startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(dateRange.value[1])
-    endDate.setHours(23, 59, 59, 999)
+    const [startYmd, endYmd] = dateRange.value
     result = result.filter((file) => {
-      const fileDate = new Date(file.exif_time || file.created_at)
-      return fileDate >= startDate && fileDate <= endDate
+      const fileDate = parseFileDate(file)
+      if (!fileDate) return false
+      const fileYmd = toLocalYmd(fileDate)
+      return fileYmd >= startYmd && fileYmd <= endYmd
     })
   }
 
@@ -390,9 +404,8 @@ const groupedPhotos = computed<MonthGroup[]>(() => {
   const groups = new Map<string, MonthGroup>()
 
   for (const file of filteredFiles.value) {
-    const dateStr = file.exif_time || file.created_at
-    if (!dateStr) continue
-    const date = new Date(dateStr)
+    const date = parseFileDate(file)
+    if (!date) continue
     const year = date.getFullYear()
     const month = date.getMonth() + 1
     const key = `${year}-${month}`
@@ -440,8 +453,8 @@ const totalPhotos = computed(() => filteredFiles.value.length)
 const photoDates = computed<Set<string>>(() => {
   const set = new Set<string>()
   for (const f of allFiles.value) {
-    const d = new Date(f.exif_time || f.created_at)
-    if (!isNaN(d.getTime())) set.add(toLocalYmd(d))
+    const d = parseFileDate(f)
+    if (d) set.add(toLocalYmd(d))
   }
   return set
 })
@@ -548,7 +561,8 @@ function openPreview(group: MonthGroup, fileIndex: number) {
 
 function formatShortDate(dateStr: string | undefined | null): string {
   if (!dateStr) return '-'
-  const date = new Date(dateStr)
+  const date = new Date(normalizeTimestamp(dateStr))
+  if (Number.isNaN(date.getTime())) return '-'
   return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
@@ -601,18 +615,24 @@ async function handleContextDelete() {
   }
 }
 
+let loadGeneration = 0
+
 async function loadAllFiles() {
+  const generation = ++loadGeneration
   loading.value = true
+  allFiles.value = []
   try {
-    // Load all files sorted by time, paginating through all pages
+    // Load all files sorted by time and publish each page immediately.
     const allLoaded: FileInfo[] = []
     let page = 1
     const pageSize = 200
     let hasMore = true
 
-    while (hasMore) {
+    while (hasMore && generation === loadGeneration) {
       const response = await listAllFiles(page, pageSize, 'time')
+      if (generation !== loadGeneration) return
       allLoaded.push(...response.files)
+      allFiles.value = [...allLoaded]
       if (allLoaded.length >= response.total_files || response.files.length < pageSize) {
         hasMore = false
       } else {
@@ -620,24 +640,27 @@ async function loadAllFiles() {
       }
     }
 
-    allFiles.value = allLoaded
-
-    // Auto-expand the first year
+    if (generation !== loadGeneration) return
+    // Auto-expand the first year as soon as the complete navigation is ready.
     if (timeNavData.value.length > 0) {
       expandedYears.value = new Set([timeNavData.value[0].year])
     }
   } catch (error) {
+    if (generation !== loadGeneration) return
     console.error('Failed to load timeline files:', error)
-    allFiles.value = []
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
 // --- Lifecycle ---
 onMounted(() => {
   configStore.ensureLoaded()
-  loadAllFiles()
+  void loadAllFiles()
+})
+
+onBeforeUnmount(() => {
+  loadGeneration++
 })
 </script>
 

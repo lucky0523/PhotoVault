@@ -101,12 +101,17 @@ fun CloudTab(
     }
 
     // Infinite scroll: pull the next page as the tail of the list comes into view.
-    LaunchedEffect(listState, uiState.currentPath) {
+    LaunchedEffect(listState, uiState.currentPath, uiState.loadMoreError) {
         snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        }.collect { lastVisible ->
-            val totalRows = listState.layoutInfo.totalItemsCount
-            if (totalRows > 0 && lastVisible >= totalRows - LOAD_MORE_THRESHOLD) {
+            val layoutInfo = listState.layoutInfo
+            Pair(
+                layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0,
+                layoutInfo.totalItemsCount
+            )
+        }.collect { (lastVisible, totalRows) ->
+            if (uiState.loadMoreError == null && totalRows > 0 &&
+                lastVisible >= totalRows - LOAD_MORE_THRESHOLD
+            ) {
                 viewModel.loadMoreFiles()
             }
         }
@@ -231,7 +236,7 @@ fun CloudTab(
                                 )
                             }
 
-                            // Footer spinner while the next page is on its way.
+                            // Footer spinner/error for loading the next page.
                             if (uiState.isLoadingMore) {
                                 item(key = "files_loading_more") {
                                     Box(
@@ -244,6 +249,25 @@ fun CloudTab(
                                             modifier = Modifier.size(24.dp),
                                             strokeWidth = 2.dp
                                         )
+                                    }
+                                }
+                            } else if (uiState.loadMoreError != null) {
+                                item(key = "files_load_more_error") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = uiState.loadMoreError!!,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                        TextButton(onClick = viewModel::loadMoreFiles) {
+                                            Text("重试")
+                                        }
                                     }
                                 }
                             }
@@ -263,7 +287,8 @@ fun CloudTab(
                 PreviewMedia(
                     fileName = file.fileName,
                     model = "$serverBaseUrl/api/v1/files/download/${file.id}",
-                    isVideo = file.mimeType?.startsWith("video/") == true
+                    isVideo = file.mediaType == "video" ||
+                        file.mimeType?.startsWith("video/") == true
                 )
             }
         }
@@ -687,7 +712,8 @@ private fun formatFileSize(bytes: Long): String {
  * Format a timestamp string to a shorter display format.
  * Input may be ISO 8601 or similar; we extract the date part.
  */
-private fun formatTime(timeStr: String): String {
+private fun formatTime(timeStr: String?): String {
+    if (timeStr.isNullOrBlank()) return "未知时间"
     // Try to extract date portion (YYYY-MM-DD) from various formats
     return if (timeStr.length >= 10) {
         timeStr.substring(0, 10)

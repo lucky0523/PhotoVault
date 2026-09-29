@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
 import http, { refreshSession } from '@/api/http'
 import { register as apiRegister } from '@/api/auth'
 import {
@@ -60,7 +60,7 @@ export const useAuthStore = defineStore('auth', () => {
     userInfo.value = readUserInfo()
   }
 
-  subscribeCredentials(syncFromStorage)
+  const unsubscribeCredentials = subscribeCredentials(syncFromStorage)
 
   // Getters
   //
@@ -181,14 +181,24 @@ export const useAuthStore = defineStore('auth', () => {
 
   // 定时巡检 + 回到前台时补一次。
   //
-  // 只靠定时器不够：浏览器会给后台标签页的 timer 降频，设备休眠期间更是完全不
-  // 走，醒来后可能已经过期很久。visibilitychange 负责补上这一刀。
-  if (typeof window !== 'undefined') {
-    window.setInterval(enforceSession, SESSION_CHECK_INTERVAL_MS)
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') enforceSession()
-    })
+  // Store 的 effect scope 销毁时同步清理，避免 HMR / Pinia 重建累积全局副作用。
+  let sessionCheckTimer: number | undefined
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') enforceSession()
   }
+
+  if (typeof window !== 'undefined') {
+    sessionCheckTimer = window.setInterval(enforceSession, SESSION_CHECK_INTERVAL_MS)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
+
+  onScopeDispose(() => {
+    unsubscribeCredentials()
+    if (sessionCheckTimer !== undefined) window.clearInterval(sessionCheckTimer)
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  })
 
   return {
     accessToken,

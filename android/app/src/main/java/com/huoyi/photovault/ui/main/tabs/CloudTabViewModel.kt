@@ -11,6 +11,7 @@ import com.huoyi.photovault.data.api.model.TrashItemInfo
 import com.huoyi.photovault.data.local.CredentialManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,6 +43,7 @@ data class CloudTabUiState(
     val totalFiles: Int = 0,
     val loadedPages: Int = 0,
     val isLoadingMore: Boolean = false,
+    val loadMoreError: String? = null,
     // Recycle bin
     val viewMode: CloudViewMode = CloudViewMode.Browse,
     val trashTotal: Int = 0,
@@ -83,6 +85,9 @@ class CloudTabViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(CloudTabUiState())
     val uiState: StateFlow<CloudTabUiState> = _uiState.asStateFlow()
 
+    private var directoryLoadJob: Job? = null
+    private var browseGeneration = 0L
+
     /**
      * Returns the base URL for constructing thumbnail and download URLs.
      */
@@ -106,24 +111,30 @@ class CloudTabViewModel @Inject constructor(
      * [loadMoreFiles] as the user scrolls or swipes through the preview.
      */
     fun loadDirectory(path: String) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoading = true,
-                isLoadingMore = false,
-                error = null
-            )
+        val generation = ++browseGeneration
+        directoryLoadJob?.cancel()
+        _uiState.value = _uiState.value.copy(
+            currentPath = path,
+            breadcrumbs = buildBreadcrumbs(path),
+            isLoading = true,
+            isLoadingMore = false,
+            loadMoreError = null,
+            error = null
+        )
 
+        directoryLoadJob = viewModelScope.launch {
             try {
                 val response = fileApi.browseDirectory(
                     path = path,
                     page = 1,
                     pageSize = FILE_PAGE_SIZE
                 )
+                if (generation != browseGeneration) return@launch
+
                 if (response.isSuccessful) {
                     val listing = response.body()
                     if (listing != null) {
                         val breadcrumbs = buildBreadcrumbs(listing.currentPath)
-                        // Hide the .trash folder from the cloud browser.
                         val visibleDirectories = listing.directories.filterNot { it.name == ".trash" }
                         _uiState.value = _uiState.value.copy(
                             currentPath = listing.currentPath,
@@ -132,36 +143,38 @@ class CloudTabViewModel @Inject constructor(
                             files = listing.files,
                             totalFiles = listing.totalFiles,
                             loadedPages = 1,
-                            isLoading = false,
-                            isRefreshing = false,
-                            isLoadingMore = false,
                             isEmpty = visibleDirectories.isEmpty() && listing.files.isEmpty()
                         )
-                        // Keep the pinned trash-entry badge count fresh while at root
-                        // (server normalizes root to "").
                         if (listing.currentPath.isBlank() || listing.currentPath == "/") {
                             refreshTrashCount()
                         }
                     } else {
                         _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            isRefreshing = false,
                             error = context.getString(R.string.error_empty_server_response)
                         )
                     }
                 } else {
                     _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        isRefreshing = false,
                         error = context.getString(R.string.error_load_http, response.code())
                     )
                 }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    isRefreshing = false,
-                    error = context.getString(R.string.error_network)
-                )
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (generation == browseGeneration) {
+                    _uiState.value = _uiState.value.copy(
+                        error = context.getString(R.string.error_network)
+                    )
+                }
+            } finally {
+                // A cancelled older request must not hide the spinner belonging
+                // to the newer directory request.
+                if (generation == browseGeneration) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isRefreshing = false
+                    )
+                    directoryLoadJob = null
+                }
             }
         }
     }
@@ -184,10 +197,8 @@ class CloudTabViewModel @Inject constructor(
      * Pull-to-refresh: reload the current directory.
      */
     fun refresh() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isRefreshing = true)
-            loadDirectory(_uiState.value.currentPath)
-        }
+        _uiState.value = _uiState.value.copy(isRefreshing = true)
+        loadDirectory(_uiState.value.currentPath)
     }
 
     /**
@@ -207,11 +218,12 @@ class CloudTabViewModel @Inject constructor(
 
         val path = state.currentPath
         val nextPage = state.loadedPages + 1
+        val generation = browseGeneration
 
         // Flip the in-flight flag synchronously (this is always called from the
         // main thread) so back-to-back triggers from the scroll listener and the
         // preview pager can't both start the same request.
-        _uiState.value = state.copy(isLoadingMore = true)
+        _uiState.value = state.copy(isLoadingMore = true, loadMoreError = null)
 
         viewModelScope.launch {
             try {
@@ -225,14 +237,21 @@ class CloudTabViewModel @Inject constructor(
 
                 // The user may have navigated away or refreshed while the request
                 // was in flight — in that case the payload no longer applies.
-                if (current.currentPath != path || current.loadedPages != nextPage - 1) {
-                    _uiState.value = current.copy(isLoadingMore = false)
+                if (generation != browseGeneration ||
+                    current.currentPath != path || current.loadedPages != nextPage - 1
+                ) {
                     return@launch
                 }
 
                 if (!response.isSuccessful || listing == null) {
-                    // Leave the list as-is; the scroll/swipe trigger will retry.
-                    _uiState.value = current.copy(isLoadingMore = false)
+                    _uiState.value = current.copy(
+                        isLoadingMore = false,
+                        loadMoreError = if (!response.isSuccessful) {
+                            context.getString(R.string.error_load_http, response.code())
+                        } else {
+                            context.getString(R.string.error_empty_server_response)
+                        }
+                    )
                     return@launch
                 }
 
@@ -255,10 +274,17 @@ class CloudTabViewModel @Inject constructor(
                     files = current.files + appended,
                     totalFiles = listing.totalFiles,
                     loadedPages = nextPage,
-                    isLoadingMore = false
+                    isLoadingMore = false,
+                    loadMoreError = null
                 )
-            } catch (_: Exception) {
-                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (generation == browseGeneration && _uiState.value.currentPath == path) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingMore = false,
+                        loadMoreError = context.getString(R.string.error_network)
+                    )
+                }
             }
         }
     }
@@ -276,6 +302,7 @@ class CloudTabViewModel @Inject constructor(
     /** Return from the recycle-bin view to the directory browser. */
     fun exitTrash() {
         _uiState.value = _uiState.value.copy(viewMode = CloudViewMode.Browse)
+        loadDirectory(_uiState.value.currentPath)
     }
 
     /**
@@ -332,9 +359,15 @@ class CloudTabViewModel @Inject constructor(
                 val response = fileApi.restoreTrashFile(fileId)
                 if (response.isSuccessful) {
                     loadTrash()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        trashError = context.getString(R.string.error_load_http, response.code())
+                    )
                 }
             } catch (_: Exception) {
-                // Keep current listing; user can retry.
+                _uiState.value = _uiState.value.copy(
+                    trashError = context.getString(R.string.error_network)
+                )
             }
         }
     }
@@ -346,9 +379,15 @@ class CloudTabViewModel @Inject constructor(
                 val response = fileApi.purgeTrashFile(fileId)
                 if (response.isSuccessful) {
                     loadTrash()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        trashError = context.getString(R.string.error_load_http, response.code())
+                    )
                 }
             } catch (_: Exception) {
-                // Keep current listing; user can retry.
+                _uiState.value = _uiState.value.copy(
+                    trashError = context.getString(R.string.error_network)
+                )
             }
         }
     }

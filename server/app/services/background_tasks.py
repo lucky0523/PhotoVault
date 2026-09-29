@@ -321,27 +321,73 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
 
             for thumb_file, file_hash, atime in thumbnails:
                 if file_hash not in valid_hashes:
-                    thumb_file.unlink()
-                    orphaned_count += 1
+                    try:
+                        thumb_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Could not delete orphaned thumbnail: %s",
+                            thumb_file,
+                            exc_info=True,
+                        )
+                    else:
+                        orphaned_count += 1
                     continue
 
                 if atime < expired_time:
-                    thumb_file.unlink()
-                    expired_count += 1
+                    try:
+                        thumb_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Could not delete expired thumbnail: %s",
+                            thumb_file,
+                            exc_info=True,
+                        )
+                    else:
+                        expired_count += 1
                     continue
 
             remaining = [t for t in thumbnails if t[1] in valid_hashes and t[2] >= expired_time]
             if remaining:
                 remaining.sort(key=lambda x: x[2])
-                total_size_mb = sum(t[0].stat().st_size for t in remaining) / (1024 ** 2)
+                # Capture sizes before deletion. Files can disappear between any
+                # two operations (another cleanup worker or cache invalidation),
+                # so both stat and unlink races are treated as benign.
+                sized_remaining: list[tuple[Path, int]] = []
+                for thumb_file, _, _ in remaining:
+                    try:
+                        sized_remaining.append((thumb_file, thumb_file.stat().st_size))
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        logger.debug(
+                            "Could not stat thumbnail during cleanup: %s",
+                            thumb_file,
+                            exc_info=True,
+                        )
+
+                total_size_mb = sum(size for _, size in sized_remaining) / (1024 ** 2)
                 if total_size_mb > MAX_THUMBNAIL_CACHE_SIZE_MB:
                     target_size_mb = MAX_THUMBNAIL_CACHE_SIZE_MB * 0.8
                     current_size_mb = total_size_mb
-                    for thumb_file, _, _ in remaining:
+                    for thumb_file, file_size in sized_remaining:
                         if current_size_mb <= target_size_mb:
                             break
-                        thumb_file.unlink()
-                        current_size_mb -= thumb_file.stat().st_size / (1024 ** 2)
+                        try:
+                            thumb_file.unlink()
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            logger.warning(
+                                "Could not delete thumbnail during cleanup: %s",
+                                thumb_file,
+                                exc_info=True,
+                            )
+                            continue
+                        current_size_mb -= file_size / (1024 ** 2)
                         size_limited_count += 1
 
         if orphaned_count > 0 or expired_count > 0 or size_limited_count > 0:

@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 
 /**
@@ -90,6 +91,7 @@ class FolderDetailViewModel @Inject constructor(
 
     /** In-flight folder load job, cancelled/replaced on each (re)load. */
     private var loadJob: Job? = null
+    private val loadGeneration = AtomicLong(0)
 
     /**
      * Per-URI motion-photo detection cache, filled lazily by [isMotionPhoto] as
@@ -174,10 +176,16 @@ class FolderDetailViewModel @Inject constructor(
      * combine then associates the list with the `photo_status` table.
      */
     fun loadImages(folderUri: String) {
+        val generation = loadGeneration.incrementAndGet()
         lastFolderUri = folderUri
         loadJob?.cancel()
+        // Clear synchronously so switching folders never shows the old folder
+        // while the new MediaStore query is starting.
+        _rawImages.value = emptyList()
+        _loading.value = true
+        motionPhotoCache.clear()
+
         loadJob = viewModelScope.launch {
-            _loading.value = true
             try {
                 val accumulated = ArrayList<FolderImage>()
                 withContext(Dispatchers.IO) {
@@ -186,18 +194,18 @@ class FolderDetailViewModel @Inject constructor(
                         folderUri = folderUri,
                         firstPageSize = FIRST_PAGE_SIZE,
                         pageSize = PAGE_SIZE
-                    ) { batch ->
+                    ) batch@ { batch ->
+                        if (loadGeneration.get() != generation) return@batch
                         accumulated.addAll(batch)
-                        // Publish a snapshot so the grid fills progressively. The
-                        // first batch replaces any previous folder's list.
                         _rawImages.value = ArrayList(accumulated)
                     }
                 }
-                // Publish an empty list for a media-free folder so the "暂无图片"
-                // empty state shows instead of leaving a stale/loading grid.
-                if (accumulated.isEmpty()) _rawImages.value = emptyList()
             } finally {
-                _loading.value = false
+                // A cancelled older load must not clear the newer load's spinner.
+                if (loadGeneration.get() == generation) {
+                    _loading.value = false
+                    loadJob = null
+                }
             }
         }
     }
@@ -213,6 +221,7 @@ class FolderDetailViewModel @Inject constructor(
         if (image.mimeType != "image/jpeg" && image.mimeType != "image/jpg") return false
         val key = image.uri.toString()
         motionPhotoCache[key]?.let { return it }
+        val generation = loadGeneration.get()
         val result = withContext(Dispatchers.IO) {
             motionDetectSemaphore.withPermit {
                 // Re-check under the permit in case a concurrent caller filled it.
@@ -220,7 +229,9 @@ class FolderDetailViewModel @Inject constructor(
                     ?: MotionPhotoDetector.isMotionPhoto(context, image.uri, image.mimeType)
             }
         }
-        motionPhotoCache[key] = result
+        if (loadGeneration.get() == generation) {
+            motionPhotoCache[key] = result
+        }
         return result
     }
 
@@ -236,7 +247,9 @@ class FolderDetailViewModel @Inject constructor(
     fun reloadStatuses() {
         viewModelScope.launch {
             if (_rawImages.value.isEmpty()) {
-                lastFolderUri?.let { loadImages(it) }
+                if (loadJob?.isActive != true) {
+                    lastFolderUri?.let { loadImages(it) }
+                }
                 return@launch
             }
             val statuses = withContext(Dispatchers.IO) { photoStatusDao.getAll() }
@@ -388,12 +401,16 @@ class FolderDetailViewModel @Inject constructor(
                 }
                 buffer.add(next)
                 if (buffer.size >= target) {
+                    currentCoroutineContext().ensureActive()
                     onBatch(ArrayList(buffer))
                     buffer.clear()
                     target = pageSize
                 }
             }
-            if (buffer.isNotEmpty()) onBatch(ArrayList(buffer))
+            if (buffer.isNotEmpty()) {
+                currentCoroutineContext().ensureActive()
+                onBatch(ArrayList(buffer))
+            }
         } finally {
             imagesReader?.close()
             videoReader?.close()

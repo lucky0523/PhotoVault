@@ -5,6 +5,7 @@ Handles user authentication, JWT token management, and user CRUD operations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List
@@ -66,7 +67,7 @@ class AuthService:
         password_hash = row[2] if isinstance(row, tuple) else row["password_hash"]
         is_admin = row[3] if isinstance(row, tuple) else row["is_admin"]
 
-        if not _verify_password(password, password_hash):
+        if not await asyncio.to_thread(_verify_password, password, password_hash):
             raise ValueError("Invalid credentials")
 
         return await self._generate_token_pair(user_id, db_username, bool(is_admin))
@@ -97,11 +98,21 @@ class AuthService:
         if payload.get("type") != "access":
             raise ValueError("Invalid token type")
 
+        user_id = payload.get("user_id")
+        cursor = await self._db.execute(
+            """SELECT id, username, is_admin, created_at
+               FROM users WHERE id = ?""",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("User no longer exists")
+
         return UserInfo(
-            id=payload["user_id"],
-            username=payload["username"],
-            is_admin=payload["is_admin"],
-            created_at=payload.get("created_at", ""),
+            id=row[0] if isinstance(row, tuple) else row["id"],
+            username=row[1] if isinstance(row, tuple) else row["username"],
+            is_admin=bool(row[2] if isinstance(row, tuple) else row["is_admin"]),
+            created_at=str(row[3] if isinstance(row, tuple) else row["created_at"]),
         )
 
     async def refresh_token(self, refresh_token: str) -> TokenPair:
@@ -164,24 +175,37 @@ class AuthService:
         Raises:
             ValueError: If max users reached or username already exists.
         """
-        # Check max users limit
-        count = await self.get_user_count()
-        if count >= self._settings.max_users:
-            raise ValueError(
-                f"Maximum number of users ({self._settings.max_users}) reached"
-            )
-
-        password_hash = _hash_password(password)
+        # bcrypt is deliberately expensive; finish it before acquiring SQLite's
+        # write reservation so other writers are not blocked by CPU work.
+        password_hash = await asyncio.to_thread(_hash_password, password)
 
         try:
+            # BEGIN IMMEDIATE serializes the count-and-insert decision across
+            # independent SQLite connections/workers, preventing max_users from
+            # being exceeded by concurrent registrations.
+            await self._db.execute("BEGIN IMMEDIATE")
+            cursor = await self._db.execute("SELECT COUNT(*) FROM users")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            if count >= self._settings.max_users:
+                raise ValueError(
+                    f"Maximum number of users ({self._settings.max_users}) reached"
+                )
+
             cursor = await self._db.execute(
                 "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
                 (username, password_hash, is_admin),
             )
-            await self._db.commit()
             user_id = cursor.lastrowid
+            await self._db.commit()
         except aiosqlite.IntegrityError:
+            if self._db.in_transaction:
+                await self._db.rollback()
             raise ValueError(f"Username '{username}' already exists")
+        except Exception:
+            if self._db.in_transaction:
+                await self._db.rollback()
+            raise
 
         # Fetch the created_at timestamp
         cursor = await self._db.execute(
@@ -217,7 +241,7 @@ class AuthService:
 
         This method is reserved for administrator-authorized resets.
         """
-        password_hash = _hash_password(new_password)
+        password_hash = await asyncio.to_thread(_hash_password, new_password)
         cursor = await self._db.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (password_hash, user_id),
@@ -237,10 +261,12 @@ class AuthService:
             return False
 
         current_hash = row[0] if isinstance(row, tuple) else row["password_hash"]
-        if not _verify_password(current_password, current_hash):
+        if not await asyncio.to_thread(
+            _verify_password, current_password, current_hash
+        ):
             return False
 
-        new_hash = _hash_password(new_password)
+        new_hash = await asyncio.to_thread(_hash_password, new_password)
         cursor = await self._db.execute(
             """UPDATE users SET password_hash = ?
                WHERE id = ? AND password_hash = ?""",

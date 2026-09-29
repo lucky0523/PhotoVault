@@ -339,7 +339,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   FolderOpened,
   Folder,
@@ -376,6 +377,8 @@ import { useConfigStore } from '@/stores/config'
 
 const trashStore = useTrashStore()
 const configStore = useConfigStore()
+const route = useRoute()
+const router = useRouter()
 
 // Tree
 interface TreeNode {
@@ -568,15 +571,13 @@ async function loadTreeNode(
       const nodes: TreeNode[] = visibleDirs.map((dir) => ({
         label: dir.name,
         path: dir.path,
-        isLeaf: dir.backed_up_count === 0 && visibleDirs.length === 0,
+        // The browse response has no child-directory metadata. Keep the node
+        // expandable until its first lazy load; resolve([]) then lets el-tree
+        // present an empty child directory correctly.
+        isLeaf: false,
         file_count: dir.backed_up_count,
       }))
-      // If no subdirectories, mark as leaf
-      if (nodes.length === 0) {
-        resolve([])
-      } else {
-        resolve(nodes)
-      }
+      resolve(nodes)
     } catch {
       resolve([])
     }
@@ -588,39 +589,69 @@ function handleNodeClick(data: TreeNode) {
 }
 
 // Navigation
-function navigateTo(path: string) {
-  currentPath.value = path
-  currentPage.value = 1
-  clearSelection()
-  loadContent()
+function queryPath(value: unknown): string {
+  const raw = Array.isArray(value) ? value[0] : value
+  return typeof raw === 'string' ? raw : ''
 }
+
+function navigateTo(path: string) {
+  if (path === currentPath.value) return
+  const query = { ...route.query }
+  if (path) query.path = path
+  else delete query.path
+  void router.push({ name: 'Photos', query })
+}
+
+let contentGeneration = 0
 
 // Content loading
 async function loadContent() {
+  const generation = ++contentGeneration
+  const pathSnapshot = currentPath.value
+  const pageSnapshot = currentPage.value
+  const sortSnapshot = sortBy.value
   contentLoading.value = true
   try {
     const response = await listFiles(
-      currentPath.value,
-      currentPage.value,
+      pathSnapshot,
+      pageSnapshot,
       pageSize.value,
-      sortBy.value
+      sortSnapshot
     )
+    if (generation !== contentGeneration || pathSnapshot !== currentPath.value) return
     // Hide the .trash folder from the photo browser.
     directories.value = response.directories.filter((dir) => dir.name !== '.trash')
     files.value = response.files
     totalFiles.value = response.total_files
   } catch (error) {
+    if (generation !== contentGeneration || pathSnapshot !== currentPath.value) return
     console.error('Failed to load content:', error)
     directories.value = []
     files.value = []
     totalFiles.value = 0
   } finally {
-    contentLoading.value = false
-    // Directory count/pagination can change the table's top offset, so
-    // recompute the fill height once the new content is rendered.
-    updateTableHeight()
+    if (generation === contentGeneration) {
+      contentLoading.value = false
+      // Directory count/pagination can change the table's top offset, so
+      // recompute the fill height once the new content is rendered.
+      updateTableHeight()
+    }
   }
 }
+
+watch(
+  () => route.query.path,
+  (value) => {
+    const path = queryPath(value)
+    if (path === currentPath.value && contentGeneration > 0) return
+    currentPath.value = path
+    currentPage.value = 1
+    clearSelection()
+    void loadContent()
+    nextTick(() => treeRef.value?.setCurrentKey(path))
+  },
+  { immediate: true }
+)
 
 function handlePageChange(page: number) {
   currentPage.value = page
@@ -798,12 +829,12 @@ function getFileType(fileName: string): string {
 // Initialize
 onMounted(() => {
   configStore.ensureLoaded()
-  loadContent()
   window.addEventListener('resize', updateTableHeight)
   updateTableHeight()
 })
 
 onBeforeUnmount(() => {
+  contentGeneration++
   window.removeEventListener('resize', updateTableHeight)
 })
 </script>

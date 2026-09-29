@@ -199,45 +199,52 @@ async function loadDevices() {
   }
 }
 
-async function loadPeople() {
+let reloadGeneration = 0
+
+async function loadPeople(generation: number, librarySnapshot: string) {
   people.loading = true
   try {
-    people.items = await getPeople(library.value)
+    const items = await getPeople(librarySnapshot)
+    if (generation === reloadGeneration) people.items = items
   } catch {
     // Never error/white-screen — fall back to the empty placeholder (Req 9.1).
-    people.items = []
+    if (generation === reloadGeneration) people.items = []
   } finally {
-    people.loading = false
+    if (generation === reloadGeneration) people.loading = false
   }
 }
 
-async function loadPlaces() {
+async function loadPlaces(generation: number, librarySnapshot: string) {
   places.loading = true
   try {
-    places.items = await getPlaces(library.value)
+    const items = await getPlaces(librarySnapshot)
+    if (generation === reloadGeneration) places.items = items
   } catch {
-    places.items = []
+    if (generation === reloadGeneration) places.items = []
   } finally {
-    places.loading = false
+    if (generation === reloadGeneration) places.loading = false
   }
 }
 
-async function loadScenes() {
+async function loadScenes(generation: number, librarySnapshot: string) {
   scenes.loading = true
   try {
-    scenes.items = await getScenes(library.value)
+    const items = await getScenes(librarySnapshot)
+    if (generation === reloadGeneration) scenes.items = items
   } catch {
-    scenes.items = []
+    if (generation === reloadGeneration) scenes.items = []
   } finally {
-    scenes.loading = false
+    if (generation === reloadGeneration) scenes.loading = false
   }
 }
 
-// Reload all three sections with the current library value.
+// Reload all three sections with one generation and a stable library snapshot.
 function reloadAll() {
-  loadPeople()
-  loadPlaces()
-  loadScenes()
+  const generation = ++reloadGeneration
+  const librarySnapshot = library.value
+  void loadPeople(generation, librarySnapshot)
+  void loadPlaces(generation, librarySnapshot)
+  void loadScenes(generation, librarySnapshot)
 }
 
 // Navigation --------------------------------------------------------------

@@ -8,10 +8,10 @@ Manages chunked file uploads with resume capability:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
-import os
 import shutil
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import aiosqlite
+
+from app.core.config import get_settings
 
 
 class ChunkChecksumError(Exception):
@@ -41,6 +43,18 @@ class SessionNotFoundError(Exception):
         super().__init__(f"Upload session not found: {session_id}")
 
 
+class InvalidChunkIndexError(Exception):
+    """Raised when a chunk index is outside its session's valid range."""
+
+    def __init__(self, chunk_index: int, total_chunks: int):
+        self.chunk_index = chunk_index
+        self.total_chunks = total_chunks
+        super().__init__(
+            f"Chunk index {chunk_index} is outside valid range "
+            f"0..{max(total_chunks - 1, 0)}"
+        )
+
+
 class ChunkManager:
     """Manages chunked file uploads with resume capability.
 
@@ -50,17 +64,23 @@ class ChunkManager:
 
     CHUNK_SIZE = 2 * 1024 * 1024  # 2MB
 
-    def __init__(self, db: aiosqlite.Connection, media_root: str):
-        """Initialize ChunkManager.
-
-        Args:
-            db: An aiosqlite database connection.
-            media_root: Photo storage directory (``Settings.media_root``). Chunks
-                stage under it so that promoting a completed upload to its final
-                location stays a same-filesystem move.
-        """
+    def __init__(
+        self,
+        db: aiosqlite.Connection,
+        media_root: str,
+        chunk_size: Optional[int] = None,
+        session_expire_days: Optional[int] = None,
+    ):
+        """Initialize ChunkManager using configured upload limits by default."""
+        settings = get_settings()
         self._db = db
         self._media_root = media_root
+        self.chunk_size = chunk_size or settings.chunk_size_bytes
+        self.session_expire_days = (
+            session_expire_days
+            if session_expire_days is not None
+            else settings.session_expire_days
+        )
 
     @property
     def _chunks_base_dir(self) -> Path:
@@ -90,7 +110,8 @@ class ChunkManager:
     ) -> str:
         """Create an upload session.
 
-        Writes a new record to the upload_sessions table with a 7-day expiry.
+        Writes a new record to the upload_sessions table using the configured
+        session expiry.
 
         Args:
             user_id: ID of the authenticated user.
@@ -107,9 +128,9 @@ class ChunkManager:
             The generated session ID (UUID string).
         """
         session_id = str(uuid.uuid4())
-        total_chunks = math.ceil(file_size / self.CHUNK_SIZE)
+        total_chunks = math.ceil(file_size / self.chunk_size)
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=7)
+        expires_at = now + timedelta(days=self.session_expire_days)
 
         await self._db.execute(
             """
@@ -140,82 +161,106 @@ class ChunkManager:
         )
         await self._db.commit()
 
-        # Create the chunk directory
+        # Create the chunk directory without blocking the event loop.
         chunk_dir = self._session_chunk_dir(session_id)
-        chunk_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(chunk_dir.mkdir, parents=True, exist_ok=True)
 
         return session_id
 
     async def store_chunk(
-        self, session_id: str, chunk_index: int, data: bytes, md5_checksum: str
+        self,
+        session_id: str,
+        chunk_index: int,
+        data: bytes,
+        md5_checksum: str,
+        user_id: Optional[int] = None,
     ) -> bool:
-        """Store a chunk to the temp directory and verify its MD5 checksum.
+        """Validate, persist and atomically record one upload chunk.
 
-        Args:
-            session_id: The upload session ID.
-            chunk_index: Zero-based index of the chunk.
-            data: Raw chunk bytes.
-            md5_checksum: Expected MD5 hex digest of the chunk data.
-
-        Returns:
-            True if the chunk was stored successfully.
-
-        Raises:
-            ChunkChecksumError: If the computed MD5 does not match.
-            SessionNotFoundError: If the session does not exist.
+        ``user_id`` scopes API writes to the owning user. Progress is updated by
+        one SQLite ``UPDATE`` expression, so concurrent requests on different
+        connections merge their indices instead of overwriting a stale JSON list.
         """
-        session = await self.get_session(session_id)
+        session = await self.get_session(
+            session_id, user_id=user_id, require_active=True
+        )
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        # Verify MD5 checksum
-        actual_md5 = hashlib.md5(data).hexdigest()
+        total_chunks = int(session["total_chunks"])
+        if chunk_index < 0 or chunk_index >= total_chunks:
+            raise InvalidChunkIndexError(chunk_index, total_chunks)
+
+        actual_md5 = await asyncio.to_thread(lambda: hashlib.md5(data).hexdigest())
         if actual_md5 != md5_checksum:
             raise ChunkChecksumError(chunk_index, md5_checksum, actual_md5)
 
-        # Write chunk to disk
         chunk_dir = self._session_chunk_dir(session_id)
-        chunk_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(chunk_dir.mkdir, parents=True, exist_ok=True)
         chunk_path = chunk_dir / self._chunk_filename(chunk_index)
-        chunk_path.write_bytes(data)
-
-        # Update received_chunks in the database
-        received = json.loads(session["received_chunks"])
-        if chunk_index not in received:
-            received.append(chunk_index)
-            received.sort()
+        await asyncio.to_thread(chunk_path.write_bytes, data)
 
         now = datetime.now(timezone.utc).isoformat()
-        await self._db.execute(
+        cursor = await self._db.execute(
             """
             UPDATE upload_sessions
-            SET received_chunks = ?, updated_at = ?
+            SET received_chunks = (
+                    SELECT json_group_array(chunk_index)
+                    FROM (
+                        SELECT CAST(value AS INTEGER) AS chunk_index
+                        FROM json_each(COALESCE(upload_sessions.received_chunks, '[]'))
+                        UNION
+                        SELECT ?
+                        ORDER BY chunk_index
+                    )
+                ),
+                updated_at = ?
             WHERE id = ?
+              AND status = 'active'
+              AND expires_at > ?
+              AND (? IS NULL OR user_id = ?)
+              AND ? >= 0
+              AND ? < total_chunks
             """,
-            (json.dumps(received), now, session_id),
+            (
+                chunk_index,
+                now,
+                session_id,
+                now,
+                user_id,
+                user_id,
+                chunk_index,
+                chunk_index,
+            ),
         )
         await self._db.commit()
+        if cursor.rowcount == 0:
+            # The session may have expired or been removed after the initial
+            # lookup. The file is harmless staging data; report it as unavailable.
+            raise SessionNotFoundError(session_id)
 
         return True
 
-    async def get_received_chunks(self, session_id: str) -> List[int]:
-        """Return list of successfully received chunk indices.
-
-        Args:
-            session_id: The upload session ID.
-
-        Returns:
-            Sorted list of chunk indices that have been received.
-
-        Raises:
-            SessionNotFoundError: If the session does not exist.
-        """
-        session = await self.get_session(session_id)
+    async def get_received_chunks(
+        self,
+        session_id: str,
+        user_id: Optional[int] = None,
+        require_active: bool = False,
+    ) -> List[int]:
+        """Return sorted received indices, optionally scoped to an owner."""
+        session = await self.get_session(
+            session_id, user_id=user_id, require_active=require_active
+        )
         if session is None:
             raise SessionNotFoundError(session_id)
-        return json.loads(session["received_chunks"])
+        return sorted(json.loads(session["received_chunks"] or "[]"))
 
-    async def merge_chunks(self, session_id: str) -> str:
+    async def merge_chunks(
+        self,
+        session_id: str,
+        user_id: Optional[int] = None,
+        require_active: bool = False,
+    ) -> str:
         """Merge all chunks in order into a complete file.
 
         Reads chunks sequentially (0, 1, 2, ...) and writes them to a single
@@ -231,7 +276,9 @@ class ChunkManager:
             SessionNotFoundError: If the session does not exist.
             FileNotFoundError: If any expected chunk file is missing.
         """
-        session = await self.get_session(session_id)
+        session = await self.get_session(
+            session_id, user_id=user_id, require_active=require_active
+        )
         if session is None:
             raise SessionNotFoundError(session_id)
 
@@ -240,15 +287,18 @@ class ChunkManager:
         file_name = session["file_name"]
         merged_path = chunk_dir / f"merged_{file_name}"
 
-        with open(merged_path, "wb") as out_file:
-            for i in range(total_chunks):
-                chunk_path = chunk_dir / self._chunk_filename(i)
-                if not chunk_path.exists():
-                    raise FileNotFoundError(
-                        f"Missing chunk {i} for session {session_id}"
-                    )
-                out_file.write(chunk_path.read_bytes())
+        def _merge() -> None:
+            with open(merged_path, "wb") as out_file:
+                for i in range(total_chunks):
+                    chunk_path = chunk_dir / self._chunk_filename(i)
+                    if not chunk_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing chunk {i} for session {session_id}"
+                        )
+                    with open(chunk_path, "rb") as chunk_file:
+                        shutil.copyfileobj(chunk_file, out_file)
 
+        await asyncio.to_thread(_merge)
         return str(merged_path)
 
     @staticmethod
@@ -290,8 +340,8 @@ class ChunkManager:
         """
         # Remove chunk directory from disk
         chunk_dir = self._session_chunk_dir(session_id)
-        if chunk_dir.exists():
-            shutil.rmtree(chunk_dir)
+        if await asyncio.to_thread(chunk_dir.exists):
+            await asyncio.to_thread(shutil.rmtree, chunk_dir)
 
         # Remove session record from database
         await self._db.execute(
@@ -299,17 +349,20 @@ class ChunkManager:
         )
         await self._db.commit()
 
-    async def get_session(self, session_id: str) -> Optional[dict]:
-        """Get session info by ID.
-
-        Args:
-            session_id: The upload session ID.
-
-        Returns:
-            A dict with session fields, or None if not found.
-        """
+    async def get_session(
+        self,
+        session_id: str,
+        user_id: Optional[int] = None,
+        require_active: bool = False,
+    ) -> Optional[dict]:
+        """Get a session by ID, optionally requiring owner and live status."""
+        now = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
-            "SELECT * FROM upload_sessions WHERE id = ?", (session_id,)
+            """SELECT * FROM upload_sessions
+               WHERE id = ?
+                 AND (? IS NULL OR user_id = ?)
+                 AND (? = 0 OR (status = 'active' AND expires_at > ?))""",
+            (session_id, user_id, user_id, int(require_active), now),
         )
         row = await cursor.fetchone()
         if row is None:

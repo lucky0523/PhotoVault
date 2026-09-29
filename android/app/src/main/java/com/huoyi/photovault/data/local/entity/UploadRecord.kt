@@ -55,6 +55,10 @@ data class UploadRecord(
     @ColumnInfo(name = "total_chunks")
     val totalChunks: Int,
 
+    /** Server-selected chunk size for this session; required for byte offsets on resume. */
+    @ColumnInfo(name = "chunk_size")
+    val chunkSize: Int = 0,
+
     @ColumnInfo(name = "uploaded_chunk_index")
     val uploadedChunkIndex: Int = -1,
 

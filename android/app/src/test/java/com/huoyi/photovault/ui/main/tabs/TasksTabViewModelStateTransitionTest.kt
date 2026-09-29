@@ -205,7 +205,11 @@ class TasksTabViewModelStateTransitionTest {
         assertNull("record must be deleted", uploadRecordDao.getStored(target))
         assertEquals(1, uploadRecordDao.deleteCount)
         assertEquals(0, uploadRecordDao.clearAutoOffCount)
-        assertEquals("源文件已不存在，无法续传", vm.uiState.value.transientMessage)
+        assertEquals(
+            RuntimeEnvironment.getApplication()
+                .getString(com.huoyi.photovault.R.string.error_paused_task_source_missing),
+            vm.uiState.value.transientMessage
+        )
         assertTrue("entry must be removed", vm.uiState.value.pausedTasks.isEmpty())
     }
 
@@ -242,7 +246,11 @@ class TasksTabViewModelStateTransitionTest {
         vm.clearPausedTask(target)
 
         assertTrue("record must be retained", uploadRecordDao.getStored(target) != null)
-        assertEquals("清除失败，请重试", vm.uiState.value.transientMessage)
+        assertEquals(
+            RuntimeEnvironment.getApplication()
+                .getString(com.huoyi.photovault.R.string.error_clear_paused_task),
+            vm.uiState.value.transientMessage
+        )
         assertEquals(
             "entry must remain visible",
             listOf(target),
@@ -343,7 +351,11 @@ class TasksTabViewModelStateTransitionTest {
 
         val vm = newViewModel()
         vm.resumePausedTask(target)
-        assertEquals("源文件已不存在，无法续传", vm.uiState.value.transientMessage)
+        assertEquals(
+            RuntimeEnvironment.getApplication()
+                .getString(com.huoyi.photovault.R.string.error_paused_task_source_missing),
+            vm.uiState.value.transientMessage
+        )
 
         vm.consumeTransientMessage()
         assertNull(vm.uiState.value.transientMessage)

@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,7 +92,7 @@ fun ImagePreviewDialog(
 ) = ImagePreviewDialog(
     fileName = file.fileName,
     model = downloadUrl,
-    isVideo = file.mimeType?.startsWith("video/") == true,
+    isVideo = file.mediaType == "video" || file.mimeType?.startsWith("video/") == true,
     onDismiss = onDismiss
 )
 
@@ -360,6 +361,10 @@ private fun ZoomableImageContent(
     val scope = rememberCoroutineScope()
     var snapBackJob by remember { mutableStateOf<Job?>(null) }
     var imageState by remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
+    val latestOriginBounds by rememberUpdatedState(originBounds)
+    val latestContainerWidthPx by rememberUpdatedState(containerWidthPx)
+    val latestContainerHeightPx by rememberUpdatedState(containerHeightPx)
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
 
     // Reset everything when this page leaves the foreground.
     LaunchedEffect(active) {
@@ -389,15 +394,17 @@ private fun ZoomableImageContent(
         exitOffset = startOffset
         exitScale = startScale
         exitAlpha = 1f
-        val target = originBounds
+        val target = latestOriginBounds
+        val widthPx = latestContainerWidthPx
+        val heightPx = latestContainerHeightPx
         snapBackJob = scope.launch {
-            if (target != null && containerWidthPx > 0 && containerHeightPx > 0) {
+            if (target != null && widthPx > 0 && heightPx > 0) {
                 // Shrink/translate so the full-screen image node lands on the
                 // thumbnail's rect (scaled about its center).
-                val endScale = (target.width / containerWidthPx).coerceIn(0.05f, 1f)
+                val endScale = (target.width / widthPx).coerceIn(0.05f, 1f)
                 val endOffset = Offset(
-                    target.center.x - containerWidthPx / 2f,
-                    target.center.y - containerHeightPx / 2f
+                    target.center.x - widthPx / 2f,
+                    target.center.y - heightPx / 2f
                 )
                 val anim = Animatable(0f)
                 anim.animateTo(1f, animationSpec = tween(240)) {
@@ -412,7 +419,7 @@ private fun ZoomableImageContent(
                 }
             } else {
                 // Unknown thumbnail: continue the downward motion and fade out.
-                val endY = containerHeightPx.toFloat().coerceAtLeast(DISMISS_DISTANCE_PX)
+                val endY = heightPx.toFloat().coerceAtLeast(DISMISS_DISTANCE_PX)
                 val anim = Animatable(0f)
                 anim.animateTo(1f, animationSpec = tween(220)) {
                     exitOffset = Offset(startOffset.x, androidx.compose.ui.util.lerp(startOffset.y, endY, value))
@@ -420,7 +427,7 @@ private fun ZoomableImageContent(
                     exitAlpha = (1f - value).coerceIn(0f, 1f)
                 }
             }
-            onDismiss()
+            latestOnDismiss()
         }
     }
 

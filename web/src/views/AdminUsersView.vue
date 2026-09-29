@@ -6,7 +6,7 @@
       :icon="UserFilled"
     >
       <template #extra>
-        <el-button type="primary" @click="showCreateDialog = true">
+        <el-button v-if="authStore.isAdmin" type="primary" @click="showCreateDialog = true">
           创建用户
         </el-button>
       </template>
@@ -33,6 +33,7 @@
               {{ authStore.isAdmin ? '重置密码' : '修改密码' }}
             </el-button>
             <el-popconfirm
+              v-if="authStore.isAdmin"
               :width="360"
               :title="`确定要清除用户“${row.username}”的删除记录吗？仅移除已彻底删除文件的同步记录，此操作不可恢复。`"
               confirm-button-text="确定"

@@ -87,7 +87,11 @@
     <string name="pause_conditions_hint">Backup will resume automatically when the conditions are met</string>
     <string name="backup_paused_reason_format">Backup paused: %1$s</string>
 
-    <!-- Backup notifications -->
+    <string name="backup_error_upload_chunk_rejected">Server rejected upload block %1$d.</string>
+    <string name="backup_error_init_invalid_chunks">Server returned invalid chunk settings (size=%1$d, total=%2$d).</string>
+    <string name="pause_waiting_message">Waiting for backup conditions</string>
+    <string name="pause_waiting_hint">Backup will resume automatically when the service is ready</string>
+    <string name="notification_permission_denied">Notifications are disabled. Backups still work, but progress will only be visible in the app.</string>
     <string name="notification_channel_backup_progress">Backup progress</string>
     <string name="notification_channel_backup_progress_description">Shows photo backup progress</string>
     <string name="notification_channel_backup_notice">Backup notices</string>

@@ -281,7 +281,10 @@ private fun CurrentTasksView(
             }
 
             // Queued file list
-            items(uiState.queuedFiles) { fileInfo ->
+            items(
+                items = uiState.queuedFiles,
+                key = { it.uri }
+            ) { fileInfo ->
                 QueuedFileItem(fileInfo = fileInfo)
             }
         }
@@ -415,6 +418,7 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
                     is PauseReason.UserPaused -> Icons.Filled.Pause
                     is PauseReason.LowBattery -> Icons.Filled.BatteryAlert
                     is PauseReason.NoWifi -> Icons.Filled.WifiOff
+                    is PauseReason.Waiting -> Icons.Filled.HourglassEmpty
                     is PauseReason.LowBatteryAndNoWifi -> Icons.Filled.Pause
                 },
                 contentDescription = null,

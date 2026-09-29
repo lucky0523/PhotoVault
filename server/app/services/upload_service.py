@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import mimetypes
@@ -23,7 +24,7 @@ import aiosqlite
 
 from app.models.storage import FileMetadata, StoragePolicy
 from app.services.analysis_queue import enqueue_analysis
-from app.services.chunk_manager import ChunkManager
+from app.services.chunk_manager import ChunkManager, SessionNotFoundError
 from app.services.deduplication_service import DeduplicationService, FileRecord
 from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
 from app.services.storage_path_engine import StoragePathEngine
@@ -92,6 +93,10 @@ class DiskSpaceError(Exception):
             f"Insufficient disk space: required {required} bytes, "
             f"available {available} bytes"
         )
+
+
+class InvalidUploadPathError(Exception):
+    """Raised when client path components escape their configured base."""
 
 
 class DirectoryCreationError(Exception):
@@ -180,19 +185,26 @@ class UploadService:
             policy=file_info.storage_policy,
             file_metadata=file_info.file_metadata,
         )
+        self._validate_upload_target(
+            target_path=target_path,
+            username=username,
+            device_name=file_info.device_name,
+            policy=file_info.storage_policy,
+            file_name=file_info.file_name,
+        )
 
-        # Step 3: Check disk space
-        # Need space for chunks + final file + buffer
+        # Step 3: Check disk space without blocking the event loop.
+        # Need space for chunks + final file + buffer.
         required_space = file_info.file_size * 2 + _DISK_SPACE_BUFFER
-        if not self.check_disk_space(required_space):
-            usage = shutil.disk_usage(self._media_root)
+        if not await asyncio.to_thread(self.check_disk_space, required_space):
+            usage = await asyncio.to_thread(shutil.disk_usage, self._media_root)
             raise DiskSpaceError(
                 required=required_space,
                 available=usage.free,
             )
 
-        # Step 4: Create target directory
-        self._ensure_directory(target_path)
+        # Step 4: Create target directory without blocking the event loop.
+        await asyncio.to_thread(self._ensure_directory, target_path)
 
         # Step 5: Create upload session
         session_id = await self._chunk_manager.create_session(
@@ -207,7 +219,9 @@ class UploadService:
             mime_type=file_info.mime_type,
         )
 
-        total_chunks = math.ceil(file_info.file_size / ChunkManager.CHUNK_SIZE)
+        total_chunks = math.ceil(
+            file_info.file_size / self._chunk_manager.chunk_size
+        )
 
         logger.info(
             "Upload session created: session_id=%s, user=%d, file=%s, chunks=%d",
@@ -221,7 +235,7 @@ class UploadService:
             is_duplicate=False,
             session_id=session_id,
             total_chunks=total_chunks,
-            chunk_size=ChunkManager.CHUNK_SIZE,
+            chunk_size=self._chunk_manager.chunk_size,
             target_path=target_path,
         )
 
@@ -246,23 +260,27 @@ class UploadService:
         Returns:
             CompleteUploadResult with file info or error.
         """
-        # Get session info
-        session = await self._chunk_manager.get_session(session_id)
+        # Only the owner may complete a currently active, unexpired session.
+        session = await self._chunk_manager.get_session(
+            session_id, user_id=user_id, require_active=True
+        )
         if session is None:
             return CompleteUploadResult(
                 success=False,
-                error="Upload session not found",
+                error="Upload session not found or expired",
             )
 
-        # Verify session belongs to user
-        if session["user_id"] != user_id:
+        # Step 1: Verify all chunks received. Re-check active/expiry status so a
+        # session that expires between the two awaits cannot continue.
+        try:
+            received = await self._chunk_manager.get_received_chunks(
+                session_id, user_id=user_id, require_active=True
+            )
+        except SessionNotFoundError:
             return CompleteUploadResult(
                 success=False,
-                error="Upload session not found",
+                error="Upload session not found or expired",
             )
-
-        # Step 1: Verify all chunks received
-        received = await self._chunk_manager.get_received_chunks(session_id)
         total_chunks = session["total_chunks"]
         if len(received) != total_chunks:
             return CompleteUploadResult(
@@ -272,16 +290,20 @@ class UploadService:
 
         # Step 2: Merge chunks
         try:
-            merged_path = await self._chunk_manager.merge_chunks(session_id)
-        except FileNotFoundError as e:
+            merged_path = await self._chunk_manager.merge_chunks(
+                session_id, user_id=user_id, require_active=True
+            )
+        except (FileNotFoundError, SessionNotFoundError) as e:
             return CompleteUploadResult(
                 success=False,
                 error=str(e),
             )
 
         # Step 3: Verify integrity
-        computed_hash = self._chunk_manager.compute_file_hash(merged_path)
-        merged_size = Path(merged_path).stat().st_size
+        computed_hash = await asyncio.to_thread(
+            self._chunk_manager.compute_file_hash, merged_path
+        )
+        merged_size = await asyncio.to_thread(lambda: Path(merged_path).stat().st_size)
         if computed_hash != session["file_hash"]:
             logger.warning(
                 "Integrity check FAILED for session=%s file=%s: "
@@ -305,13 +327,15 @@ class UploadService:
 
         # Step 4 & 5: Handle filename conflicts and move to target path
         target_dir = Path(session["target_path"])
-        self._ensure_directory(str(target_dir) + "/")
+        await asyncio.to_thread(self._ensure_directory, str(target_dir) + "/")
 
         final_path = target_dir / session["file_name"]
 
-        if final_path.exists():
-            # Check if content is the same
-            existing_hash = self._chunk_manager.compute_file_hash(str(final_path))
+        if await asyncio.to_thread(final_path.exists):
+            # Check if content is the same without hashing on the event loop.
+            existing_hash = await asyncio.to_thread(
+                self._chunk_manager.compute_file_hash, str(final_path)
+            )
             if existing_hash == session["file_hash"]:
                 # Same content — skip storage, just register as reference
                 logger.info(
@@ -319,13 +343,17 @@ class UploadService:
                     final_path,
                 )
                 # Remove merged file since we don't need it
-                Path(merged_path).unlink(missing_ok=True)
+                await asyncio.to_thread(Path(merged_path).unlink, missing_ok=True)
 
-                # Resolve MIME type and derive the media type (image vs video)
+                # Resolve MIME type and inspect media off the event loop; motion
+                # and Ultra HDR detection parse file contents and Pillow reads EXIF.
                 mime_type = self._resolve_mime_type(session)
                 media_type = self._infer_media_type(session["file_name"], mime_type)
-                is_motion, motion_offset = detect_motion_photo(str(final_path))
-                is_ultra_hdr = detect_ultra_hdr(str(final_path))
+                is_motion, motion_offset, is_ultra_hdr, focal_length = (
+                    await asyncio.to_thread(
+                        self._inspect_completed_file, str(final_path)
+                    )
+                )
 
                 # Register file record (pointing to existing file). Reactivates an
                 # existing trashed/purged record so a re-backup restores it in place.
@@ -339,7 +367,7 @@ class UploadService:
                     file_name=session["file_name"],
                     mime_type=mime_type,
                     exif_time=session["exif_time"],
-                    focal_length=self._extract_focal_length(str(final_path)),
+                    focal_length=focal_length,
                     media_type=media_type,
                     is_motion_photo=is_motion,
                     motion_video_offset=motion_offset,
@@ -358,7 +386,7 @@ class UploadService:
                 enqueue_analysis(record.id, user_id)
 
                 # Cleanup chunk directory
-                self._cleanup_chunk_dir(session_id)
+                await asyncio.to_thread(self._cleanup_chunk_dir, session_id)
 
                 return CompleteUploadResult(
                     success=True,
@@ -367,17 +395,20 @@ class UploadService:
                     is_duplicate=True,
                 )
             else:
-                # Different content — append numeric suffix
-                final_path = self._resolve_filename_conflict(final_path)
+                # Different content — append numeric suffix without blocking
+                # the event loop on repeated filesystem existence checks.
+                final_path = await asyncio.to_thread(
+                    self._resolve_filename_conflict, final_path
+                )
 
-        # Move merged file to target path
-        shutil.move(merged_path, str(final_path))
+        # Move and media inspection can both involve substantial filesystem I/O.
+        await asyncio.to_thread(shutil.move, merged_path, str(final_path))
 
-        # Resolve MIME type and derive the media type (image vs video)
         mime_type = self._resolve_mime_type(session)
         media_type = self._infer_media_type(session["file_name"], mime_type)
-        is_motion, motion_offset = detect_motion_photo(str(final_path))
-        is_ultra_hdr = detect_ultra_hdr(str(final_path))
+        is_motion, motion_offset, is_ultra_hdr, focal_length = await asyncio.to_thread(
+            self._inspect_completed_file, str(final_path)
+        )
 
         # Step 6: Register file record. Reactivates an existing trashed/purged
         # record so a re-backup restores it in place instead of leaving a stale row.
@@ -391,7 +422,7 @@ class UploadService:
             file_name=session["file_name"],
             mime_type=mime_type,
             exif_time=session["exif_time"],
-            focal_length=self._extract_focal_length(str(final_path)),
+            focal_length=focal_length,
             media_type=media_type,
             is_motion_photo=is_motion,
             motion_video_offset=motion_offset,
@@ -410,7 +441,7 @@ class UploadService:
         enqueue_analysis(record.id, user_id)
 
         # Step 7: Cleanup chunk directory
-        self._cleanup_chunk_dir(session_id)
+        await asyncio.to_thread(self._cleanup_chunk_dir, session_id)
 
         logger.info(
             "Upload completed: session_id=%s, file_id=%d, path=%s",
@@ -447,6 +478,62 @@ class UploadService:
     # ---------------------------------------------------------------------------
     # Private helpers
     # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_file_name(file_name: str) -> None:
+        """Reject file names that can escape or corrupt the target directory."""
+        if (
+            not file_name
+            or file_name in {".", ".."}
+            or Path(file_name).name != file_name
+            or "/" in file_name
+            or "\\" in file_name
+            or any(char in file_name for char in ("\x00", "\r", "\n"))
+        ):
+            raise InvalidUploadPathError("Invalid upload file name")
+
+    def _validate_upload_target(
+        self,
+        *,
+        target_path: str,
+        username: str,
+        device_name: str,
+        policy: StoragePolicy,
+        file_name: str,
+    ) -> None:
+        """Ensure client-provided subpaths stay beneath their selected base.
+
+        A custom path remains an explicitly selected storage root, but source
+        folders and metadata subfolders may not use ``..`` to escape it. Default
+        storage is similarly contained beneath the user's device directory.
+        """
+        self._validate_file_name(file_name)
+        validation = StoragePathEngine.validate_path(target_path)
+        if not validation.is_valid:
+            raise InvalidUploadPathError(validation.error_message)
+
+        target = Path(target_path)
+        if not target.is_absolute():
+            raise InvalidUploadPathError("Upload target path must be absolute")
+
+        if policy.use_custom_path:
+            if not policy.custom_path or not Path(policy.custom_path).is_absolute():
+                raise InvalidUploadPathError("Custom upload path must be absolute")
+            base = Path(policy.custom_path).resolve(strict=False)
+        else:
+            base = (
+                Path(self._media_root)
+                / username
+                / StoragePathEngine.sanitize_device_name(device_name)
+            ).resolve(strict=False)
+
+        resolved_target = target.resolve(strict=False)
+        try:
+            resolved_target.relative_to(base)
+        except ValueError as exc:
+            raise InvalidUploadPathError(
+                "Upload target escapes its configured storage base"
+            ) from exc
 
     def _ensure_directory(self, path: str) -> None:
         """Create directory recursively if it doesn't exist.
@@ -531,6 +618,20 @@ class UploadService:
         if ext in cls._VIDEO_EXTENSIONS:
             return "video"
         return "image"
+
+    @staticmethod
+    def _inspect_completed_file(
+        file_path: str,
+    ) -> tuple[bool, Optional[int], bool, Optional[float]]:
+        """Run content-based media and EXIF inspection synchronously.
+
+        Callers execute this helper in a worker thread because these detectors
+        parse potentially large files and may invoke Pillow.
+        """
+        is_motion, motion_offset = detect_motion_photo(file_path)
+        is_ultra_hdr = detect_ultra_hdr(file_path)
+        focal_length = UploadService._extract_focal_length(file_path)
+        return is_motion, motion_offset, is_ultra_hdr, focal_length
 
     @staticmethod
     def _extract_focal_length(file_path: str) -> Optional[float]:

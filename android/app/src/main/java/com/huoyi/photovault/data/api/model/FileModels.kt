@@ -27,7 +27,8 @@ data class DirectoryInfo(
     // 逐目录分状态计数，默认 0（兼容尚未返回该字段的服务端）
     @SerializedName("backed_up_count") val backedUpCount: Int = 0,
     @SerializedName("trashed_count") val trashedCount: Int = 0,
-    @SerializedName("purged_count") val purgedCount: Int = 0
+    @SerializedName("purged_count") val purgedCount: Int = 0,
+    @SerializedName("size") val size: Long = 0L
 )
 
 data class FileBrowseInfo(
@@ -37,7 +38,10 @@ data class FileBrowseInfo(
     @SerializedName("mime_type") val mimeType: String?,
     @SerializedName("exif_time") val exifTime: String?,
     @SerializedName("thumbnail_url") val thumbnailUrl: String?,
-    @SerializedName("created_at") val createdAt: String
+    @SerializedName("created_at") val createdAt: String? = null,
+    @SerializedName("media_type") val mediaType: String = "image",
+    @SerializedName("is_motion_photo") val isMotionPhoto: Boolean = false,
+    @SerializedName("is_ultra_hdr") val isUltraHdr: Boolean = false
 )
 
 // --- Trash (recycle bin) ---

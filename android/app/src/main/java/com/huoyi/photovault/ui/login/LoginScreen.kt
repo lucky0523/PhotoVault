@@ -143,16 +143,11 @@ fun LoginScreen(
         )
     }
 
-    // Handle auto-login
-    LaunchedEffect(uiState.hasValidToken) {
-        if (uiState.hasValidToken) {
-            onLoginSuccess()
-        }
-    }
-
-    // Handle login success
-    LaunchedEffect(uiState.loginSuccess) {
-        if (uiState.loginSuccess) {
+    var navigationDispatched by remember { mutableStateOf(false) }
+    // Both auto-login and interactive login converge on one navigation effect.
+    LaunchedEffect(uiState.hasValidToken, uiState.loginSuccess) {
+        if (!navigationDispatched && (uiState.hasValidToken || uiState.loginSuccess)) {
+            navigationDispatched = true
             onLoginSuccess()
         }
     }

@@ -126,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   EditPen,
@@ -228,46 +228,73 @@ function resolveTitle() {
 // ---------------------------------------------------------------------------
 // Data loading
 // ---------------------------------------------------------------------------
-async function fetchPage(nextPage: number) {
-  const library = (route.query.library as string) || undefined
-  if (dimension.value === 'people') {
-    const clusterId = Number(route.params.id)
-    return getPeoplePhotos(clusterId, nextPage, pageSize.value, library)
+interface CategorySnapshot {
+  dimension: Dimension
+  id: number
+  city: string
+  label: string
+  library?: string
+  isMapOverview: boolean
+}
+
+let loadGeneration = 0
+
+function captureCategory(): CategorySnapshot {
+  return {
+    dimension: dimension.value,
+    id: Number(route.params.id),
+    city: String(route.params.city ?? ''),
+    label: String(route.params.label ?? ''),
+    library: typeof route.query.library === 'string' ? route.query.library || undefined : undefined,
+    isMapOverview: isMapOverview.value,
   }
-  if (dimension.value === 'places') {
-    return getPlacePhotos(String(route.params.city), nextPage, pageSize.value, library)
+}
+
+async function fetchPage(nextPage: number, snapshot: CategorySnapshot) {
+  if (snapshot.dimension === 'people') {
+    return getPeoplePhotos(snapshot.id, nextPage, pageSize.value, snapshot.library)
   }
-  return getScenePhotos(String(route.params.label), nextPage, pageSize.value, library)
+  if (snapshot.dimension === 'places') {
+    return getPlacePhotos(snapshot.city, nextPage, pageSize.value, snapshot.library)
+  }
+  return getScenePhotos(snapshot.label, nextPage, pageSize.value, snapshot.library)
 }
 
 async function loadMore() {
   if (loading.value) return
+  const generation = loadGeneration
+  const snapshot = captureCategory()
+  const nextPage = page.value + 1
   loading.value = true
   try {
-    const nextPage = page.value + 1
-    const response = await fetchPage(nextPage)
+    const response = await fetchPage(nextPage, snapshot)
+    if (generation !== loadGeneration) return
     // Append accumulated photos so ImagePreview receives the full list.
     files.value = [...files.value, ...response.files]
     total.value = response.total
     page.value = response.page
   } catch (error) {
+    if (generation !== loadGeneration) return
     console.error('Failed to load category photos:', error)
     ElMessage.error('加载照片失败')
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
-async function loadMapOverview() {
+async function loadMapOverview(snapshot: CategorySnapshot) {
+  const generation = loadGeneration
   loading.value = true
   try {
-    const library = (route.query.library as string) || undefined
-    places.value = await getPlaces(library)
+    const response = await getPlaces(snapshot.library)
+    if (generation !== loadGeneration) return
+    places.value = response
   } catch (error) {
+    if (generation !== loadGeneration) return
     console.error('Failed to load places overview:', error)
     ElMessage.error('加载地点总览失败')
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
@@ -276,15 +303,18 @@ function reset() {
   places.value = []
   total.value = 0
   page.value = 0
+  loading.value = false
   previewVisible.value = false
   previewIndex.value = 0
 }
 
 async function reload() {
+  loadGeneration++
   reset()
   resolveTitle()
-  if (isMapOverview.value) {
-    await loadMapOverview()
+  const snapshot = captureCategory()
+  if (snapshot.isMapOverview) {
+    await loadMapOverview(snapshot)
   } else {
     await loadMore()
   }
@@ -298,7 +328,10 @@ function goBack() {
 }
 
 function openCity(city: string) {
-  router.push({ name: 'ExplorePlaces', params: { city } })
+  const query = typeof route.query.library === 'string'
+    ? { library: route.query.library }
+    : undefined
+  router.push({ name: 'ExplorePlaces', params: { city }, query })
 }
 
 function openPreview(index: number) {
@@ -335,13 +368,24 @@ async function handleRename() {
   }
 }
 
-// Re-load whenever the route (dimension/key) changes.
+// Reload only when the route fields that affect data change. Display-name query
+// updates (for example after a person rename) must preserve pagination/scroll.
 watch(
-  () => route.fullPath,
-  () => reload()
+  () => [
+    route.name,
+    route.params.id,
+    route.params.city,
+    route.params.label,
+    route.query.library,
+  ],
+  () => void reload(),
+  { immediate: true }
 )
 
-onMounted(() => reload())
+watch(
+  () => [route.query.name, route.query.name_zh],
+  () => resolveTitle()
+)
 </script>
 
 

@@ -64,15 +64,16 @@ class ConditionBroadcastReceiver : BroadcastReceiver() {
     }
 
     /**
-     * Triggers a one-time condition check work request.
-     * Uses KEEP policy to avoid duplicate checks when multiple events fire rapidly.
+     * Triggers condition checks without cancelling a running worker or dropping
+     * the newest state change. APPEND_OR_REPLACE queues the new check behind an
+     * active chain and replaces only a failed/cancelled prerequisite chain.
      */
     private fun triggerConditionCheck(context: Context) {
         val workRequest = OneTimeWorkRequestBuilder<ConditionCheckWorker>().build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
             CONDITION_CHECK_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
             workRequest
         )
     }

@@ -87,7 +87,11 @@
     <string name="pause_conditions_hint">将在条件满足后自动恢复</string>
     <string name="backup_paused_reason_format">备份已暂停：%1$s</string>
 
-    <!-- 备份通知 -->
+    <string name="backup_error_upload_chunk_rejected">服务器拒绝了上传分块 %1$d。</string>
+    <string name="backup_error_init_invalid_chunks">服务器返回了无效的分片参数（大小=%1$d，总数=%2$d）。</string>
+    <string name="pause_waiting_message">正在等待备份条件</string>
+    <string name="pause_waiting_hint">服务就绪后将自动恢复</string>
+    <string name="notification_permission_denied">通知权限未开启。备份仍可运行，但进度只能在应用内查看。</string>
     <string name="notification_channel_backup_progress">备份进度</string>
     <string name="notification_channel_backup_progress_description">显示图片备份进度</string>
     <string name="notification_channel_backup_notice">备份提示</string>

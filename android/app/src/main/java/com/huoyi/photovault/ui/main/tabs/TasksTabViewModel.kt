@@ -78,6 +78,10 @@ sealed class PauseReason(
         R.string.pause_no_wifi_message,
         R.string.pause_no_wifi_hint
     )
+    data object Waiting : PauseReason(
+        R.string.pause_waiting_message,
+        R.string.pause_waiting_hint
+    )
     data object LowBatteryAndNoWifi : PauseReason(
         R.string.pause_conditions_message,
         R.string.pause_conditions_hint
@@ -242,7 +246,6 @@ class TasksTabViewModel @Inject constructor(
         startPollingCurrentTasks()
         observeUploadProgress()
         loadHistory()
-        loadPausedTasks()
     }
 
     /**
@@ -297,8 +300,10 @@ class TasksTabViewModel @Inject constructor(
      */
     fun loadPausedTasks() {
         viewModelScope.launch {
+            val showLoading = _uiState.value.isCurrentTasksLoading &&
+                _uiState.value.pausedTasks.isEmpty()
             _uiState.value = _uiState.value.copy(
-                isPausedTasksLoading = true,
+                isPausedTasksLoading = showLoading,
                 pausedTasksLoadError = false
             )
             try {
@@ -616,7 +621,7 @@ class TasksTabViewModel @Inject constructor(
             !batteryOk && !networkOk -> PauseReason.LowBatteryAndNoWifi
             !batteryOk -> PauseReason.LowBattery
             !networkOk -> PauseReason.NoWifi
-            else -> PauseReason.NoWifi // fallback
+            else -> PauseReason.Waiting
         }
     }
 

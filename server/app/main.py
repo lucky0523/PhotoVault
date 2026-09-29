@@ -9,15 +9,19 @@ A photo backup service for NAS deployment, supporting:
 - File browsing and thumbnail generation
 """
 
+import asyncio
 import time
 import logging
+import os
 import traceback
 from contextlib import asynccontextmanager
-from typing import Any
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
 
@@ -298,9 +302,25 @@ def create_app() -> FastAPI:
                         )
                 finally:
                     await db.close()
-            except Exception:
-                # If we can't check, let the request through
-                pass
+            except Exception as exc:
+                # A failed setup check can indicate an unreadable or corrupt
+                # database. Fail closed instead of allowing protected business
+                # endpoints to run against an unknown state.
+                duration_ms = (time.time() - start_time) * 1000
+                logger.exception(
+                    "Setup gateway check failed for %s %s from %s (%.1fms)",
+                    request.method,
+                    path,
+                    client,
+                    duration_ms,
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "SERVICE_UNAVAILABLE",
+                        "detail": "System initialization status is unavailable",
+                    },
+                )
 
         try:
             response = await call_next(request)
@@ -398,10 +418,12 @@ def _register_routes(application: FastAPI) -> None:
 
     @application.get("/api/v1/health")
     async def health_check():
-        """Health check endpoint with storage availability info."""
-        from app.services.background_tasks import get_disk_stats
+        """Health check endpoint with freshly measured storage availability."""
+        from app.services.background_tasks import refresh_disk_stats
 
-        disk_stats = get_disk_stats()
+        # Disk usage is a filesystem call; refresh on every health request so
+        # startup never exposes the module's initial all-zero placeholder.
+        disk_stats = await asyncio.to_thread(refresh_disk_stats)
         return {
             "status": "ok",
             "storage_available_gb": disk_stats["available_gb"],
@@ -431,44 +453,48 @@ def _register_routes(application: FastAPI) -> None:
     # 前端只有飞牛构建才会用到它，见 server/app/api/fnos.py 的说明。
     application.include_router(fnos_router, prefix="/api/v1", tags=["fnos"])
 
-    # Catch-all route for SPA routing
-    # This handles direct access to Vue Router routes like /photos, /timeline, etc.
-    # Must be registered AFTER all API routes so API routes take priority
-    @application.get("/{full_path:path}")
-    async def catch_all(full_path: str):
-        """Catch-all route for Single Page Application (SPA) routing.
+    # API routes above are registered before static mounts. Vue's generated
+    # assets are served by StaticFiles, which canonicalizes paths and enforces
+    # containment. The SPA fallback runs only after normal routing returns 404
+    # and asks StaticFiles for the one fixed index path.
+    web_dist_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "web",
+        "dist",
+    )
+    if os.path.isdir(web_dist_dir):
+        web_static = StaticFiles(directory=web_dist_dir, html=True)
+        assets_dir = os.path.join(web_dist_dir, "assets")
+        if os.path.isdir(assets_dir):
+            application.mount(
+                "/assets",
+                StaticFiles(directory=assets_dir),
+                name="web-assets",
+            )
 
-        Returns index.html for any non-API, non-static path so Vue Router can handle the routing.
-        This allows direct access to routes like /photos, /timeline, etc.
-        """
-        import os
-        
-        _web_dist_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "web",
-            "dist",
-        )
-        
-        # Skip API paths
-        if full_path.startswith("api/") or full_path.startswith("api\\"):
-            raise HTTPException(status_code=404, detail="Not Found")
-        
-        # Check if it's a static file that exists
-        static_file_path = os.path.join(_web_dist_dir, full_path)
-        if os.path.isfile(static_file_path):
-            # Return the static file
-            from fastapi.responses import FileResponse
-            return FileResponse(static_file_path)
+        @application.get("/icon.png", include_in_schema=False)
+        async def web_icon(request: Request):
+            return await web_static.get_response("icon.png", request.scope)
 
-        # Otherwise, return index.html for SPA routing
-        index_path = os.path.join(_web_dist_dir, "index.html")
-        if os.path.exists(index_path):
-            with open(index_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            from fastapi.responses import HTMLResponse
-            return HTMLResponse(content=content)
-        else:
-            raise HTTPException(status_code=404, detail="Frontend not found")
+        @application.exception_handler(StarletteHTTPException)
+        async def spa_history_fallback(
+            request: Request, exc: StarletteHTTPException
+        ):
+            """Serve the fixed SPA shell only for otherwise-unmatched pages.
+
+            An exception handler does not occupy a wildcard route, so routes
+            registered later (plugins and tests included) remain reachable. Its
+            response also returns through the normal logging and CORS stack.
+            """
+            path = request.url.path
+            if (
+                exc.status_code == 404
+                and request.method in {"GET", "HEAD"}
+                and path != "/api"
+                and not path.startswith(("/api/", "/assets/"))
+            ):
+                return await web_static.get_response("index.html", request.scope)
+            return await http_exception_handler(request, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -476,23 +502,3 @@ def _register_routes(application: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 app = create_app()
-
-
-# ---------------------------------------------------------------------------
-# Static file serving (production mode)
-# ---------------------------------------------------------------------------
-# Mount Vue.js build output if web/dist exists.
-# This must be AFTER app creation so API routes take priority over static files.
-
-import os
-
-_web_dist_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "web",
-    "dist",
-)
-
-if os.path.isdir(_web_dist_dir):
-    from fastapi.staticfiles import StaticFiles
-
-    app.mount("/", StaticFiles(directory=_web_dist_dir, html=True), name="web")

@@ -16,6 +16,6 @@
 #
 # Android 的 versionName/versionCode 不在此列：versionCode 是必须单调递增的发布
 # 序号（服务端会拒收重复值），与产品版本不是同一个语义。
-__version__ = "1.3"
+__version__ = "1.4"
 
 __all__ = ["__version__"]

@@ -16,7 +16,7 @@ data class DuplicateCheckRequest(
 
 data class DuplicateCheckResponse(
     @SerializedName("is_duplicate") val isDuplicate: Boolean,
-    @SerializedName("file_id") val fileId: String?,
+    @SerializedName("file_id") val fileId: Int? = null,
     @SerializedName("status") val status: String? = "active",
     @SerializedName("expires_at") val expiresAt: String? = null
 )
@@ -43,9 +43,11 @@ data class InitUploadRequest(
 )
 
 data class InitUploadResponse(
-    @SerializedName("session_id") val sessionId: String,
-    @SerializedName("total_chunks") val totalChunks: Int,
-    @SerializedName("chunk_size") val chunkSize: Int
+    @SerializedName("session_id") val sessionId: String? = null,
+    @SerializedName("total_chunks") val totalChunks: Int = 0,
+    @SerializedName("chunk_size") val chunkSize: Int = 0,
+    @SerializedName("is_duplicate") val isDuplicate: Boolean = false,
+    @SerializedName("file_id") val fileId: Int? = null
 )
 
 // --- Chunk Upload ---
@@ -65,8 +67,8 @@ data class CompleteUploadRequest(
 
 data class CompleteUploadResponse(
     @SerializedName("success") val success: Boolean,
-    @SerializedName("file_id") val fileId: String,
-    @SerializedName("stored_path") val storedPath: String
+    @SerializedName("file_id") val fileId: Int? = null,
+    @SerializedName("stored_path") val storedPath: String? = null
 )
 
 // --- Resume Info ---
@@ -106,8 +108,8 @@ enum class UploadState {
 // --- Upload Result ---
 
 sealed class UploadResult {
-    data class Success(val fileId: String, val storedPath: String) : UploadResult()
-    data class Duplicate(val fileId: String?) : UploadResult()
+    data class Success(val fileId: Int?, val storedPath: String) : UploadResult()
+    data class Duplicate(val fileId: Int?) : UploadResult()
     /**
      * The file was skipped (not uploaded this round).
      *

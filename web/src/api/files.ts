@@ -176,28 +176,37 @@ export async function listAllFiles(
   return response.data
 }
 
+function buildAuthenticatedMediaUrl(
+  path: string,
+  params?: Record<string, string>
+): string {
+  const query = new URLSearchParams(params)
+  // Read at call time so refreshed credentials are never captured at module load.
+  const token = getAccessToken()
+  if (token) query.set('token', token)
+  const queryString = query.toString()
+  return queryString ? `${path}?${queryString}` : path
+}
+
 /**
  * Get thumbnail URL for a file
  */
 export function getThumbnailUrl(fileId: number, size: 'small' | 'medium' = 'small'): string {
-  const token = getAccessToken()
-  return `/api/v1/files/thumbnail/${fileId}?size=${size}&token=${token}`
+  return buildAuthenticatedMediaUrl(`/api/v1/files/thumbnail/${fileId}`, { size })
 }
 
 /**
  * Get download URL for a file
  */
 export function getDownloadUrl(fileId: number): string {
-  const token = getAccessToken()
-  return `/api/v1/files/download/${fileId}?token=${token}`
+  return buildAuthenticatedMediaUrl(`/api/v1/files/download/${fileId}`)
 }
 
 /**
  * Get the embedded motion-photo video URL (动态照片) for a file
  */
 export function getMotionVideoUrl(fileId: number): string {
-  const token = getAccessToken()
-  return `/api/v1/files/motion/${fileId}?token=${token}`
+  return buildAuthenticatedMediaUrl(`/api/v1/files/motion/${fileId}`)
 }
 
 /**
@@ -262,7 +271,7 @@ export function formatFileSize(bytes: number): string {
  * `toLocaleDateString` — converts and displays them in the browser's local
  * timezone correctly.
  */
-function normalizeTimestamp(dateStr: string): string {
+export function normalizeTimestamp(dateStr: string): string {
   const hasTimezone = /[Zz]|[+-]\d{2}:?\d{2}$/.test(dateStr)
   const isSqliteUtcFormat = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(dateStr)
   if (!hasTimezone && isSqliteUtcFormat) {

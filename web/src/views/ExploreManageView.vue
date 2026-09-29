@@ -178,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
@@ -264,6 +264,12 @@ const progress = reactive<Record<ResourceType, DownloadProgress | null>>({
   scene: null,
   geocoding: null,
 })
+const polling = reactive<Record<ResourceType, boolean>>({
+  face: false,
+  scene: false,
+  geocoding: false,
+})
+let disposed = false
 
 // Runtime analysis feature flags (toggleable, no restart).
 const flags = reactive<AnalysisFlags>({
@@ -379,10 +385,12 @@ function sleep(ms: number): Promise<void> {
 // refresh-time resume, since the download progress lives on the server and
 // survives a page reload.
 async function pollDownloadProgress(type: ResourceType) {
+  if (disposed || polling[type]) return
+  polling[type] = true
   try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    while (!disposed) {
       const p = await getDownloadProgress(type)
+      if (disposed) return
       progress[type] = p
       if (p.status === 'success') {
         ElMessage.success(p.message || '资源下载成功')
@@ -400,15 +408,21 @@ async function pollDownloadProgress(type: ResourceType) {
       await sleep(800)
     }
   } catch (error: any) {
-    const msg = error.response?.data?.detail || '资源下载失败'
-    ElMessage.error(msg)
+    if (!disposed) {
+      const msg = error.response?.data?.detail || '资源下载失败'
+      ElMessage.error(msg)
+    }
   } finally {
-    downloading[type] = false
-    progress[type] = null
+    polling[type] = false
+    if (!disposed) {
+      downloading[type] = false
+      progress[type] = null
+    }
   }
 }
 
 async function handleDownload(type: ResourceType) {
+  if (downloading[type] || polling[type]) return
   const url = urls[type]?.trim()
   if (!url) return
 
@@ -444,6 +458,7 @@ async function resumeRunningDownloads() {
     types.map(async (type) => {
       try {
         const p = await getDownloadProgress(type)
+        if (disposed || downloading[type] || polling[type]) return
         if (p.status === 'running') {
           downloading[type] = true
           progress[type] = p
@@ -480,6 +495,11 @@ onMounted(() => {
   loadFlags()
   loadStatus()
   resumeRunningDownloads()
+})
+
+onBeforeUnmount(() => {
+  // Stop observing only. The server-side downloads continue running.
+  disposed = true
 })
 </script>
 

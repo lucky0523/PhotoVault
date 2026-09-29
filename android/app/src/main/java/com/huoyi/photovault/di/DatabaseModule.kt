@@ -141,6 +141,15 @@ object DatabaseModule {
         }
     }
 
+    // Server-selected chunk sizes must survive process death so resumed offsets
+    // use the same byte boundaries as the original session. Existing rows get 0
+    // and are safely re-initialized once by ChunkUploader rather than guessed.
+    internal val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE upload_records ADD COLUMN chunk_size INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -151,7 +160,8 @@ object DatabaseModule {
         )
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                MIGRATION_9_10
             )
             .build()
     }

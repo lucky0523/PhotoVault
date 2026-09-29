@@ -121,8 +121,17 @@ class StoragePathEngine:
                 error_message=f"Complete path exceeds {_MAX_PATH_LENGTH} characters (length: {len(path)})",
             )
 
+        # Reject traversal components before any filesystem normalization. A
+        # source folder such as ``../../tmp`` would otherwise escape the
+        # configured base when Path.mkdir/shutil.move resolves it.
+        parts = path.replace("\\", "/").split("/")
+        if any(part in {".", ".."} for part in parts):
+            return PathValidationResult(
+                is_valid=False,
+                error_message="Path must not contain '.' or '..' components",
+            )
+
         # Check each folder name length
-        parts = path.split("/")
         for part in parts:
             if len(part) > _MAX_FOLDER_NAME_LENGTH:
                 return PathValidationResult(

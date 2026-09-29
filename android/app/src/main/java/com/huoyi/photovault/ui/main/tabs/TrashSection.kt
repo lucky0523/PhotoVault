@@ -104,6 +104,17 @@ fun TrashView(
 
         HorizontalDivider()
 
+        if (error != null && items.isNotEmpty()) {
+            Text(
+                text = error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
             when {
                 isLoading && items.isEmpty() -> {
@@ -192,7 +203,8 @@ fun TrashView(
                 mimeType = target.mimeType,
                 exifTime = target.exifTime,
                 thumbnailUrl = null,
-                createdAt = target.createdAt ?: ""
+                createdAt = target.createdAt,
+                mediaType = target.mediaType
             ),
             downloadUrl = "$serverBaseUrl/api/v1/files/download/${target.id}",
             onDismiss = { previewTarget = null }

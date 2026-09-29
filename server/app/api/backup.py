@@ -26,6 +26,7 @@ from app.models.storage import FileMetadata, StoragePolicy
 from app.services.chunk_manager import (
     ChunkChecksumError,
     ChunkManager,
+    InvalidChunkIndexError,
     SessionNotFoundError,
 )
 from app.services.deduplication_service import DeduplicationService
@@ -293,6 +294,7 @@ async def init_upload(
         DiskSpaceError,
         DirectoryCreationError,
         InitUploadInfo,
+        InvalidUploadPathError,
         UploadService,
     )
 
@@ -351,6 +353,8 @@ async def init_upload(
             username=current_user.username,
             file_info=file_info,
         )
+    except InvalidUploadPathError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except DiskSpaceError as e:
         raise HTTPException(status_code=507, detail=str(e))
     except DirectoryCreationError as e:
@@ -369,7 +373,7 @@ async def init_upload(
     return InitUploadResponse(
         session_id=result.session_id or "",
         total_chunks=result.total_chunks or 0,
-        chunk_size=result.chunk_size or ChunkManager.CHUNK_SIZE,
+        chunk_size=result.chunk_size or settings.chunk_size_bytes,
     )
 
 
@@ -398,9 +402,12 @@ async def upload_chunk(
             chunk_index=chunk_index,
             data=data,
             md5_checksum=checksum,
+            user_id=current_user.id,
         )
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Upload session not found")
+    except InvalidChunkIndexError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ChunkChecksumError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -471,15 +478,18 @@ async def get_resume_info(
     settings = get_settings()
     chunk_manager = ChunkManager(db, settings.media_root)
 
-    session = await chunk_manager.get_session(session_id)
+    session = await chunk_manager.get_session(
+        session_id, user_id=current_user.id, require_active=True
+    )
     if session is None:
-        raise HTTPException(status_code=404, detail="Upload session not found")
+        raise HTTPException(status_code=404, detail="Upload session not found or expired")
 
-    # Verify session belongs to current user
-    if session["user_id"] != current_user.id:
-        raise HTTPException(status_code=404, detail="Upload session not found")
-
-    received = await chunk_manager.get_received_chunks(session_id)
+    try:
+        received = await chunk_manager.get_received_chunks(
+            session_id, user_id=current_user.id, require_active=True
+        )
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Upload session not found or expired")
 
     return ResumeInfoResponse(
         session_id=session_id,
