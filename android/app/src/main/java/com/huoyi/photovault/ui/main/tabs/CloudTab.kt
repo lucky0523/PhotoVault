@@ -2,7 +2,21 @@ package com.huoyi.photovault.ui.main.tabs
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.huoyi.photovault.ui.theme.LiquidDialogButton
+import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
+import com.huoyi.photovault.ui.theme.LiquidGlassDialog
+import com.huoyi.photovault.ui.theme.SurfaceLiquidButton
+import com.huoyi.photovault.ui.theme.appBackgroundBrush
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,8 +41,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -133,6 +145,38 @@ fun CloudTab(
         viewModel.navigateToBreadcrumb(parent)
     }
 
+    // In multi-select mode, back just leaves selection mode. Registered last so
+    // it takes precedence over the directory-up handler above.
+    BackHandler(
+        enabled = uiState.viewMode == CloudViewMode.Browse && uiState.isSelectionMode
+    ) {
+        viewModel.clearSelection()
+    }
+
+    // Backdrop capturing the gradient + the file listing, sampled by the
+    // selection button. The shell's LocalGlassBackdrop is gradient-only, so a
+    // button sampling it would just paint gradient over the photos and look
+    // opaque instead of see-through.
+    val backgroundBrush = appBackgroundBrush()
+    val contentBackdrop = rememberLayerBackdrop(
+        onDraw = {
+            drawRect(backgroundBrush)
+            drawContent()
+        }
+    )
+
+    // Confirmation dialog for moving the selected files into the recycle bin.
+    var showTrashConfirm by remember { mutableStateOf(false) }
+
+    // One-shot result feedback from the view model.
+    val context = LocalContext.current
+    LaunchedEffect(uiState.message) {
+        uiState.message?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            viewModel.consumeMessage()
+        }
+    }
+
     when (uiState.viewMode) {
         CloudViewMode.Trash -> {
             TrashView(
@@ -164,6 +208,14 @@ fun CloudTab(
             Box(
                 modifier = Modifier.fillMaxSize()
             ) {
+                // The listing is recorded into contentBackdrop so the floating
+                // selection button (a sibling, never inside this layer) refracts
+                // the thumbnails beneath it, like FolderDetailScreen's FABs.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(contentBackdrop)
+                ) {
                 when {
                     uiState.isLoading && !uiState.isRefreshing -> {
                         // Initial loading state
@@ -232,7 +284,16 @@ fun CloudTab(
                                 FileItem(
                                     file = file,
                                     serverBaseUrl = serverBaseUrl,
-                                    onClick = { previewIndex = index }
+                                    isSelectionMode = uiState.isSelectionMode,
+                                    isSelected = file.id in uiState.selectedFileIds,
+                                    onClick = {
+                                        if (uiState.isSelectionMode) {
+                                            viewModel.toggleFileSelection(file.id)
+                                        } else {
+                                            previewIndex = index
+                                        }
+                                    },
+                                    onLongClick = { viewModel.toggleFileSelection(file.id) }
                                 )
                             }
 
@@ -274,8 +335,50 @@ fun CloudTab(
                         }
                     }
                 }
+                }
+
+                // Multi-select action button (bottom-end, like LocalTab's FABs):
+                // shows the selected count and a trash glyph; tapping it asks for
+                // confirmation before moving the files into the recycle bin.
+                if (uiState.isSelectionMode) {
+                    SelectionTrashButton(
+                        backdrop = contentBackdrop,
+                        selectedCount = uiState.selectedFileIds.size,
+                        isWorking = uiState.isMovingToTrash,
+                        onClick = { showTrashConfirm = true },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(
+                                end = 16.dp,
+                                bottom = 16.dp + LocalBottomBarPadding.current
+                            )
+                    )
+                }
             }
         }
+    }
+
+    if (showTrashConfirm) {
+        val count = uiState.selectedFileIds.size
+        LiquidGlassDialog(
+            onDismissRequest = { showTrashConfirm = false },
+            title = "移入回收站",
+            text = "确定将选中的 $count 张图片移入回收站吗？移入后可在回收站中还原。",
+            buttons = {
+                LiquidDialogButton(
+                    text = "取消",
+                    onClick = { showTrashConfirm = false }
+                )
+                LiquidDialogButton(
+                    text = "移入回收站",
+                    style = LiquidDialogButtonStyle.Destructive,
+                    onClick = {
+                        showTrashConfirm = false
+                        viewModel.moveSelectedToTrash()
+                    }
+                )
+            }
+        )
     }
 
     // Full-screen, swipeable preview over the whole folder. The item list is
@@ -561,65 +664,133 @@ private fun CloudDirectoryRow(
 private fun FileItem(
     file: FileBrowseInfo,
     serverBaseUrl: String,
-    onClick: () -> Unit
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
-    Card(
+    // Plain list row (no card background), matching CloudDirectoryRow's
+    // horizontal/vertical padding for a tighter, consistent rhythm.
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clickable(onClick = onClick),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
+        // Thumbnail
+        val thumbnailUrl = if (file.thumbnailUrl != null) {
+            if (file.thumbnailUrl.startsWith("http")) file.thumbnailUrl
+            else "$serverBaseUrl${file.thumbnailUrl}"
+        } else {
+            "$serverBaseUrl/api/v1/files/thumbnail/${file.id}"
+        }
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(thumbnailUrl)
+                .crossfade(true)
+                .build(),
+            contentDescription = file.fileName,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+                .size(48.dp)
+                .clip(MaterialTheme.shapes.small)
+        )
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // File info
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = file.fileName,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = formatFileSize(file.fileSize),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = formatTime(file.exifTime ?: file.createdAt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Selection indicator, only in multi-select mode.
+        if (isSelectionMode) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Icon(
+                imageVector = if (isSelected) {
+                    Icons.Filled.CheckCircle
+                } else {
+                    Icons.Outlined.RadioButtonUnchecked
+                },
+                contentDescription = if (isSelected) "已选中" else "未选中",
+                tint = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Multi-select action button, styled like LocalTab's floating buttons
+ * ([SurfaceLiquidButton], 56dp tall, primary tint) but stretched into a pill
+ * that shows the selected count next to a trash glyph.
+ */
+@Composable
+private fun SelectionTrashButton(
+    backdrop: Backdrop,
+    selectedCount: Int,
+    isWorking: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    SurfaceLiquidButton(
+        onClick = { if (!isWorking) onClick() },
+        backdrop = backdrop,
+        modifier = modifier
+            .height(56.dp)
+            .semantics { contentDescription = "将选中的 $selectedCount 张图片移入回收站" }
+    ) {
+        // Horizontal padding lives on the content (not the button modifier) so
+        // the glass surface itself spans the full pill width.
+        // Destructive action → red content (the app's "deleted" status color).
+        val destructiveColor = CloudStatusColors.Purged
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Thumbnail
-            val thumbnailUrl = if (file.thumbnailUrl != null) {
-                if (file.thumbnailUrl.startsWith("http")) file.thumbnailUrl
-                else "$serverBaseUrl${file.thumbnailUrl}"
-            } else {
-                "$serverBaseUrl/api/v1/files/thumbnail/${file.id}"
-            }
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(thumbnailUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = file.fileName,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(MaterialTheme.shapes.small)
+            Text(
+                text = "$selectedCount",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = destructiveColor
             )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // File info
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.fileName,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+            Spacer(modifier = Modifier.width(10.dp))
+            if (isWorking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = destructiveColor
                 )
-                Spacer(modifier = Modifier.height(2.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = formatFileSize(file.fileSize),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = formatTime(file.exifTime ?: file.createdAt),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = null,
+                    tint = destructiveColor
+                )
             }
         }
     }

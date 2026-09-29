@@ -289,6 +289,8 @@ class StatusSyncManagerReconcileTest {
             throw NotImplementedError()
         override suspend fun purgeTrashFile(fileId: Int): Response<com.huoyi.photovault.data.api.model.TrashActionResponse> =
             throw NotImplementedError()
+        override suspend fun moveFileToTrash(fileId: Int): Response<com.huoyi.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
     }
 
     private class FakeBackupApi(

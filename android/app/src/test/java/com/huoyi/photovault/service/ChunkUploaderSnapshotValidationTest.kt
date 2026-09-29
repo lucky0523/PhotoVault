@@ -268,6 +268,8 @@ class ChunkUploaderSnapshotValidationTest {
             throw NotImplementedError()
         override suspend fun purgeTrashFile(fileId: Int): Response<com.huoyi.photovault.data.api.model.TrashActionResponse> =
             throw NotImplementedError()
+        override suspend fun moveFileToTrash(fileId: Int): Response<com.huoyi.photovault.data.api.model.TrashActionResponse> =
+            throw NotImplementedError()
     }
 
     /** In-memory [UploadRecordDao] — no existing record → always a new session. */

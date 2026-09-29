@@ -86,6 +86,16 @@ interface FileApi {
     ): Response<TrashActionResponse>
 
     /**
+     * Soft-delete a single file: moves it into the recycle bin (restorable until
+     * the retention period expires). The server replies `{success, message}`,
+     * which [TrashActionResponse] parses (its `count` is simply absent).
+     */
+    @DELETE("/api/v1/files/{file_id}")
+    suspend fun moveFileToTrash(
+        @Path("file_id") fileId: Int
+    ): Response<TrashActionResponse>
+
+    /**
      * Permanently delete a single file from the recycle bin.
      */
     @DELETE("/api/v1/files/trash/{file_id}")

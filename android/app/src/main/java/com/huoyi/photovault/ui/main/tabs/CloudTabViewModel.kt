@@ -49,8 +49,16 @@ data class CloudTabUiState(
     val trashTotal: Int = 0,
     val trashItems: List<TrashItemInfo> = emptyList(),
     val isTrashLoading: Boolean = false,
-    val trashError: String? = null
+    val trashError: String? = null,
+    // Multi-select (entered by long-pressing a file in the browser)
+    val selectedFileIds: Set<Int> = emptySet(),
+    val isMovingToTrash: Boolean = false,
+    /** One-shot user feedback (shown as a Toast, then cleared via [CloudTabViewModel.consumeMessage]). */
+    val message: String? = null
 ) {
+    /** True while the browser is in multi-select mode. */
+    val isSelectionMode: Boolean get() = selectedFileIds.isNotEmpty()
+
     /**
      * True when the pinned recycle-bin entry row should be shown (root only).
      * The server normalizes the root path to an empty string (it strips slashes),
@@ -113,7 +121,10 @@ class CloudTabViewModel @Inject constructor(
     fun loadDirectory(path: String) {
         val generation = ++browseGeneration
         directoryLoadJob?.cancel()
+        // A selection only makes sense within the directory it was made in.
+        val keepSelection = path == _uiState.value.currentPath
         _uiState.value = _uiState.value.copy(
+            selectedFileIds = if (keepSelection) _uiState.value.selectedFileIds else emptySet(),
             currentPath = path,
             breadcrumbs = buildBreadcrumbs(path),
             isLoading = true,
@@ -293,9 +304,96 @@ class CloudTabViewModel @Inject constructor(
     // Recycle bin
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Multi-select → move to trash
+    // ------------------------------------------------------------------
+
+    /** Add/remove a file from the selection (the first add enters selection mode). */
+    fun toggleFileSelection(fileId: Int) {
+        val state = _uiState.value
+        if (state.isMovingToTrash) return
+        val selected = state.selectedFileIds
+        _uiState.value = state.copy(
+            selectedFileIds = if (fileId in selected) selected - fileId else selected + fileId
+        )
+    }
+
+    /** Leave selection mode without doing anything. */
+    fun clearSelection() {
+        if (_uiState.value.isMovingToTrash) return
+        _uiState.value = _uiState.value.copy(selectedFileIds = emptySet())
+    }
+
+    /** Clear the one-shot [CloudTabUiState.message] after it has been shown. */
+    fun consumeMessage() {
+        _uiState.value = _uiState.value.copy(message = null)
+    }
+
+    /**
+     * Move every selected file to the recycle bin (server soft-delete).
+     *
+     * The server has no batch endpoint, so files are removed one by one. Files
+     * that were moved are dropped from the loaded listing in place (keeping the
+     * scroll position and already-fetched pages); failed ones stay selected so
+     * the user can retry.
+     */
+    fun moveSelectedToTrash() {
+        val state = _uiState.value
+        if (state.isMovingToTrash || state.selectedFileIds.isEmpty()) return
+        val ids = state.selectedFileIds.toList()
+        val path = state.currentPath
+        _uiState.value = state.copy(isMovingToTrash = true)
+
+        viewModelScope.launch {
+            val moved = HashSet<Int>()
+            var networkFailure = false
+            for (id in ids) {
+                try {
+                    val response = fileApi.moveFileToTrash(id)
+                    // 404 = already gone (e.g. deleted from the web UI); treat
+                    // it as done so it doesn't linger in the list.
+                    if (response.isSuccessful || response.code() == 404) moved += id
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    networkFailure = true
+                }
+            }
+
+            val current = _uiState.value
+            val failedCount = ids.size - moved.size
+            val sameDirectory = current.currentPath == path
+            val remainingFiles =
+                if (sameDirectory) current.files.filterNot { it.id in moved } else current.files
+            _uiState.value = current.copy(
+                files = remainingFiles,
+                totalFiles = if (sameDirectory) {
+                    (current.totalFiles - (current.files.size - remainingFiles.size)).coerceAtLeast(0)
+                } else {
+                    current.totalFiles
+                },
+                isEmpty = if (sameDirectory) {
+                    current.directories.isEmpty() && remainingFiles.isEmpty()
+                } else {
+                    current.isEmpty
+                },
+                selectedFileIds = current.selectedFileIds.filterTo(HashSet()) { it !in moved },
+                isMovingToTrash = false,
+                message = when {
+                    failedCount == 0 -> "已将 ${moved.size} 张图片移入回收站"
+                    networkFailure -> "$failedCount 张图片移入回收站失败，请检查网络后重试"
+                    else -> "$failedCount 张图片移入回收站失败"
+                }
+            )
+            if (moved.isNotEmpty()) refreshTrashCount()
+        }
+    }
+
     /** Enter the recycle-bin view and (re)load its contents. */
     fun enterTrash() {
-        _uiState.value = _uiState.value.copy(viewMode = CloudViewMode.Trash)
+        _uiState.value = _uiState.value.copy(
+            viewMode = CloudViewMode.Trash,
+            selectedFileIds = emptySet()
+        )
         loadTrash()
     }
 
