@@ -365,6 +365,12 @@ services:
 7. 支持原图下载
 8. **回收站管理** — 查看已删除的照片，支持恢复或彻底删除，显示剩余保留时间
 
+## Android 客户端版本管理与下载
+
+管理员可在 Web 管理页上传、查看、下载和删除 Android APK。服务端会读取安装包的 `versionName` 和 `versionCode`，且仅接受包名为 `com.huoyi.photovault` 的 APK；版本列表按 `versionCode` 管理，版本号最高的安装包作为最新版。
+
+Web 主布局顶部提供最新版 App 下载弹窗和二维码。最新版信息与 APK 下载接口公开，手机扫码后无需登录即可下载安装。安装包由服务端独立存放在 `.client-releases/android`，不会进入用户照片目录或照片记录。
+
 ## 常见问题
 
 ### 端口 80/443 被占用
