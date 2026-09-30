@@ -421,6 +421,9 @@ fun CloudTab(
  */
 private const val LOAD_MORE_THRESHOLD = 5
 
+/** Height shared by all Cloud Tab navigation bars (see [BreadcrumbNavigation]). */
+private val BREADCRUMB_BAR_HEIGHT = 40.dp
+
 /**
  * Pinned "回收站" entry row, styled to match [CloudDirectoryRow] so it sits
  * naturally among the folders while its warning-tinted glyph and count badge
@@ -490,7 +493,7 @@ private fun TrashEntryRow(
  * Each segment is clickable to navigate to that directory.
  */
 @Composable
-private fun BreadcrumbNavigation(
+internal fun BreadcrumbNavigation(
     breadcrumbs: List<BreadcrumbItem>,
     onBreadcrumbClick: (BreadcrumbItem) -> Unit
 ) {
@@ -507,7 +510,10 @@ private fun BreadcrumbNavigation(
         state = listState,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            // Fixed height so every Cloud Tab navigation bar (folder browser and
+            // recycle bin) is exactly the same size regardless of its content.
+            .height(BREADCRUMB_BAR_HEIGHT)
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         contentPadding = PaddingValues(end = 8.dp)
     ) {
