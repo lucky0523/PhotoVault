@@ -474,6 +474,20 @@ function videoNote(key: string): string {
   max-width: 100%;
 }
 
+/*
+ * 文字对比度 ≥ 4.5:1（FR-9.2，设计 §7.6），只在本页覆盖，不改全局主题：
+ * - 警告横幅默认 #ffa91f 配 #fff6e8 只有 1.79:1，改用深琥珀 #8a5300（5.91:1，图标随文字色）；
+ * - el-empty 说明默认 #909399（3.08:1），改用 #606266。
+ */
+.stats-page :deep(.el-alert--warning.is-light),
+.stats-page :deep(.el-alert--warning.is-light .el-alert__description) {
+  color: #8a5300;
+}
+
+.stats-page :deep(.el-empty__description p) {
+  color: #606266;
+}
+
 .recursive-switch {
   display: inline-flex;
   align-items: center;

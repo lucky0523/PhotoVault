@@ -135,6 +135,9 @@ docker compose up -d
 | `PHOTOVAULT_SESSION_EXPIRE_DAYS` | `7` | 上传会话过期时间（天） |
 | `PHOTOVAULT_TRASH_RETENTION_DAYS` | `30` | 回收站文件保留天数（过期自动清理） |
 | `PHOTOVAULT_LOG_LEVEL` | `INFO` | 日志级别 |
+| `PHOTOVAULT_DEFAULT_TIMEZONE` | 空 | 数据统计换算当地时间用的默认时区（IANA 名称，如 `Asia/Shanghai`；config.yaml 中为 `stats.default_timezone`）。设置后优先于浏览器时区，无效值会被忽略并记一条 WARNING |
+
+数据统计页的拍摄时间一律按当地时间统计，时区按以下顺序确定：文件自带的时区偏移（照片 EXIF 时间、带偏移的视频时间按原样使用）→ `PHOTOVAULT_DEFAULT_TIMEZONE` → 浏览器时区 → 服务端 `TZ` 环境变量（未设置时用服务器本机偏移）。
 
 #### 存储目录相互独立
 
@@ -223,6 +226,10 @@ logging:
 analysis:
   # 可选：模型目录，未设置时为 {storage.root}/.models
   # models_root: "/opt/photovault/models"
+
+stats:
+  # 可选：数据统计的默认时区，设置后优先于浏览器时区
+  # default_timezone: "Asia/Shanghai"
 ```
 
 **配置优先级**（从高到低）：环境变量 > .env 文件 > config.yaml > 默认值
@@ -486,6 +493,10 @@ npm run dev
 cd server
 pip install -r requirements-dev.txt
 pytest
+# 跳过受机器负载影响的耗时 / 性能测试
+pytest -m "not slow"
+# 只跑性能测试
+pytest -m performance -s
 ```
 
 ## 许可证

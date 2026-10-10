@@ -546,6 +546,11 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
   margin-top: 4px;
 }
 
+/* 排行空状态说明带「未知 N 个」数据，默认 #909399 只有 3.08:1（FR-9.2） */
+.stat-card :deep(.el-empty__description p) {
+  color: #606266;
+}
+
 .stat-sr-only {
   position: absolute;
   width: 1px;

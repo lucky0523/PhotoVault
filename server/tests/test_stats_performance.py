@@ -1,6 +1,8 @@
 """Performance: GET /stats/media on 100k rows, P95 <= 2 s (NFR-1, AC30).
 
 Run with: ``pytest -m performance tests/test_stats_performance.py -s``.
+Marked ``slow`` like tests/test_performance.py: the wall-clock assertion is
+sensitive to machine load, so routine runs can skip it with ``-m "not slow"``.
 
 The data covers all eleven aggregations: photos and videos mixed, ~30 cameras,
 ~20 lenses, random ISO / focal / aperture / shutter / duration, capture times
@@ -30,7 +32,7 @@ ROWS = 100_000
 CALLS = 20
 P95_LIMIT_SECONDS = 2.0
 
-pytestmark = pytest.mark.performance
+pytestmark = [pytest.mark.slow, pytest.mark.performance]
 
 
 @pytest.fixture

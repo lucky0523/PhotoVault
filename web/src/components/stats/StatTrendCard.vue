@@ -354,6 +354,11 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
   margin-top: 4px;
 }
 
+/* 空状态说明默认 #909399 只有 3.08:1，改用 #606266（FR-9.2） */
+.stat-card :deep(.el-empty__description p) {
+  color: #606266;
+}
+
 .stat-sr-only {
   position: absolute;
   width: 1px;
