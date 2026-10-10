@@ -3,6 +3,7 @@
 Provides periodic background tasks that run during the application lifecycle:
 - Expired upload session cleanup (every 6 hours)
 - Disk space monitoring (every hour)
+- Statistics metadata backfill (every hour, ``metadata_backfill``)
 
 Tasks are started via asyncio.create_task in the FastAPI lifespan and cancelled
 on shutdown. No external scheduler dependency required.
@@ -516,6 +517,9 @@ async def start_background_tasks() -> list[asyncio.Task]:
     Returns:
         List of asyncio.Task objects that should be cancelled on shutdown.
     """
+    # Imported here: metadata_backfill imports _database_ready from this module.
+    from app.services.metadata_backfill import metadata_backfill_task
+
     tasks = [
         asyncio.create_task(
             cleanup_expired_sessions_task(),
@@ -536,6 +540,10 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(
             analysis_worker_task(),
             name="analysis_worker",
+        ),
+        asyncio.create_task(
+            metadata_backfill_task(),
+            name="metadata_backfill",
         ),
     ]
     logger.info("Background tasks started: %s", [t.get_name() for t in tasks])

@@ -192,8 +192,130 @@ class TestFileRecordsSchema:
                 "deleted_at",
                 "deleted_batch_id",
                 "purged_at",
+                "capture_time",
+                "capture_time_kind",
+                "iso",
+                "focal_35mm",
+                "focal_35mm_source",
+                "focal_actual",
+                "duration_sec",
+                "f_number",
+                "exposure_time",
+                "camera_make",
+                "camera_model",
+                "lens_model",
+                "meta_version",
+                "meta_status",
+                "meta_scanned_at",
             ]
             assert col_names == expected
+
+    async def test_creates_user_path_index(self, db_path):
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("PRAGMA index_info(idx_file_records_user_path);")
+            cols = [row[2] for row in await cursor.fetchall()]
+        assert cols == ["user_id", "file_path"]
+
+
+# DDL of file_records before the media statistics columns were added.
+_LEGACY_FILE_RECORDS_DDL = """
+CREATE TABLE file_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    file_hash TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    file_name TEXT NOT NULL,
+    mime_type TEXT,
+    exif_time TIMESTAMP,
+    focal_length REAL,
+    is_reference BOOLEAN DEFAULT FALSE,
+    reference_to INTEGER,
+    live_photo_group_id TEXT,
+    live_photo_type TEXT,
+    media_type TEXT DEFAULT 'image',
+    is_motion_photo BOOLEAN DEFAULT FALSE,
+    motion_video_offset INTEGER,
+    is_ultra_hdr BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP,
+    deleted_batch_id TEXT,
+    purged_at TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (reference_to) REFERENCES file_records(id),
+    UNIQUE(user_id, file_hash, file_path)
+);
+"""
+
+_MEDIA_METADATA_COLUMNS = {
+    "capture_time": "TEXT",
+    "capture_time_kind": "TEXT",
+    "iso": "INTEGER",
+    "focal_35mm": "REAL",
+    "focal_35mm_source": "TEXT",
+    "focal_actual": "REAL",
+    "duration_sec": "REAL",
+    "f_number": "REAL",
+    "exposure_time": "REAL",
+    "camera_make": "TEXT",
+    "camera_model": "TEXT",
+    "lens_model": "TEXT",
+    "meta_version": "INTEGER",
+    "meta_status": "TEXT",
+    "meta_scanned_at": "TIMESTAMP",
+}
+
+
+class TestMediaMetadataMigration:
+    """Upgrading a pre-statistics database adds the metadata columns (FR-7.1)."""
+
+    async def test_legacy_schema_upgrade_is_idempotent(self, db_path):
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, "
+                "is_admin BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            await db.execute(_LEGACY_FILE_RECORDS_DDL)
+            await db.execute(
+                "INSERT INTO users (username, password_hash) VALUES ('alice', 'h')"
+            )
+            await db.execute(
+                """INSERT INTO file_records
+                   (user_id, file_hash, file_path, original_path, device_name,
+                    file_size, file_name, mime_type, exif_time, focal_length, media_type)
+                   VALUES (1, 'h1', '/m/alice/a.jpg', '/DCIM/a.jpg', 'Pixel', 123,
+                           'a.jpg', 'image/jpeg', '2024-05-01T10:00:00', 26.0, 'image')"""
+            )
+            await db.commit()
+            cursor = await db.execute("SELECT * FROM file_records")
+            legacy_row = tuple(await cursor.fetchone())
+
+        await init_db(db_path)
+        await init_db(db_path)
+
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("PRAGMA table_info(file_records);")
+            columns = {row[1]: row[2] for row in await cursor.fetchall()}
+            for name, col_type in _MEDIA_METADATA_COLUMNS.items():
+                assert columns.get(name) == col_type, name
+
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name='idx_file_records_user_path'"
+            )
+            assert await cursor.fetchone() is not None
+
+            cursor = await db.execute("SELECT * FROM file_records")
+            rows = await cursor.fetchall()
+            assert len(rows) == 1
+            upgraded = tuple(rows[0])
+            # Legacy columns keep their values; the new ones are all NULL.
+            assert upgraded[: len(legacy_row)] == legacy_row
+            assert upgraded[len(legacy_row):] == (None,) * len(_MEDIA_METADATA_COLUMNS)
 
     async def test_file_records_user_id_not_null(self, db_path):
         await init_db(db_path)

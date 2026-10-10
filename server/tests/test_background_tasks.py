@@ -277,12 +277,50 @@ class TestBackgroundTaskLifecycle:
             mock_settings.return_value.database_url = "/tmp/test.db"
 
             tasks = await start_background_tasks()
-            assert len(tasks) == 5
+            assert len(tasks) == 6
+            assert "metadata_backfill" in {t.get_name() for t in tasks}
             assert all(not t.done() for t in tasks)
 
             # Stop immediately
             await stop_background_tasks(tasks)
             assert all(t.done() for t in tasks)
+
+    @pytest.mark.parametrize(
+        "order",
+        [
+            ("app.services.background_tasks", "app.services.metadata_backfill"),
+            ("app.services.metadata_backfill", "app.services.background_tasks"),
+        ],
+        ids=["background-first", "backfill-first"],
+    )
+    def test_no_circular_import(self, order):
+        """Both import orders work (background_tasks imports backfill lazily)."""
+        import importlib
+        import sys
+
+        names = ("app.services.background_tasks", "app.services.metadata_backfill")
+        saved = {name: sys.modules.get(name) for name in names}
+        try:
+            for name in names:
+                sys.modules.pop(name, None)
+            for name in order:
+                importlib.import_module(name)
+            assert hasattr(sys.modules["app.services.metadata_backfill"], "metadata_backfill_task")
+            assert hasattr(sys.modules["app.services.background_tasks"], "start_background_tasks")
+        finally:
+            # Restore the original module objects (in sys.modules and as package
+            # attributes) so later patches target the modules the code uses.
+            import app.services as services_pkg
+
+            for name, module in saved.items():
+                attr = name.rsplit(".", 1)[1]
+                if module is not None:
+                    sys.modules[name] = module
+                    setattr(services_pkg, attr, module)
+                else:
+                    sys.modules.pop(name, None)
+                    if hasattr(services_pkg, attr):
+                        delattr(services_pkg, attr)
 
     async def test_cleanup_task_handles_cancellation(self):
         """The cleanup task handles CancelledError gracefully."""

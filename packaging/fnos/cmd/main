@@ -92,6 +92,11 @@ start_app() {
   if ! command -v ffmpeg >/dev/null 2>&1; then
     pv_log "WARN: ffmpeg not found on PATH, video thumbnails will be skipped."
   fi
+  # 数据统计的视频时长和拍摄时间靠 ffprobe 读取；缺失时服务端记为 no_ffprobe 并在
+  # 统计页提示，不影响启动。
+  if ! command -v ffprobe >/dev/null 2>&1; then
+    pv_log "WARN: ffprobe not found on PATH, video duration and capture time will be unavailable."
+  fi
 
   # CWD 必须是 server 目录：uvicorn 的 "app.main:app" 依赖它来导入模块，
   # config.py 查找 .env / config.yaml 也基于 CWD。

@@ -10,12 +10,19 @@ Tests cover:
 """
 
 import hashlib
+import io
 import os
+import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import aiosqlite
+from PIL import Image
+from PIL.ExifTags import IFD
+from PIL.TiffImagePlugin import IFDRational
 
 from app.core.config import reset_settings
 from app.core.database import init_db
@@ -23,6 +30,7 @@ from app.models.storage import FileMetadata, StoragePolicy
 from app.services.auth_service import AuthService
 from app.services.chunk_manager import ChunkManager
 from app.services.deduplication_service import DeduplicationService
+from app.services import media_metadata
 from app.services.upload_service import (
     CompleteUploadResult,
     DirectoryCreationError,
@@ -268,6 +276,7 @@ class TestCompleteUpload:
         file_content: bytes = b"Hello, World! This is test file content.",
         file_name: str = "test_photo.jpg",
         target_subdir: str = "alice/Pixel9Pro/DCIM/Camera",
+        exif_time: datetime | None = None,
     ) -> tuple[str, str]:
         """Helper to create a session and store all chunks.
 
@@ -288,6 +297,7 @@ class TestCompleteUpload:
             target_path=target_path,
             device_name="Pixel9Pro",
             original_path=f"/DCIM/Camera/{file_name}",
+            exif_time=exif_time,
         )
 
         # Store chunks
@@ -520,6 +530,262 @@ class TestCompleteUpload:
 
         # Chunk dir should be cleaned up
         assert not chunk_dir.exists()
+
+    # -- Statistics metadata (design §4.6; AC25–27, AC29) --------------------
+
+    @staticmethod
+    async def _file_row(db, file_id: int) -> dict:
+        cursor = await db.execute("SELECT * FROM file_records WHERE id = ?", (file_id,))
+        return dict(await cursor.fetchone())
+
+    async def test_jpeg_upload_records_metadata(self, seeded_db, storage_root):
+        """AC25: a camera JPEG fills every photo column, meta_version=1."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=_exif_jpeg_bytes(),
+            file_name="camera.jpg",
+            exif_time=datetime(2020, 1, 1, 0, 0, 0),
+        )
+
+        result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["iso"] == 800
+        assert row["f_number"] == 2.8
+        assert row["exposure_time"] == pytest.approx(1 / 2000)
+        assert row["camera_make"] == "Canon"
+        assert row["camera_model"] == "Canon EOS R5"
+        assert row["lens_model"] == "RF24-70mm F2.8 L IS USM"
+        assert row["focal_35mm"] == 50.0
+        assert row["focal_35mm_source"] == "exif"
+        assert row["focal_actual"] == 35.0
+        # The file's own EXIF time wins over the client value.
+        assert row["capture_time"] == "2024-05-01T18:30:12"
+        assert row["capture_time_kind"] == "local"
+        assert row["meta_version"] == 1
+        assert row["meta_status"] == "ok"
+        assert row["meta_scanned_at"]
+
+    @pytest.mark.parametrize(
+        "exif_ifd",
+        [
+            {41989: 50, 37386: IFDRational(35, 1)},
+            {37386: IFDRational(35, 1)},
+        ],
+        ids=["with-35mm-tag", "actual-only"],
+    )
+    async def test_legacy_focal_length_unchanged(self, seeded_db, storage_root, exif_ifd):
+        """AC29: the old focal_length column still follows _extract_focal_length."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=_exif_jpeg_bytes(exif_ifd=exif_ifd),
+            file_name="focal.jpg",
+        )
+
+        result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["focal_length"] == UploadService._extract_focal_length(result.stored_path)
+        assert row["focal_length"] is not None
+
+    async def test_video_without_ffprobe(self, seeded_db, storage_root):
+        """AC26: upload succeeds, duration unknown, meta_status='no_ffprobe'."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=b"fake mp4 payload",
+            file_name="clip.mp4",
+            exif_time=datetime(2025, 1, 15, 15, 30, tzinfo=timezone.utc),
+        )
+
+        media_metadata._reset_ffprobe_cache()
+        try:
+            with patch("app.services.media_metadata.shutil.which", return_value=None):
+                result = await service.complete_upload(session_id=session_id, user_id=1)
+        finally:
+            media_metadata._reset_ffprobe_cache()
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["media_type"] == "video"
+        assert row["duration_sec"] is None
+        assert row["meta_status"] == "no_ffprobe"
+        assert row["meta_version"] == 1
+        assert row["capture_time"] == "2025-01-15T15:30:00"
+        assert row["capture_time_kind"] == "utc"
+
+    @pytest.mark.skipif(
+        shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+        reason="ffmpeg/ffprobe not installed",
+    )
+    async def test_video_duration_with_ffprobe(self, seeded_db, storage_root, tmp_path):
+        clip = tmp_path / "src.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                "-i", "testsrc=duration=3:size=64x48:rate=10", "-c:v", "mpeg4",
+                "-metadata", "creation_time=2025-01-15T15:30:00Z", str(clip),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db, storage_root, file_content=clip.read_bytes(), file_name="real.mp4"
+        )
+
+        media_metadata._reset_ffprobe_cache()
+        result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["duration_sec"] == pytest.approx(3.0, abs=0.1)
+        assert row["capture_time"] == "2025-01-15T15:30:00"
+        assert row["capture_time_kind"] == "utc"
+        assert row["meta_status"] == "ok"
+
+    async def test_image_extractor_failure_falls_back(self, seeded_db, storage_root):
+        """AC27(a): extract_image_metadata raising -> 'error', client time kept."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=_exif_jpeg_bytes(),
+            file_name="fail_a.jpg",
+            exif_time=datetime(2025, 1, 15, 15, 30, tzinfo=timezone.utc),
+        )
+
+        with patch(
+            "app.services.media_metadata.extract_image_metadata",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["meta_status"] == "error"
+        assert row["meta_version"] == 1
+        assert row["capture_time"] == "2025-01-15T15:30:00"
+        assert row["capture_time_kind"] == "local"
+        assert row["iso"] is None
+
+    async def test_extract_media_metadata_raising_falls_back(self, seeded_db, storage_root):
+        """AC27(b): even the never-raise entry point raising keeps the upload."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=_exif_jpeg_bytes(),
+            file_name="fail_b.jpg",
+            exif_time=datetime(2025, 1, 15, 15, 30, tzinfo=timezone.utc),
+        )
+
+        with patch(
+            "app.services.upload_service.extract_media_metadata",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["meta_status"] == "error"
+        assert row["meta_version"] == 1
+        assert row["capture_time"] == "2025-01-15T15:30:00"
+        assert row["capture_time_kind"] == "local"
+
+    async def test_ffprobe_timeout_keeps_row_pending(self, seeded_db, storage_root):
+        """Upload ffprobe timeout: 'timeout', meta_version NULL, timeout=5."""
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db,
+            storage_root,
+            file_content=b"slow video payload",
+            file_name="slow.mp4",
+            exif_time=datetime(2025, 1, 15, 15, 30, tzinfo=timezone.utc),
+        )
+
+        run = MagicMock(side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=5))
+        with patch(
+            "app.services.media_metadata.ffprobe_path", return_value="/fake/ffprobe"
+        ), patch("app.services.media_metadata.subprocess.run", run):
+            result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        assert run.call_args.kwargs["timeout"] == 5
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["meta_status"] == "timeout"
+        assert row["meta_version"] is None
+        assert row["duration_sec"] is None
+        assert row["capture_time"] == "2025-01-15T15:30:00"
+        assert row["capture_time_kind"] == "utc"
+
+    async def test_metadata_write_failure_does_not_fail_upload(self, seeded_db, storage_root):
+        service = UploadService(seeded_db, storage_root)
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db, storage_root, file_content=_exif_jpeg_bytes(), file_name="w.jpg"
+        )
+
+        with patch(
+            "app.services.upload_service.apply_media_metadata",
+            side_effect=aiosqlite.OperationalError("database is locked"),
+        ):
+            result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["meta_version"] is None
+
+    async def test_same_content_branch_records_metadata(self, seeded_db, storage_root):
+        """The same-content reuse branch writes the metadata columns too."""
+        service = UploadService(seeded_db, storage_root)
+        content = _exif_jpeg_bytes()
+        target_dir = Path(storage_root) / "alice" / "Pixel9Pro" / "DCIM" / "Camera"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "same.jpg").write_bytes(content)
+
+        session_id, _ = await self._setup_session_with_chunks(
+            seeded_db, storage_root, file_content=content, file_name="same.jpg"
+        )
+
+        result = await service.complete_upload(session_id=session_id, user_id=1)
+
+        assert result.success is True
+        assert result.is_duplicate is True
+        row = await self._file_row(seeded_db, result.file_id)
+        assert row["iso"] == 800
+        assert row["camera_model"] == "Canon EOS R5"
+        assert row["meta_version"] == 1
+        assert row["meta_status"] == "ok"
+
+
+def _exif_jpeg_bytes(exif_ifd: dict | None = None) -> bytes:
+    """A small JPEG with camera EXIF (root Make/Model + Exif IFD tags)."""
+    img = Image.new("RGB", (64, 48), "blue")
+    exif = Image.Exif()
+    exif[271] = "Canon"
+    exif[272] = "Canon EOS R5"
+    ifd = exif.get_ifd(IFD.Exif)
+    tags = exif_ifd if exif_ifd is not None else {
+        34855: 800,
+        33437: IFDRational(28, 10),
+        33434: IFDRational(1, 2000),
+        36867: "2024:05:01 18:30:12",
+        37386: IFDRational(35, 1),
+        41989: 50,
+        42036: "RF24-70mm F2.8 L IS USM",
+    }
+    for tag, value in tags.items():
+        ifd[tag] = value
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif.tobytes())
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

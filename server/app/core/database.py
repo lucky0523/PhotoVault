@@ -71,6 +71,21 @@ CREATE TABLE IF NOT EXISTS file_records (
     deleted_at TIMESTAMP,
     deleted_batch_id TEXT,
     purged_at TIMESTAMP,
+    capture_time TEXT,
+    capture_time_kind TEXT,
+    iso INTEGER,
+    focal_35mm REAL,
+    focal_35mm_source TEXT,
+    focal_actual REAL,
+    duration_sec REAL,
+    f_number REAL,
+    exposure_time REAL,
+    camera_make TEXT,
+    camera_model TEXT,
+    lens_model TEXT,
+    meta_version INTEGER,
+    meta_status TEXT,
+    meta_scanned_at TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (reference_to) REFERENCES file_records(id),
     UNIQUE(user_id, file_hash, file_path)
@@ -184,6 +199,27 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_faces_user ON faces(user_id, cluster_id);",
     "CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);",
     "CREATE INDEX IF NOT EXISTS idx_client_versions_latest ON client_versions(platform, package_name, version_code DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_file_records_user_path ON file_records(user_id, file_path);",
+]
+
+# Media statistics metadata columns on file_records, in schema order. Written
+# only by app.services.media_metadata (upload path and background backfill).
+_MEDIA_METADATA_COLUMNS = [
+    ("capture_time", "TEXT"),
+    ("capture_time_kind", "TEXT"),
+    ("iso", "INTEGER"),
+    ("focal_35mm", "REAL"),
+    ("focal_35mm_source", "TEXT"),
+    ("focal_actual", "REAL"),
+    ("duration_sec", "REAL"),
+    ("f_number", "REAL"),
+    ("exposure_time", "REAL"),
+    ("camera_make", "TEXT"),
+    ("camera_model", "TEXT"),
+    ("lens_model", "TEXT"),
+    ("meta_version", "INTEGER"),
+    ("meta_status", "TEXT"),
+    ("meta_scanned_at", "TIMESTAMP"),
 ]
 
 
@@ -244,6 +280,13 @@ async def init_db(db_path: str) -> None:
             await db.execute(
                 "ALTER TABLE file_records ADD COLUMN is_ultra_hdr BOOLEAN DEFAULT FALSE;"
             )
+        # Media statistics metadata. No per-row backfill here: the background
+        # metadata backfill task fills them so startup is never blocked.
+        for col_name, col_type in _MEDIA_METADATA_COLUMNS:
+            if col_name not in existing_cols:
+                await db.execute(
+                    f"ALTER TABLE file_records ADD COLUMN {col_name} {col_type};"
+                )
 
         cursor = await db.execute("PRAGMA table_info(upload_sessions)")
         session_cols = {row[1] for row in await cursor.fetchall()}

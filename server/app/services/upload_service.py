@@ -26,6 +26,13 @@ from app.models.storage import FileMetadata, StoragePolicy
 from app.services.analysis_queue import enqueue_analysis
 from app.services.chunk_manager import ChunkManager, SessionNotFoundError
 from app.services.deduplication_service import DeduplicationService, FileRecord
+from app.services.media_metadata import (
+    UPLOAD_FFPROBE_TIMEOUT,
+    MediaMetadata,
+    apply_media_metadata,
+    extract_media_metadata,
+    resolve_capture_time,
+)
 from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
 from app.services.storage_path_engine import StoragePathEngine
 
@@ -374,6 +381,11 @@ class UploadService:
                     is_ultra_hdr=is_ultra_hdr,
                 )
 
+                # Statistics metadata; committed together with the session status.
+                await self._record_media_metadata(
+                    record.id, str(final_path), media_type, session["exif_time"]
+                )
+
                 # Update session status
                 await self._db.execute(
                     "UPDATE upload_sessions SET status = 'completed' WHERE id = ?",
@@ -429,6 +441,11 @@ class UploadService:
             is_ultra_hdr=is_ultra_hdr,
         )
 
+        # Statistics metadata; committed together with the session status.
+        await self._record_media_metadata(
+            record.id, str(final_path), media_type, session["exif_time"]
+        )
+
         # Update session status
         await self._db.execute(
             "UPDATE upload_sessions SET status = 'completed' WHERE id = ?",
@@ -478,6 +495,43 @@ class UploadService:
     # ---------------------------------------------------------------------------
     # Private helpers
     # ---------------------------------------------------------------------------
+
+    async def _record_media_metadata(
+        self,
+        file_id: int,
+        path: str,
+        media_type: Optional[str],
+        client_exif_time: Optional[str],
+    ) -> None:
+        """Extract and store statistics metadata for a completed upload.
+
+        Never raises to the caller (except cancellation), so it cannot change
+        the upload result. Does not commit; the caller commits it together with
+        the session status. A ffprobe timeout leaves the row pending for the
+        background backfill.
+        """
+        try:
+            meta = await asyncio.to_thread(
+                extract_media_metadata, path, media_type, client_exif_time,
+                ffprobe_timeout=UPLOAD_FFPROBE_TIMEOUT,
+            )
+        except Exception:  # defensive: extract_media_metadata is documented not to raise
+            logger.debug(
+                "Metadata extraction raised for file_id=%d", file_id, exc_info=True
+            )
+            try:
+                ct, kind = resolve_capture_time(None, client_exif_time, media_type)
+            except Exception:
+                ct, kind = None, None
+            meta = MediaMetadata(status="error", capture_time=ct, capture_time_kind=kind)
+        try:
+            await apply_media_metadata(self._db, file_id, meta)  # no commit
+        except aiosqlite.Error:
+            logger.warning(
+                "Failed to store media metadata for file_id=%d; backfill will retry",
+                file_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _validate_file_name(file_name: str) -> None:
