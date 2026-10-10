@@ -313,6 +313,11 @@ def _flatten_yaml(data: dict[str, Any]) -> dict[str, Any]:
         if "face_cluster_similarity" in analysis:
             flat["face_cluster_similarity"] = analysis["face_cluster_similarity"]
 
+    stats = data.get("stats", {})
+    if stats:
+        if "default_timezone" in stats:
+            flat["default_timezone"] = stats["default_timezone"]
+
     # database_url at top level
     if "database_url" in data:
         flat["database_url"] = data["database_url"]
@@ -398,6 +403,14 @@ class Settings(BaseSettings):
     scene_min_confidence: float = 0.3
     face_det_min_score: float = 0.5
     face_cluster_similarity: float = 0.5
+
+    # Statistics
+    #
+    # IANA time zone used to convert capture times that are only known in UTC
+    # (Android videos) into local time. Empty means "use the browser's time zone
+    # sent with the request, else the server's". Not validated here: an invalid
+    # value is skipped with a single WARNING by stats_buckets.resolve_default_tz.
+    default_timezone: str = ""
 
     model_config = {
         "env_prefix": "PHOTOVAULT_",

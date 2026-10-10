@@ -22,6 +22,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "PyYAML>=6.0",
     "apkutils==2.0.5",
+    "tzdata==2026.5",
 ]
 
 [project.optional-dependencies]

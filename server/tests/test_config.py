@@ -358,3 +358,59 @@ class TestLoadSettingsOverrides:
         settings = load_settings(chunk_size_mb=10, max_users=50)
         assert settings.chunk_size_mb == 10
         assert settings.max_users == 50
+
+# ---------------------------------------------------------------------------
+# Statistics default time zone
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultTimezone:
+    """``default_timezone`` from env (PHOTOVAULT_DEFAULT_TIMEZONE) and YAML."""
+
+    def test_default_is_empty(self, monkeypatch):
+        monkeypatch.delenv("PHOTOVAULT_DEFAULT_TIMEZONE", raising=False)
+        monkeypatch.setenv("PHOTOVAULT_CONFIG_PATH", "/nonexistent/path")
+
+        settings = load_settings()
+        assert settings.default_timezone == ""
+
+    def test_from_env(self, monkeypatch):
+        monkeypatch.setenv("PHOTOVAULT_DEFAULT_TIMEZONE", "Asia/Shanghai")
+        monkeypatch.setenv("PHOTOVAULT_CONFIG_PATH", "/nonexistent/path")
+
+        settings = load_settings()
+        assert settings.default_timezone == "Asia/Shanghai"
+
+    def test_from_yaml_stats_section(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PHOTOVAULT_DEFAULT_TIMEZONE", raising=False)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"stats": {"default_timezone": "Europe/Berlin"}})
+        )
+        monkeypatch.setenv("PHOTOVAULT_CONFIG_PATH", str(config_file))
+
+        settings = load_settings()
+        assert settings.default_timezone == "Europe/Berlin"
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({"stats": {"default_timezone": "Europe/Berlin"}})
+        )
+        monkeypatch.setenv("PHOTOVAULT_CONFIG_PATH", str(config_file))
+        monkeypatch.setenv("PHOTOVAULT_DEFAULT_TIMEZONE", "UTC")
+
+        settings = load_settings()
+        assert settings.default_timezone == "UTC"
+
+    def test_flatten_yaml_maps_stats_section(self):
+        flat = _flatten_yaml({"stats": {"default_timezone": "Asia/Tokyo"}})
+        assert flat == {"default_timezone": "Asia/Tokyo"}
+
+    def test_invalid_value_is_not_rejected_by_settings(self, monkeypatch):
+        """Validation happens in resolve_default_tz (skip + WARNING), not here."""
+        monkeypatch.setenv("PHOTOVAULT_DEFAULT_TIMEZONE", "Not/AZone")
+        monkeypatch.setenv("PHOTOVAULT_CONFIG_PATH", "/nonexistent/path")
+
+        settings = load_settings()
+        assert settings.default_timezone == "Not/AZone"

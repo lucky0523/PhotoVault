@@ -438,6 +438,7 @@ def _register_routes(application: FastAPI) -> None:
     from app.api.explore import router as explore_router
     from app.api.client_versions import router as client_versions_router
     from app.api.fnos import router as fnos_router
+    from app.api.stats import router as stats_router
 
     application.include_router(setup_router, prefix="/api/v1", tags=["setup"])
     application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
@@ -446,6 +447,7 @@ def _register_routes(application: FastAPI) -> None:
     application.include_router(files_router, prefix="/api/v1", tags=["files"])
     application.include_router(server_router, prefix="/api/v1", tags=["server"])
     application.include_router(explore_router, prefix="/api/v1", tags=["explore"])
+    application.include_router(stats_router, prefix="/api/v1", tags=["stats"])
     application.include_router(
         client_versions_router, prefix="/api/v1", tags=["client versions"]
     )
