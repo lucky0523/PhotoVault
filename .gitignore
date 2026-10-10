@@ -19,7 +19,6 @@ web/node_modules/
 web/dist/
 web/.nuxt/
 web/.output/
-web/package-lock.json
 web/yarn.lock
 
 # Android

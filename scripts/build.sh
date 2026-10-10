@@ -216,13 +216,13 @@ build_web() {
     log "构建前端 (web/)"
   fi
   cd "$ROOT/web"
-  if [ ! -d node_modules ]; then
-    # 注意：web/package-lock.json 被 .gitignore 忽略了，全新 clone 里不存在，
-    # 所以这里必须能回退到 npm install。
+  # node_modules/.package-lock.json 是 npm 安装后写下的「已安装快照」；
+  # 版本库里的锁文件比它新，说明依赖变了，需要重新安装。
+  if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
     if [ -f package-lock.json ]; then
       npm ci --no-audit --no-fund
     else
-      warn "没有 package-lock.json（被 .gitignore 忽略），回退到 npm install"
+      warn "没有 package-lock.json，回退到 npm install"
       npm install --no-audit --no-fund
     fi
   fi
