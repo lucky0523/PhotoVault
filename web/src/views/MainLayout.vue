@@ -21,6 +21,10 @@
           <el-icon><Compass /></el-icon>
           <span>探索</span>
         </el-menu-item>
+        <el-menu-item index="/statistics">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>数据统计</span>
+        </el-menu-item>
         <el-menu-item index="/trash">
           <el-icon><DeleteFilled /></el-icon>
           <span class="trash-menu-label">

@@ -44,6 +44,11 @@ const mainChildren: RouteRecordRaw[] = [
     component: () => import('@/views/CategoryPhotosView.vue'),
   },
   {
+    path: 'statistics',
+    name: 'Statistics',
+    component: () => import('@/views/StatisticsView.vue'),
+  },
+  {
     path: 'trash',
     name: 'Trash',
     component: () => import('@/views/TrashView.vue'),
