@@ -1,7 +1,8 @@
 <!--
   StatChartCard —— 单个 distribution / ranking 分布的图表卡片（设计 §7.2、§7.6）。
 
-  - chart：bar（竖向柱状）/ hbar（横向条形，排行和格式）/ stackedBar（100% 堆积条形，类型占比）/
+  - chart：bar（竖向柱状）/ hbar（横向条形，排行）/ stackedBar（100% 堆积条形，类型占比、格式占比，
+    卡片外框更紧凑）/
     line（折线，拍摄星期 / 小时分布；「未知」不是时间轴上的一点，只出现在说明和表格里）；
   - 「其他」（仅排行，other > 0）和「未知」（unknown > 0）用中性灰排在最后；
   - excludeUnknown（「统计时排除未知项」，总览卡片不传）：先经 applyUnknownPolicy 去掉「未知」、
@@ -15,7 +16,7 @@
     （StatChartNote，插槽原样转发），再下面是 StatDataTable。
 -->
 <template>
-  <figure class="pv-panel stat-card">
+  <figure class="pv-panel stat-card" :class="{ 'stat-card--compact': chart === 'stackedBar' }">
     <figcaption class="stat-card__title">{{ title }}</figcaption>
     <el-segmented
       v-if="allowBytes && !isEmpty"
@@ -333,6 +334,15 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 
 .stat-card__data {
   margin-top: 4px;
+}
+
+/* 堆积条形图只有一根条：收紧标题、图和「查看数据」之间的间距（按钮和切换本身不缩小） */
+.stat-card--compact > .stat-card__body {
+  margin-top: 6px;
+}
+
+.stat-card--compact > .stat-card__data {
+  margin-top: 2px;
 }
 
 /* 排行空状态说明带「未知 N 个」数据，默认 #909399 只有 3.08:1（FR-9.2） */

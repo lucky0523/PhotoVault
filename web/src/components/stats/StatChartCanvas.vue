@@ -6,6 +6,8 @@
   - 容器 role="group" tabindex="0"，aria-label 带标题和摘要；canvas role="img"；
   - 键盘逐项查看见 useChartKeyboard，朗读文本写进本组件自己的 aria-live 区域
     （对话框是 aria-modal，朗读区域必须在对话框里面）；
+  - 堆积条形图的图例（model.legend）是图下的 HTML 列表：可换行，每段都显示；文字用正文色，
+    段色只用于色标（照片 / 视频色对白底对比度不足，不能当文字色）；
   - onMounted 创建、model 变化 update()、卸载前 destroy()。对话框里的实例随对话框
     内容（destroy-on-close）一起创建和销毁，不会留下 Chart 实例。
 
@@ -25,6 +27,13 @@
     >
       <canvas ref="canvasRef" role="img" :aria-label="model.summary" />
     </div>
+    <!-- 图例内容已在 aria-label 和表格里，读屏不重复朗读 -->
+    <ul v-if="model.legend?.length" class="stat-chart__legend" aria-hidden="true">
+      <li v-for="item in model.legend" :key="item.key">
+        <span class="stat-chart__swatch" :style="{ background: item.color }" />
+        <span class="stat-chart__legend-text">{{ item.text }}</span>
+      </li>
+    </ul>
     <span class="stat-sr-only" aria-live="polite">{{ keyboard.liveText.value }}</span>
   </div>
 </template>
@@ -102,6 +111,44 @@ onBeforeUnmount(() => {
 .stat-chart__plot:focus-visible {
   outline: 2px solid var(--el-color-primary);
   outline-offset: 2px;
+}
+
+.stat-chart__legend {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: #606266;
+}
+
+.stat-chart__legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 浅色段在白底上也能看清色标 */
+.stat-chart__swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.stat-chart__legend-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* Chrome 默认压缩行尾全角括号的宽度来判断能否放下，「GIF 2 个（0.2%）」这类文字会
+     不换行、溢出几像素；不压缩就按实际宽度换行 */
+  text-spacing-trim: space-all;
 }
 
 .stat-sr-only {

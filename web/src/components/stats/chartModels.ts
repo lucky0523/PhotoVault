@@ -10,7 +10,7 @@
  */
 import type { ActiveDataPoint, BarElement, ChartConfiguration, Plugin, TooltipItem } from 'chart.js'
 import type { Distribution, StatBucket } from '@/api/stats'
-import { Chart, STAT_COLORS, STAT_TEXT_COLOR, prefersReducedMotion } from './chartSetup'
+import { Chart, STAT_COLORS, familyShade, prefersReducedMotion, segmentInk } from './chartSetup'
 import { formatBytes, formatShare } from './format'
 
 export type ChartShape = 'bar' | 'hbar' | 'line' | 'stackedBar'
@@ -31,6 +31,16 @@ export interface StatChartModel {
    * （趋势图两条序列一起）；堆积条形图每段是一个数据集，第 index 项 = 第 index 个数据集。
    */
   activeAt?: (index: number) => ActiveDataPoint[]
+  /** 堆积条形图的 HTML 图例，StatChartCanvas 画在图下（可换行，每段都显示）；其他图表没有 */
+  legend?: StatLegendItem[]
+}
+
+export interface StatLegendItem {
+  key: string
+  /** 类别 + 数值 + 占比 */
+  text: string
+  /** 色标颜色（只用于色标，文字始终是正文色） */
+  color: string
 }
 
 // ---- 「统计时排除未知项」 ----------------------------------------------------
@@ -118,7 +128,7 @@ interface ChartItem {
   neutral: boolean
 }
 
-/** 堆积条形图（类型占比）每段按类别取色 */
+/** 堆积条形图按类别 key 取色（类型占比的照片 / 视频 / 其他；格式占比的分组见 FORMAT_FAMILY） */
 const KEY_COLORS: Record<string, string> = {
   photo: STAT_COLORS.photo,
   video: STAT_COLORS.video,
@@ -126,8 +136,27 @@ const KEY_COLORS: Record<string, string> = {
 }
 
 /**
- * 堆积条形图的段内占比文字：白字居中，段宽放不下（文字宽 + 8px）或条高 < 14px 时不画，
- * 窄屏和窄段自动隐藏，数值仍在图例、tooltip 和表格里。所有段色上白字对比度都 ≥ 4.5:1。
+ * 格式占比：格式分组 key → 所属类别。必须和服务端 server/app/services/stats_buckets.py 的
+ * FORMAT_GROUPS 保持一致；不认识的 key（服务端以后新增的分组）按中性处理。
+ */
+const FORMAT_FAMILY: Record<string, 'photo' | 'video' | 'neutral'> = {
+  jpeg: 'photo',
+  heic: 'photo',
+  png: 'photo',
+  webp: 'photo',
+  gif: 'photo',
+  raw: 'photo',
+  mp4: 'video',
+  mov: 'video',
+  video_other: 'video',
+  no_ext: 'neutral',
+  misc: 'neutral',
+}
+
+/**
+ * 堆积条形图的段内占比文字：居中，段宽放不下（文字宽 + 8px）或条高 < 14px 时不画，
+ * 窄屏和窄段自动隐藏，数值仍在图例、tooltip 和表格里。墨色按段色逐段选择
+ * （数据集上的 pvLabelColor，见 segmentInk），对段色的对比度都 ≥ 4.5:1。
  *
  * 内联插件只在创建 Chart 实例时读取一次，之后 StatChartCanvas 换 data / options 时它仍然
  * 挂着：这里只读 chart.data，不能引用任何闭包里的模型数据。
@@ -138,7 +167,6 @@ const SEGMENT_LABELS: Plugin<'bar'> = {
     const { ctx } = chart
     ctx.save()
     ctx.font = `600 12px ${Chart.defaults.font.family}`
-    ctx.fillStyle = '#fff'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     chart.data.datasets.forEach((dataset, i) => {
@@ -149,6 +177,8 @@ const SEGMENT_LABELS: Plugin<'bar'> = {
       const [x, y, base, height] = [p.x, p.y, p.base, p.height].map(Number)
       const text = formatShare(Number(dataset.data[0]))
       if (height >= 14 && ctx.measureText(text).width + 8 <= Math.abs(x - base)) {
+        ctx.fillStyle =
+          (dataset as { pvLabelColor?: string }).pvLabelColor ?? segmentInk(String(dataset.backgroundColor))
         ctx.fillText(text, (x + base) / 2, y)
       }
     })
@@ -232,12 +262,31 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
   }
   const summary = summaryParts.join('；')
 
-  function colorOf(item: ChartItem, index: number): string {
-    if (item.neutral) return STAT_COLORS.unknown
-    if (chart === 'stackedBar') {
-      const palette = [STAT_COLORS.photo, STAT_COLORS.video, STAT_COLORS.other]
-      return KEY_COLORS[item.key] ?? palette[index % palette.length]
+  // 堆积条形图每段的颜色：类型按类别；格式按所属类别取同色系的深浅（在同类格式里的位置，
+  // 按 items 而不是当前口径的 segments 计算，切换「数量 / 存储」时颜色不变）；中性格式在
+  // other / unknown 两种灰之间交替
+  const segmentColors = new Map<string, string>()
+  if (chart === 'stackedBar') {
+    const positions = { photo: 0, video: 0, neutral: 0 }
+    for (const item of items) {
+      let c: string
+      if (item.neutral) c = STAT_COLORS.unknown
+      else if (KEY_COLORS[item.key]) c = KEY_COLORS[item.key]
+      else {
+        const family = FORMAT_FAMILY[item.key] ?? 'neutral'
+        const pos = positions[family]++
+        c =
+          family === 'neutral'
+            ? [STAT_COLORS.other, STAT_COLORS.unknown][pos % 2]
+            : familyShade(STAT_COLORS[family], pos)
+      }
+      segmentColors.set(item.key, c)
     }
+  }
+
+  function colorOf(item: ChartItem): string {
+    if (chart === 'stackedBar') return segmentColors.get(item.key) ?? STAT_COLORS.unknown
+    if (item.neutral) return STAT_COLORS.unknown
     return color
   }
 
@@ -274,6 +323,8 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
             label: item.label,
             data: [shareOf(item)],
             backgroundColor: segColors[i],
+            // 段内占比文字的墨色（SEGMENT_LABELS 读取），对段色 ≥ 4.5:1
+            pvLabelColor: segmentInk(segColors[i]),
             borderColor: '#fff',
             borderWidth: { top: 0, bottom: 0, left: 0, right: i < last ? 2 : 0 },
             borderSkipped: false,
@@ -299,34 +350,9 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
                 },
               },
             },
-            legend: {
-              position: 'bottom',
-              // 窄屏时图例每项一行：默认上限是图表高度的一半，三项会被截掉一行
-              maxHeight: 72,
-              // 隐藏一段后条形不再是 100%，和摘要、键盘朗读对不上：图例只作说明，不可点击
-              onClick: () => {},
-              labels: {
-                color: STAT_TEXT_COLOR,
-                boxWidth: 12,
-                boxHeight: 12,
-                padding: 6,
-                // 图例带文字、数值和占比：段太窄画不下占比时，图例里仍能看到。图例文字不会换行，
-                // 图表很窄（< 280px）时只留类别和占比，避免被截断；数值仍在 tooltip、朗读和表格里
-                generateLabels: (c: Chart<any>) =>
-                  segments.map((item, i) => ({
-                    text:
-                      c.width < 280
-                        ? `${item.label} ${formatShare(shareOf(item))}`
-                        : `${item.label} ${formatValue(valueOf(item))}（${formatShare(shareOf(item))}）`,
-                    fillStyle: segColors[i],
-                    strokeStyle: segColors[i],
-                    lineWidth: 0,
-                    fontColor: STAT_TEXT_COLOR,
-                    hidden: !c.isDatasetVisible(i),
-                    datasetIndex: i,
-                  })),
-              },
-            },
+            // 图例改为 HTML（model.legend，StatChartCanvas 画在图下）：Chart.js 图例在固定高度的
+            // 画布里放不下时会丢项，格式多、屏幕窄时尤其如此
+            legend: { display: false },
           },
           scales: {
             x: {
@@ -456,6 +482,15 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
     activeAt:
       chart === 'stackedBar'
         ? (index) => (segments[index] ? [{ datasetIndex: index, index: 0 }] : [])
+        : undefined,
+    // 图例带文字、数值和占比：段太窄画不下占比时，图例里仍能看到
+    legend:
+      chart === 'stackedBar'
+        ? segments.map((item) => ({
+            key: item.key,
+            text: `${item.label} ${formatValue(valueOf(item))}（${formatShare(shareOf(item))}）`,
+            color: colorOf(item),
+          }))
         : undefined,
   }
 }
@@ -587,11 +622,12 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
 // ---- 高度 -------------------------------------------------------------------
 
 /**
- * 卡片里：横向条形图的高度随条数变化；堆积条形图只有一根条，120px（条 + 刻度 + 图例），
- * 整行宽的卡片不留大片空白；竖向图和折线图固定 240px
+ * 卡片里：横向条形图的高度随条数变化；堆积条形图（类型占比、格式占比）只有一根条，
+ * 绘图区 72px（条 + 刻度），图例是图下的 HTML，整行宽的卡片不留大片空白；
+ * 竖向图和折线图固定 240px
  */
 export function cardChartHeight(shape: ChartShape, count: number): string {
-  if (shape === 'stackedBar') return '120px'
+  if (shape === 'stackedBar') return '72px'
   return shape === 'hbar' ? `${Math.max(160, 28 * count + 48)}px` : '240px'
 }
 
@@ -599,11 +635,11 @@ export function cardChartHeight(shape: ChartShape, count: number): string {
  * 对话框里放大显示：桌面 360px，窄屏按 70vw 缩小，不低于 240px（375px 宽时约 262px）。
  * 横向条形图另外按条数给出下限 30·条数 + 56px，在任何宽度下都随条数变高，且总比卡片的
  * 28·条数 + 48px（最低 160px）高：长排行在窄屏不会被 70vw 压扁，对话框内容可以纵向滚动。
- * 堆积条形图在任何宽度下固定 200px：比卡片的 120px 高、段内文字更容易放下，下面的表格
- * 仍然在视野里。
+ * 堆积条形图在任何宽度下绘图区固定 120px（图例在图下）：比卡片的 72px 高、段内文字更容易
+ * 放下，下面的表格仍然在视野里。
  */
 export function dialogChartHeight(shape: ChartShape, count: number): string {
-  if (shape === 'stackedBar') return '200px'
+  if (shape === 'stackedBar') return '120px'
   const base = 'clamp(240px, 70vw, 360px)'
   return shape === 'hbar' ? `max(${30 * count + 56}px, ${base})` : base
 }
