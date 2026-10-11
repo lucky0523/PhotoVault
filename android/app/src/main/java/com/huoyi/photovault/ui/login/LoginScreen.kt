@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Lan
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.QrCodeScanner
@@ -155,11 +156,29 @@ fun LoginScreen(
     // The connection-test outcome is shown inline (status pill next to the server
     // section) rather than as a snackbar, so it stays visually attached to the
     // field it describes. Clear it after a beat so it can't read as stale truth.
-    LaunchedEffect(uiState.testResult) {
-        if (uiState.testResult != null) {
+    LaunchedEffect(uiState.publicTestResult, uiState.lanTestResult) {
+        if (uiState.publicTestResult != null || uiState.lanTestResult != null) {
             delay(5000)
             viewModel.clearTestResult()
         }
+    }
+
+    // Pill/banner summary over every tested address: all succeeded → Success,
+    // otherwise the first failing field ("公网：…" before "局域网：…").
+    val publicTargetName = stringResource(R.string.login_target_public)
+    val lanTargetName = stringResource(R.string.login_target_lan)
+    val firstFailure = listOf(
+        publicTargetName to uiState.publicTestResult,
+        lanTargetName to uiState.lanTestResult
+    ).firstNotNullOfOrNull { (name, result) ->
+        (result as? TestConnectionResult.Failure)?.let { name to it.message }
+    }
+    val testSummary: TestConnectionResult? = when {
+        firstFailure != null -> TestConnectionResult.Failure(
+            stringResource(R.string.login_test_failed_with_target, firstFailure.first, firstFailure.second)
+        )
+        uiState.publicTestResult != null || uiState.lanTestResult != null -> TestConnectionResult.Success
+        else -> null
     }
 
     val dark = isSystemInDarkTheme()
@@ -240,7 +259,7 @@ fun LoginScreen(
                             Spacer(modifier = Modifier.weight(1f))
                             ConnectionStatusPill(
                                 isTesting = uiState.isTesting,
-                                testResult = uiState.testResult,
+                                testResult = testSummary,
                                 onTest = viewModel::testConnection,
                                 enabled = !uiState.isLoading && !uiState.isTesting
                             )
@@ -253,7 +272,7 @@ fun LoginScreen(
                         // from the user's point of view, so they share one banner
                         // instead of a banner plus a snackbar.
                         val notice = uiState.errorMessage
-                            ?: (uiState.testResult as? TestConnectionResult.Failure)?.message
+                            ?: (testSummary as? TestConnectionResult.Failure)?.message
                         // Retained so the text stays put while the banner animates out.
                         var noticeText by remember { mutableStateOf("") }
                         LaunchedEffect(notice) {
@@ -293,12 +312,12 @@ fun LoginScreen(
 
                         val fieldColors = glassFieldColors(dark)
 
-                        // Server address — the one field users can't guess, so it
+                        // Public address — the one field users can't guess, so it
                         // carries the QR shortcut as a trailing action.
                         OutlinedTextField(
                             value = uiState.serverAddress,
                             onValueChange = viewModel::onServerAddressChange,
-                            placeholder = { Text("服务器地址") },
+                            placeholder = { Text(stringResource(R.string.login_public_address_hint)) },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(16.dp),
@@ -324,14 +343,46 @@ fun LoginScreen(
                                 }
                             },
                             supportingText = {
-                                val error = uiState.serverAddressError
-                                Text(
-                                    text = error ?: "可扫描 Web 端的服务器二维码自动填写",
-                                    color = if (error == null) {
-                                        Color.White
-                                    } else {
-                                        MaterialTheme.colorScheme.error
-                                    }
+                                AddressSupportingText(
+                                    error = uiState.serverAddressError,
+                                    testResult = uiState.publicTestResult,
+                                    default = "可扫描 Web 端的服务器二维码自动填写"
+                                )
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Uri,
+                                imeAction = ImeAction.Next
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                            ),
+                            enabled = !uiState.isLoading
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Optional LAN address: direct connection to the NAS at home.
+                        OutlinedTextField(
+                            value = uiState.lanAddress,
+                            onValueChange = viewModel::onLanAddressChange,
+                            placeholder = { Text(stringResource(R.string.login_lan_address_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = fieldColors,
+                            isError = uiState.lanAddressError != null,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Lan,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            supportingText = {
+                                AddressSupportingText(
+                                    error = uiState.lanAddressError,
+                                    testResult = uiState.lanTestResult,
+                                    default = stringResource(R.string.login_lan_address_supporting)
                                 )
                             },
                             keyboardOptions = KeyboardOptions(
@@ -624,6 +675,26 @@ private fun photoWallScrim(dark: Boolean): Brush = if (dark) {
 // ---------------------------------------------------------------------------
 // Form pieces
 // ---------------------------------------------------------------------------
+
+/**
+ * Supporting line under an address field. Priority: validation error, then this
+ * field's own connection-test result, then the default hint.
+ */
+@Composable
+private fun AddressSupportingText(
+    error: String?,
+    testResult: TestConnectionResult?,
+    default: String
+) {
+    val (text, color) = when {
+        error != null -> error to MaterialTheme.colorScheme.error
+        testResult is TestConnectionResult.Success ->
+            stringResource(R.string.connection_status_success) to PhotoVaultColors.SyncGreen
+        testResult is TestConnectionResult.Failure -> testResult.message to MaterialTheme.colorScheme.error
+        else -> default to Color.White
+    }
+    Text(text = text, color = color)
+}
 
 /** Label, high-contrast colours, and glyph for one [ConnectionStatusPill] state. */
 private class PillLook(

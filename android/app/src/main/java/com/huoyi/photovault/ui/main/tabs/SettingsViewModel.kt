@@ -3,6 +3,7 @@ package com.huoyi.photovault.ui.main.tabs
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.SettingsPreferences
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
@@ -10,10 +11,14 @@ import com.huoyi.photovault.data.local.entity.BackupFolder
 import com.huoyi.photovault.data.local.entity.UploadRecord
 import com.huoyi.photovault.data.network.ConnectionManager
 import com.huoyi.photovault.data.network.ConnectionState
+import com.huoyi.photovault.data.network.endpoint.ServerAddress
+import com.huoyi.photovault.data.network.endpoint.ValidationResult
 import com.huoyi.photovault.data.repository.BackupFolderRepository
 import com.huoyi.photovault.service.BackgroundScanWorker
 import com.huoyi.photovault.service.BackupForegroundService
 import com.huoyi.photovault.service.BackupQueue
+import com.huoyi.photovault.ui.common.AddressErrorText
+import com.huoyi.photovault.ui.common.AddressField
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,6 +102,10 @@ class SettingsViewModel @Inject constructor(
     private val _serverAddress = MutableStateFlow("")
     val serverAddress: StateFlow<String> = _serverAddress.asStateFlow()
 
+    /** Stored LAN address (canonical form), or "" when not set. */
+    private val _lanAddress = MutableStateFlow("")
+    val lanAddress: StateFlow<String> = _lanAddress.asStateFlow()
+
     init {
         loadAccountInfo()
         refreshDiagnosticLogStatus()
@@ -106,6 +115,37 @@ class SettingsViewModel @Inject constructor(
         val credentials = credentialManager.loadCredentials()
         _username.value = credentials.username
         _serverAddress.value = credentials.serverAddress
+        _lanAddress.value = credentialManager.getLanAddress() ?: ""
+    }
+
+    /**
+     * Validates and stores the LAN address edited in the settings sheet (design §5.6).
+     * Blank input clears it, which is refused when no server (public) address is set,
+     * because the LAN address is then the only one (§3.3).
+     *
+     * Saving bumps the CredentialManager config version, so the endpoint resolver drops
+     * its probe cache and re-evaluates (FR-1.5).
+     *
+     * @return null on success, otherwise the error text to show in the sheet.
+     */
+    fun saveLanAddress(input: String): String? {
+        val serverAddress = credentialManager.getServerAddress()
+        val canonical = when (val result = ServerAddress.validate(input, other = serverAddress)) {
+            is ValidationResult.Err ->
+                return context.getString(AddressErrorText.resIdFor(result.error, AddressField.SETTINGS_LAN))
+            is ValidationResult.Ok -> result.canonical
+        }
+        if (canonical == null && serverAddress.isNullOrBlank()) {
+            return context.getString(R.string.settings_lan_clear_requires_server)
+        }
+        try {
+            credentialManager.setLanAddress(canonical)
+        } catch (e: Exception) {
+            android.util.Log.e("PhotoVaultSettings", "Failed to save LAN address: ${e.javaClass.simpleName}", e)
+            return context.getString(R.string.settings_lan_save_failed)
+        }
+        _lanAddress.value = canonical ?: ""
+        return null
     }
 
     private val _showPolicySheet = MutableStateFlow(false)

@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,7 @@ import com.huoyi.photovault.util.BatteryOptimizationHelper
 import com.huoyi.photovault.data.local.entity.BackupFolder
 import com.huoyi.photovault.data.network.ConnectionState
 import com.huoyi.photovault.data.network.ConnectionType
+import com.huoyi.photovault.ui.main.components.LanAddressSheet
 import com.huoyi.photovault.ui.main.components.StoragePolicySheet
 import com.huoyi.photovault.ui.theme.LiquidDialogButton
 import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
@@ -94,7 +96,10 @@ fun SettingsTab(
     val selectedFolder by viewModel.selectedFolder.collectAsState()
     val username by viewModel.username.collectAsState()
     val serverAddress by viewModel.serverAddress.collectAsState()
+    val lanAddress by viewModel.lanAddress.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
+    // Saveable so the LAN address sheet survives rotation / process recreation.
+    var showLanSheet by rememberSaveable { mutableStateOf(false) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.refreshDiagnosticLogStatus()
@@ -128,7 +133,9 @@ fun SettingsTab(
         AccountInfoGroup(
             username = username,
             serverAddress = serverAddress,
-            connectionState = connectionState
+            lanAddress = lanAddress,
+            connectionState = connectionState,
+            onLanAddressClick = { showLanSheet = true }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -206,6 +213,15 @@ fun SettingsTab(
                     )
                 }
             }
+        )
+    }
+
+    // LAN address BottomSheet
+    if (showLanSheet) {
+        LanAddressSheet(
+            current = lanAddress,
+            onSave = viewModel::saveLanAddress,
+            onDismiss = { showLanSheet = false }
         )
     }
 }
@@ -534,16 +550,20 @@ private fun buildPolicySummary(folder: BackupFolder): String {
 /**
  * 账户信息 (Account Information) settings group.
  *
- * Displays read-only information about the current user account:
- * - 当前用户名 (current username)
- * - 服务器地址 (server address)
+ * Displays information about the current user account:
+ * - 当前用户名 (current username, read-only)
+ * - 服务器地址 (public server address, read-only; "未配置" when empty)
+ * - 局域网地址 (LAN address, "未设置" when empty; tapping the row calls [onLanAddressClick]
+ *   to open the LanAddressSheet editor)
  * - 连接状态 (connection status: "已连接 (局域网)" / "已连接 (公网)" / "未连接")
  */
 @Composable
 private fun AccountInfoGroup(
     username: String,
     serverAddress: String,
-    connectionState: ConnectionState
+    lanAddress: String,
+    connectionState: ConnectionState,
+    onLanAddressClick: () -> Unit
 ) {
     SettingsGroupCard(title = "账户信息") {
         AccountInfoItem(
@@ -559,6 +579,17 @@ private fun AccountInfoGroup(
         AccountInfoItem(
             label = "服务器地址",
             value = serverAddress.ifEmpty { "未配置" }
+        )
+
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 8.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        )
+
+        AccountInfoItem(
+            label = "局域网地址",
+            value = lanAddress.ifEmpty { "未设置" }, // AC-1 / FR-6.4 的字面要求；不要改成「未配置」
+            onClick = onLanAddressClick
         )
 
         HorizontalDivider(
@@ -613,16 +644,29 @@ private fun ConnectionStatusItem(connectionState: ConnectionState) {
 }
 
 /**
- * A single read-only information item with a label and value.
+ * A single information item with a label and value. Read-only unless [onClick] is
+ * given, in which case the whole row is a button (used by the 局域网地址 row).
  */
 @Composable
 private fun AccountInfoItem(
     label: String,
-    value: String
+    value: String,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        onClickLabel = "编辑局域网地址",
+                        role = Role.Button,
+                        onClick = onClick
+                    )
+                } else {
+                    Modifier
+                }
+            )
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

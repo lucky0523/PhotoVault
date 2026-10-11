@@ -29,6 +29,26 @@
     <string name="error_missing_server_address">尚未配置服务器地址。</string>
     <string name="error_token_refresh_failed">登录状态刷新失败。</string>
     <string name="connection_status_failed">连接失败</string>
+    <string name="connection_status_success">连接成功</string>
+
+    <!-- 双地址（公网 / 局域网） -->
+    <string name="validation_address_required_any">请至少填写公网地址或局域网地址</string>
+    <string name="login_public_address_hint">公网地址</string>
+    <string name="login_lan_address_hint">局域网地址（可选）</string>
+    <string name="login_lan_address_supporting">在家时直连 NAS，建议填写 IP，如 192.168.1.10:8000</string>
+    <string name="validation_address_too_long">地址过长（最多 255 个字符）</string>
+    <string name="validation_address_bad_scheme">仅支持 http:// 或 https://</string>
+    <string name="validation_address_invalid">地址格式不正确</string>
+    <string name="validation_address_bad_port">端口须在 1–65535 之间</string>
+    <string name="validation_address_extra">地址只能包含协议、主机和端口</string>
+    <string name="validation_address_same_as_lan">与局域网地址相同</string>
+    <string name="validation_address_same_as_public">与公网地址相同</string>
+    <string name="validation_address_same_as_server">与服务器地址相同</string>
+    <string name="settings_lan_clear_requires_server">未设置服务器地址时不能清除局域网地址</string>
+    <string name="settings_lan_save_failed">保存失败，请重试</string>
+    <string name="login_target_public">公网</string>
+    <string name="login_target_lan">局域网</string>
+    <string name="login_test_failed_with_target">%1$s：%2$s</string>
 
     <!-- 本地备份校验 -->
     <string name="refresh_complete">已刷新</string>
