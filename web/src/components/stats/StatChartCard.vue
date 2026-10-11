@@ -5,10 +5,10 @@
   - 「其他」（仅排行，other > 0）和「未知」（unknown > 0）用中性灰排在最后；
   - 排行没有任何可识别项时显示空状态说明，不画一张全灰的图；
   - allowBytes 时右上角「数量 / 存储」切换图表口径，表格同时列出两种口径；
-  - 键盘逐项查看见 useChartKeyboard，「查看数据」打开对话框显示 StatDataTable（StatDataDialog）。
-
-  不用 vue-chartjs：onMounted 创建、数据变化 update()、卸载前 destroy()。
-  图表实例放在普通变量里，不能放进 ref —— Vue 的响应式代理会破坏 Chart.js 的内部状态。
+  - 图表配置在 chartModels.ts（buildDistributionChart），Chart 实例的生命周期、键盘逐项查看
+    和朗读区域在 StatChartCanvas；
+  - 「查看数据」打开对话框（StatDataDialog）：上面放大显示同一张图（独立的 Chart 实例，
+    同一个 model），带同一个「数量 / 存储」切换，下面是 StatDataTable。
 -->
 <template>
   <figure class="pv-panel stat-card">
@@ -28,20 +28,12 @@
         :image-size="60"
         :description="emptyText"
       />
-      <template v-else>
-        <div
-          class="stat-card__chart"
-          role="group"
-          tabindex="0"
-          :style="{ height: `${chartHeight}px` }"
-          :aria-label="`${title}：${summary}。按左右方向键逐项查看`"
-          @keydown="keyboard.onKeydown"
-          @blur="keyboard.onBlur"
-        >
-          <canvas ref="canvasRef" role="img" :aria-label="summary" />
-        </div>
-        <span class="stat-sr-only" aria-live="polite">{{ keyboard.liveText.value }}</span>
-      </template>
+      <StatChartCanvas
+        v-else
+        :title="title"
+        :model="model"
+        :height="cardChartHeight(chart, model.count)"
+      />
     </div>
 
     <div v-if="$slots.note" class="stat-card__note">
@@ -49,24 +41,46 @@
     </div>
 
     <div v-if="!isEmptyRanking" class="stat-card__data">
-      <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows" />
+      <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows">
+        <template v-if="allowBytes" #toolbar>
+          <el-segmented v-model="mode" size="small" :options="MODE_OPTIONS" aria-label="占比口径" />
+        </template>
+        <template #chart>
+          <el-empty
+            v-if="isEmptyRanking"
+            class="stat-dialog-empty"
+            :image-size="60"
+            :description="emptyText"
+          />
+          <StatChartCanvas
+            v-else
+            :title="title"
+            :model="model"
+            :height="dialogChartHeight(chart, model.count)"
+          />
+        </template>
+      </StatDataDialog>
     </div>
   </figure>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ChartConfiguration, TooltipItem } from 'chart.js'
+import { computed, ref } from 'vue'
 import type { Distribution, StatBucket } from '@/api/stats'
-import { Chart, STAT_COLORS, STAT_TEXT_COLOR, prefersReducedMotion } from './chartSetup'
+import { STAT_COLORS } from './chartSetup'
 import { formatBytes, formatShare } from './format'
-import { useChartKeyboard } from './useChartKeyboard'
+import {
+  buildDistributionChart,
+  cardChartHeight,
+  dialogChartHeight,
+  type ChartMetric,
+  type ChartShape,
+} from './chartModels'
+import StatChartCanvas from './StatChartCanvas.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
-type ChartShape = 'bar' | 'hbar' | 'doughnut'
 type TableVariant = 'distribution' | 'overview' | 'ranking'
-type Mode = 'count' | 'bytes'
 
 const props = withDefaults(
   defineProps<{
@@ -101,266 +115,28 @@ const MODE_OPTIONS = [
   { label: '存储', value: 'bytes' },
 ]
 
-/** 环形图（类型占比）按类别取色 */
-const KEY_COLORS: Record<string, string> = {
-  photo: STAT_COLORS.photo,
-  video: STAT_COLORS.video,
-  other: STAT_COLORS.other,
-}
-
-const LABEL_MAX_CHARS = 18
-
-const mode = ref<Mode>('count')
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-let chart: Chart<any> | null = null
-
-interface ChartItem {
-  key: string
-  label: string
-  count: number
-  share: number
-  bytes: number
-  bytesShare: number
-  range?: string
-  /** 「其他」「未知」：中性灰 */
-  neutral: boolean
-}
+const mode = ref<ChartMetric>('count')
 
 const isEmptyRanking = computed(
   () => props.dist.kind === 'ranking' && props.dist.buckets.length === 0
 )
 
-const items = computed<ChartItem[]>(() => {
-  const d = props.dist
-  const list: ChartItem[] = d.buckets.map((b) => ({
-    key: b.key,
-    label: b.label,
-    count: b.count,
-    share: b.share,
-    bytes: b.bytes ?? 0,
-    bytesShare: b.bytes_share ?? 0,
-    range: b.range,
-    neutral: false,
-  }))
-  if (d.kind === 'ranking' && (d.other ?? 0) > 0) {
-    list.push({
-      key: '__other',
-      label: '其他',
-      count: d.other ?? 0,
-      share: d.other_share ?? 0,
-      bytes: 0,
-      bytesShare: 0,
-      neutral: true,
-    })
-  }
-  if (d.unknown > 0) {
-    list.push({
-      key: '__unknown',
-      label: '未知',
-      count: d.unknown,
-      share: d.unknown_share,
-      bytes: 0,
-      bytesShare: 0,
-      neutral: true,
-    })
-  }
-  return list
-})
-
-const isBytes = computed(() => props.allowBytes && mode.value === 'bytes')
-
-function valueOf(item: ChartItem): number {
-  return isBytes.value ? item.bytes : item.count
-}
-
-function shareOf(item: ChartItem): number {
-  return isBytes.value ? item.bytesShare : item.share
-}
-
-function formatValue(value: number): string {
-  return isBytes.value ? formatBytes(value) : `${value} ${props.unit}`
-}
-
-function describeItem(item: ChartItem): string {
-  const text = `${item.label}：${formatValue(valueOf(item))}（${formatShare(shareOf(item))}）`
-  return item.range ? `${text}，区间 ${item.range}` : text
-}
-
-const summary = computed(() => {
-  const d = props.dist
-  const parts: string[] = [
-    isBytes.value ? `共 ${formatBytes(d.total_bytes ?? 0)}` : `共 ${d.total} ${props.unit}`,
-  ]
-  let top: ChartItem | null = null
-  for (const item of items.value) {
-    if (item.neutral || valueOf(item) <= 0) continue
-    if (!top || valueOf(item) > valueOf(top)) top = item
-  }
-  if (top) {
-    parts.push(`最多：${top.label} ${formatValue(valueOf(top))}（${formatShare(shareOf(top))}）`)
-  }
-  if (d.unknown > 0) parts.push(`未知 ${d.unknown} ${props.unit}`)
-  return parts.join('；')
-})
-
-/** 横向条形图的高度随条数变化，竖向图和环形图固定 240px */
-const chartHeight = computed(() =>
-  props.chart === 'hbar' ? Math.max(160, 28 * items.value.length + 48) : 240
+const metric = computed<ChartMetric>(() =>
+  props.allowBytes && mode.value === 'bytes' ? 'bytes' : 'count'
 )
 
-function truncate(label: string): string {
-  const chars = Array.from(label)
-  return chars.length > LABEL_MAX_CHARS ? `${chars.slice(0, LABEL_MAX_CHARS).join('')}…` : label
-}
-
-function colorOf(item: ChartItem, index: number): string {
-  if (item.neutral) return STAT_COLORS.unknown
-  if (props.chart === 'doughnut') {
-    const palette = [STAT_COLORS.photo, STAT_COLORS.video, STAT_COLORS.other]
-    return KEY_COLORS[item.key] ?? palette[index % palette.length]
-  }
-  return props.color
-}
-
-function buildConfig(): ChartConfiguration<any> {
-  const list = items.value
-  const labels = list.map((i) => i.label)
-  const values = list.map(valueOf)
-  const colors = list.map(colorOf)
-  const tooltip = {
-    callbacks: {
-      title: () => '',
-      label: (ctx: TooltipItem<any>) => {
-        const item = list[ctx.dataIndex]
-        return item ? `${item.label}：${formatValue(valueOf(item))}（${formatShare(shareOf(item))}）` : ''
-      },
-      afterLabel: (ctx: TooltipItem<any>) => {
-        const range = list[ctx.dataIndex]?.range
-        return range ? `区间 ${range}` : ''
-      },
-    },
-  }
-  const animation = prefersReducedMotion() ? false : undefined
-
-  if (props.chart === 'doughnut') {
-    return {
-      type: 'doughnut',
-      data: {
-        labels,
-        datasets: [{ data: values, backgroundColor: colors, borderColor: '#fff', borderWidth: 2 }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation,
-        plugins: {
-          tooltip,
-          legend: {
-            position: 'bottom',
-            labels: {
-              color: STAT_TEXT_COLOR,
-              // 图例带文字和数量，不只靠颜色区分
-              generateLabels: (c: Chart<any>) =>
-                list.map((item, index) => ({
-                  text: `${item.label} ${formatValue(valueOf(item))}`,
-                  fillStyle: colors[index],
-                  strokeStyle: '#fff',
-                  lineWidth: 0,
-                  fontColor: STAT_TEXT_COLOR,
-                  hidden: !c.getDataVisibility(index),
-                  index,
-                })),
-            },
-          },
-        },
-      },
-    }
-  }
-
-  const horizontal = props.chart === 'hbar'
-  const valueAxis = horizontal ? 'x' : 'y'
-  const xTitle = isBytes.value && valueAxis === 'x' ? '存储' : props.xLabel
-  const yTitle = isBytes.value && valueAxis === 'y' ? '存储' : props.yLabel
-  const valueTicks = isBytes.value
-    ? { callback: (v: number | string) => formatBytes(Number(v)) }
-    : { precision: 0 }
-  const categoryTicks = horizontal
-    ? {
-        autoSkip: false,
-        callback(this: { getLabelForValue: (v: number) => string }, v: number | string) {
-          return truncate(this.getLabelForValue(Number(v)))
-        },
-      }
-    : { autoSkip: true, maxRotation: 0 }
-
-  return {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{ data: values, backgroundColor: colors, borderRadius: 3, maxBarThickness: 36 }],
-    },
-    options: {
-      indexAxis: horizontal ? 'y' : 'x',
-      responsive: true,
-      maintainAspectRatio: false,
-      animation,
-      plugins: { legend: { display: false }, tooltip },
-      scales: {
-        x: {
-          title: { display: !!xTitle, text: xTitle },
-          beginAtZero: true,
-          ticks: valueAxis === 'x' ? valueTicks : categoryTicks,
-          grid: { display: valueAxis === 'x' },
-        },
-        y: {
-          title: { display: !!yTitle, text: yTitle },
-          beginAtZero: true,
-          ticks: valueAxis === 'y' ? valueTicks : categoryTicks,
-          grid: { display: valueAxis === 'y' },
-        },
-      },
-    },
-  }
-}
-
-const keyboard = useChartKeyboard({
-  getChart: () => chart,
-  count: () => items.value.length,
-  describe: (index) => {
-    const item = items.value[index]
-    return item ? describeItem(item) : ''
-  },
-})
-
-function render() {
-  const canvas = canvasRef.value
-  if (!canvas) {
-    chart?.destroy()
-    chart = null
-    return
-  }
-  keyboard.reset()
-  const config = buildConfig()
-  if (chart && chart.canvas === canvas) {
-    chart.setActiveElements([])
-    chart.tooltip?.setActiveElements([], { x: 0, y: 0 })
-    chart.data = config.data
-    chart.options = config.options ?? {}
-    chart.update()
-    return
-  }
-  chart?.destroy()
-  chart = new Chart(canvas, config)
-}
-
-onMounted(render)
-
-watch([() => props.dist, mode, isEmptyRanking], render, { flush: 'post' })
-
-onBeforeUnmount(() => {
-  chart?.destroy()
-  chart = null
-})
+/** 卡片和对话框共用的图表配置（各自独立的 Chart 实例） */
+const model = computed(() =>
+  buildDistributionChart({
+    dist: props.dist,
+    chart: props.chart,
+    unit: props.unit,
+    xLabel: props.xLabel,
+    yLabel: props.yLabel,
+    color: props.color,
+    metric: metric.value,
+  })
+)
 
 // ---- 「查看数据」表格 ------------------------------------------------------
 
@@ -507,17 +283,6 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
   margin-top: 8px;
 }
 
-.stat-card__chart {
-  position: relative;
-  width: 100%;
-  border-radius: 4px;
-}
-
-.stat-card__chart:focus-visible {
-  outline: 2px solid var(--el-color-primary);
-  outline-offset: 2px;
-}
-
 .stat-card__note {
   margin-top: 6px;
   font-size: 12px;
@@ -534,15 +299,8 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
   color: #606266;
 }
 
-.stat-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+/* 对话框内容 append-to-body，不在 .stat-card 里，单独设置同样的颜色 */
+.stat-dialog-empty :deep(.el-empty__description p) {
+  color: #606266;
 }
 </style>
