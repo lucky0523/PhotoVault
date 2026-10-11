@@ -5,7 +5,7 @@
   - 「其他」（仅排行，other > 0）和「未知」（unknown > 0）用中性灰排在最后；
   - 排行没有任何可识别项时显示空状态说明，不画一张全灰的图；
   - allowBytes 时右上角「数量 / 存储」切换图表口径，表格同时列出两种口径；
-  - 键盘逐项查看见 useChartKeyboard，「查看数据」展开 StatDataTable。
+  - 键盘逐项查看见 useChartKeyboard，「查看数据」打开对话框显示 StatDataTable（StatDataDialog）。
 
   不用 vue-chartjs：onMounted 创建、数据变化 update()、卸载前 destroy()。
   图表实例放在普通变量里，不能放进 ref —— Vue 的响应式代理会破坏 Chart.js 的内部状态。
@@ -49,34 +49,19 @@
     </div>
 
     <div v-if="!isEmptyRanking" class="stat-card__data">
-      <el-button
-        link
-        type="primary"
-        :aria-expanded="showTable ? 'true' : 'false'"
-        :aria-controls="tableId"
-        @click="showTable = !showTable"
-      >
-        {{ showTable ? '收起数据' : '查看数据' }}
-      </el-button>
-      <StatDataTable
-        v-show="showTable"
-        :id="tableId"
-        :caption="`${title}数据`"
-        :columns="table.columns"
-        :rows="table.rows"
-      />
+      <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows" />
     </div>
   </figure>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ChartConfiguration, TooltipItem } from 'chart.js'
 import type { Distribution, StatBucket } from '@/api/stats'
 import { Chart, STAT_COLORS, STAT_TEXT_COLOR, prefersReducedMotion } from './chartSetup'
 import { formatBytes, formatShare } from './format'
 import { useChartKeyboard } from './useChartKeyboard'
-import StatDataTable from './StatDataTable.vue'
+import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
 type ChartShape = 'bar' | 'hbar' | 'doughnut'
@@ -126,8 +111,6 @@ const KEY_COLORS: Record<string, string> = {
 const LABEL_MAX_CHARS = 18
 
 const mode = ref<Mode>('count')
-const showTable = ref(false)
-const tableId = `stat-table-${useId()}`
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let chart: Chart<any> | null = null
 

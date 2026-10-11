@@ -44,34 +44,19 @@
     </div>
 
     <div v-if="!isEmpty" class="stat-card__data">
-      <el-button
-        link
-        type="primary"
-        :aria-expanded="showTable ? 'true' : 'false'"
-        :aria-controls="tableId"
-        @click="showTable = !showTable"
-      >
-        {{ showTable ? '收起数据' : '查看数据' }}
-      </el-button>
-      <StatDataTable
-        v-show="showTable"
-        :id="tableId"
-        caption="拍摄趋势数据"
-        :columns="table.columns"
-        :rows="table.rows"
-      />
+      <StatDataDialog title="拍摄趋势数据" :columns="table.columns" :rows="table.rows" />
     </div>
   </figure>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ChartConfiguration, TooltipItem } from 'chart.js'
 import type { Distribution } from '@/api/stats'
 import { Chart, STAT_COLORS, prefersReducedMotion } from './chartSetup'
 import { formatShare } from './format'
 import { useChartKeyboard } from './useChartKeyboard'
-import StatDataTable from './StatDataTable.vue'
+import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
 type Granularity = 'month' | 'year'
@@ -93,8 +78,6 @@ const MAX_DEFAULT_MONTHS = 120
 
 const granularity = ref<Granularity>('month')
 const defaultedToYear = ref(false)
-const showTable = ref(false)
-const tableId = `stat-table-${useId()}`
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let chart: Chart<any> | null = null
 

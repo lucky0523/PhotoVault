@@ -99,9 +99,18 @@
             <h2 id="stats-overview-title" class="pv-section-title">总览</h2>
             <div class="stat-grid">
               <dl class="stat-numbers is-wide">
-                <div v-for="item in numberCards" :key="item.label" class="pv-panel stat-number">
+                <div
+                  v-for="item in numberCards"
+                  :key="item.label"
+                  class="pv-panel stat-number"
+                  :class="{ 'has-sub': item.sub }"
+                >
                   <dt>{{ item.label }}</dt>
                   <dd>{{ item.value }}</dd>
+                  <template v-if="item.sub">
+                    <dt class="stat-number__sub-term">{{ item.sub.label }}</dt>
+                    <dd class="stat-number__sub-desc">{{ item.sub.value }}</dd>
+                  </template>
                 </div>
               </dl>
               <StatChartCard
@@ -399,15 +408,25 @@ function categoryCount(key: string): number {
 const photoCount = computed(() => categoryCount('photo'))
 const videoCount = computed(() => categoryCount('video'))
 
-const numberCards = computed(() => {
+interface NumberCard {
+  label: string
+  value: string
+  /** 从属数字（动态照片是照片的子集），显示在同一张卡片里 */
+  sub?: { label: string; value: string }
+}
+
+const numberCards = computed<NumberCard[]>(() => {
   const overview = data.value?.overview
   if (!overview) return []
   return [
     { label: '总文件数', value: overview.total.count.toLocaleString() },
     { label: '总存储', value: formatBytes(overview.total.bytes) },
-    { label: '照片数', value: photoCount.value.toLocaleString() },
+    {
+      label: '照片数',
+      value: photoCount.value.toLocaleString(),
+      sub: { label: '其中动态照片', value: overview.motion_photo_count.toLocaleString() },
+    },
     { label: '视频数', value: videoCount.value.toLocaleString() },
-    { label: '其中动态照片', value: overview.motion_photo_count.toLocaleString() },
   ]
 })
 
@@ -557,6 +576,33 @@ function videoNote(key: string): string {
 .stat-number dd {
   margin: 4px 0 0;
   font-size: 22px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 照片数卡片：主数字占满一行，「其中动态照片 N」作为第二行 */
+.stat-number.has-sub {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px;
+  align-items: baseline;
+}
+
+.stat-number.has-sub > :not(.stat-number__sub-term):not(.stat-number__sub-desc) {
+  grid-column: 1 / -1;
+}
+
+.stat-number .stat-number__sub-term {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.stat-number .stat-number__sub-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   font-variant-numeric: tabular-nums;

@@ -73,3 +73,6 @@ Thumbs.db
 *.pem
 *.key
 *.crt
+
+# Agent task artifacts (requirements, designs, reviews, runtime checks)
+.agents/
