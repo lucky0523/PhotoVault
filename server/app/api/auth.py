@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app import __version__
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import cached_instance_fingerprint, get_db
 from app.core.security import get_current_user
 from app.core.validators import validate_password
 from app.models.auth import (
@@ -172,6 +172,16 @@ async def change_own_password(
 async def connection_test() -> dict:
     """Connection test endpoint (no auth required).
 
-    Used by clients to verify server reachability.
+    Used by clients to verify server reachability, and by the dual-endpoint
+    client to confirm a LAN/public address points at this PhotoVault instance.
+
+    Does not access the database: ``instance_fingerprint`` is cached in-process
+    by ``init_db``. ``app`` and ``instance_fingerprint`` are additive fields, so
+    older clients that only read ``status``/``version`` keep working.
+    ``instance_fingerprint`` is omitted when it is not available.
     """
-    return {"status": "ok", "version": __version__}
+    body: dict = {"status": "ok", "version": __version__, "app": "photovault"}
+    fp = cached_instance_fingerprint()
+    if fp is not None:
+        body["instance_fingerprint"] = fp
+    return body

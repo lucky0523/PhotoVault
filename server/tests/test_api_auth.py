@@ -7,14 +7,21 @@ Tests:
 """
 
 import os
+import re
 
 import pytest
 import aiosqlite
 from httpx import AsyncClient, ASGITransport
 
+import app.core.database as database_module
 from app import __version__
 from app.core.config import reset_settings
-from app.core.database import init_db
+from app.core.database import (
+    INSTANCE_ID_KEY,
+    cached_instance_fingerprint,
+    init_db,
+    instance_fingerprint,
+)
 from app.services.auth_service import AuthService
 
 
@@ -97,6 +104,119 @@ class TestConnectionTest:
             response = await client.get("/api/v1/connection/test")
 
         assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_connection_test_includes_app(self, seeded_db, async_client):
+        """Response carries app=photovault; status/version are unchanged."""
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["app"] == "photovault"
+        assert body["status"] == "ok"
+        assert body["version"] == __version__
+        assert isinstance(body["version"], str)
+
+    @pytest.mark.asyncio
+    async def test_connection_test_fingerprint_matches_instance_id(
+        self, seeded_db, async_client
+    ):
+        """instance_fingerprint is 32 lowercase hex and derived from the login instance_id."""
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "testuser", "password": "testpass123"},
+            )
+
+        assert response.status_code == 200
+        assert login.status_code == 200
+        fp = response.json()["instance_fingerprint"]
+        assert re.fullmatch(r"[0-9a-f]{32}", fp)
+        assert fp == instance_fingerprint(login.json()["instance_id"])
+
+    @pytest.mark.asyncio
+    async def test_connection_test_exact_keys(self, seeded_db, async_client):
+        """Response keys are exactly status, version, app, instance_fingerprint."""
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+
+        assert set(response.json().keys()) == {
+            "status",
+            "version",
+            "app",
+            "instance_fingerprint",
+        }
+
+    @pytest.mark.asyncio
+    async def test_connection_test_with_fingerprint_no_auth(self, seeded_db, async_client):
+        """The extended response is still served without Authorization."""
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+
+        assert response.status_code == 200
+        assert "Authorization" not in response.request.headers
+        assert "instance_fingerprint" in response.json()
+
+    @pytest.mark.asyncio
+    async def test_connection_test_without_cached_fingerprint(
+        self, seeded_db, async_client, monkeypatch
+    ):
+        """When no fingerprint is cached the field is omitted, still 200."""
+        monkeypatch.setattr(database_module, "_instance_fingerprint", None)
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+
+        assert response.status_code == 200
+        assert set(response.json().keys()) == {"status", "version", "app"}
+
+    @pytest.mark.asyncio
+    async def test_connection_test_does_not_query_instance_id(
+        self, seeded_db, async_client, monkeypatch
+    ):
+        """Handler never calls get_instance_id, so a DB failure there is irrelevant."""
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(database_module, "get_instance_id", _boom)
+        async with async_client as client:
+            response = await client.get("/api/v1/connection/test")
+
+        assert response.status_code == 200
+        assert re.fullmatch(r"[0-9a-f]{32}", response.json()["instance_fingerprint"])
+
+
+class TestInstanceFingerprint:
+    """Tests for the instance fingerprint helper and init_db cache."""
+
+    def test_fingerprint_vectors(self):
+        """Fixed test vectors shared with clients (design.md §3.1)."""
+        assert (
+            instance_fingerprint("00000000-0000-0000-0000-000000000000")
+            == "0aa7ca809fe5773d5f9134544860ff3c"
+        )
+        assert (
+            instance_fingerprint("3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d")
+            == "08cf6b7fb5c87de79237818508128056"
+        )
+
+    @pytest.mark.asyncio
+    async def test_init_db_caches_fingerprint(self, tmp_path):
+        """init_db caches the fingerprint of the stored instance_id."""
+        db_path = str(tmp_path / "fp.db")
+        await init_db(db_path)
+
+        async with aiosqlite.connect(db_path) as conn:
+            cursor = await conn.execute(
+                "SELECT value FROM server_metadata WHERE key = ?",
+                (INSTANCE_ID_KEY,),
+            )
+            row = await cursor.fetchone()
+
+        assert row is not None
+        assert cached_instance_fingerprint() == instance_fingerprint(row[0])
 
 
 # ---------------------------------------------------------------------------

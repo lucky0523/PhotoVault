@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import AsyncGenerator
 from uuid import uuid4
@@ -27,6 +28,28 @@ from app.core.config import (
 logger = logging.getLogger("photovault.database")
 
 INSTANCE_ID_KEY = "instance_id"
+INSTANCE_FINGERPRINT_PREFIX = "photovault-instance:"
+
+# Process-local cache of the instance fingerprint, computed at the end of
+# ``init_db`` so ``/connection/test`` can expose it without touching the DB.
+_instance_fingerprint: str | None = None
+
+
+def instance_fingerprint(instance_id: str) -> str:
+    """Return the public fingerprint of an instance ID.
+
+    First 32 lowercase hex chars of SHA-256("photovault-instance:" + instance_id).
+    Lets clients verify that LAN and public endpoints reach the same server
+    without exposing the raw instance_id on an unauthenticated endpoint.
+    """
+    return hashlib.sha256(
+        (INSTANCE_FINGERPRINT_PREFIX + instance_id).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def cached_instance_fingerprint() -> str | None:
+    """Return the fingerprint cached by the last ``init_db`` call, if any."""
+    return _instance_fingerprint
 
 # SQL schema definitions
 _CREATE_SERVER_METADATA_TABLE = """
@@ -308,6 +331,21 @@ async def init_db(db_path: str) -> None:
             await db.execute(index_sql)
 
         await db.commit()
+
+        # Cache the instance fingerprint for /connection/test. Best effort:
+        # a failure here must never break database initialization.
+        global _instance_fingerprint
+        try:
+            cursor = await db.execute(
+                "SELECT value FROM server_metadata WHERE key = ?",
+                (INSTANCE_ID_KEY,),
+            )
+            row = await cursor.fetchone()
+            value = row[0] if row is not None else None
+            _instance_fingerprint = instance_fingerprint(str(value)) if value else None
+        except Exception:
+            _instance_fingerprint = None
+            logger.warning("Failed to compute instance fingerprint", exc_info=True)
 
 
 async def get_instance_id(db: aiosqlite.Connection) -> str:
