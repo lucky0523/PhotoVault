@@ -264,13 +264,10 @@ class LocalTabViewModel @Inject constructor(
             }
         }
 
-        // Check server connectivity
-        val serverAddress = credentialManager.getServerAddress()
-        if (!serverAddress.isNullOrEmpty()) {
-            val connectionResult = authRepository.testConnection(serverAddress)
-            if (connectionResult.isFailure) {
-                return context.getString(R.string.error_server_unreachable)
-            }
+        // Check server connectivity on the ambient route (LAN or public; waits for
+        // the LAN evaluation first on a cold start).
+        if (!authRepository.isServerReachable()) {
+            return context.getString(R.string.error_server_unreachable)
         }
 
         BackgroundScanWorker.runNow(context, manual = manual)

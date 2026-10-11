@@ -2,22 +2,33 @@ package com.huoyi.photovault.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.huoyi.photovault.data.network.endpoint.EndpointConfig
+import com.huoyi.photovault.data.network.endpoint.EndpointConfigSource
+import com.huoyi.photovault.data.network.endpoint.ServerAddress
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.io.IOException
+import java.security.GeneralSecurityException
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class CredentialManager @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : EndpointConfigSource {
     companion object {
+        private const val TAG = "PhotoVaultAuth"
         private const val PREFS_FILE_NAME = "photovault_secure_prefs"
         private const val KEY_SERVER_ADDRESS = "server_address"
+        private const val KEY_LAN_ADDRESS = "lan_address"
         private const val KEY_USERNAME = "username"
         private const val KEY_PASSWORD = "password"
         private const val KEY_REMEMBER_PASSWORD = "remember_password"
@@ -49,6 +60,41 @@ class CredentialManager @Inject constructor(
     private val _authSessionState = MutableStateFlow(AuthSessionState.UNAUTHENTICATED)
     val authSessionState: StateFlow<AuthSessionState> = _authSessionState.asStateFlow()
 
+    // Endpoint configuration version (EndpointConfigSource). Bumped after every
+    // persisted address change so the resolver drops stale probe results.
+    private val _configVersion = MutableStateFlow(0L)
+    override val changes: StateFlow<Long> = _configVersion.asStateFlow()
+
+    /**
+     * Public + LAN base URLs and instance id, read from the persisted session.
+     * EndpointResolver.start() calls this from Application.onCreate, so a missing
+     * keystore (JVM/Robolectric tests, broken device keystore) yields an empty
+     * configuration instead of crashing process start.
+     */
+    @Synchronized
+    override fun current(): EndpointConfig {
+        val prefs = try {
+            encryptedPrefs
+        } catch (e: GeneralSecurityException) {
+            Log.e(TAG, "Secure prefs unavailable: ${e.javaClass.simpleName}")
+            return EndpointConfig(null, null, null, _configVersion.value)
+        } catch (e: IOException) {
+            Log.e(TAG, "Secure prefs unavailable: ${e.javaClass.simpleName}")
+            return EndpointConfig(null, null, null, _configVersion.value)
+        }
+        return EndpointConfig(
+            publicBase = toBaseUrl(prefs.getString(KEY_SERVER_ADDRESS, null)),
+            lanBase = toBaseUrl(prefs.getString(KEY_LAN_ADDRESS, null)),
+            instanceId = prefs.getString(KEY_INSTANCE_ID, null)?.takeIf { it.isNotBlank() },
+            version = _configVersion.value
+        )
+    }
+
+    override fun sessionSnapshot(): CredentialSessionSnapshot = getSessionSnapshot()
+
+    private fun toBaseUrl(raw: String?): HttpUrl? =
+        raw?.takeIf { it.isNotBlank() }?.let { ServerAddress.legacyNormalize(it).toHttpUrlOrNull() }
+
     fun saveCredentials(
         serverAddress: String,
         username: String,
@@ -71,6 +117,7 @@ class CredentialManager @Inject constructor(
     fun loadCredentials(): SavedCredentials {
         return SavedCredentials(
             serverAddress = encryptedPrefs.getString(KEY_SERVER_ADDRESS, "") ?: "",
+            lanAddress = encryptedPrefs.getString(KEY_LAN_ADDRESS, "") ?: "",
             username = encryptedPrefs.getString(KEY_USERNAME, "") ?: "",
             password = encryptedPrefs.getString(KEY_PASSWORD, "") ?: "",
             rememberPassword = encryptedPrefs.getBoolean(KEY_REMEMBER_PASSWORD, false)
@@ -82,6 +129,7 @@ class CredentialManager @Inject constructor(
         val nextGeneration = nextGeneration()
         encryptedPrefs.edit().apply {
             remove(KEY_SERVER_ADDRESS)
+            remove(KEY_LAN_ADDRESS)
             remove(KEY_USERNAME)
             remove(KEY_PASSWORD)
             remove(KEY_REMEMBER_PASSWORD)
@@ -93,16 +141,20 @@ class CredentialManager @Inject constructor(
             putLong(KEY_SESSION_GENERATION, nextGeneration)
             apply()
         }
+        _configVersion.value += 1
         publishAuthSessionState()
     }
 
     /**
      * Publishes a successfully authenticated session atomically. Incrementing the
      * generation invalidates refresh responses that were started by an older login.
+     * A null address removes the stored key; at least one of [serverAddress]
+     * (public) and [lanAddress] must be present.
      */
     @Synchronized
     fun saveSession(
-        serverAddress: String,
+        serverAddress: String?,
+        lanAddress: String?,
         username: String,
         password: String?,
         rememberPassword: Boolean,
@@ -112,10 +164,14 @@ class CredentialManager @Inject constructor(
         instanceId: String,
         userId: Long
     ) {
+        require(serverAddress != null || lanAddress != null) {
+            "saveSession requires a public or LAN address"
+        }
         val expiryTime = System.currentTimeMillis() + (expiresIn * 1000L)
         val nextGeneration = nextGeneration()
         encryptedPrefs.edit().apply {
-            putString(KEY_SERVER_ADDRESS, serverAddress)
+            if (serverAddress == null) remove(KEY_SERVER_ADDRESS) else putString(KEY_SERVER_ADDRESS, serverAddress)
+            if (lanAddress == null) remove(KEY_LAN_ADDRESS) else putString(KEY_LAN_ADDRESS, lanAddress)
             putString(KEY_USERNAME, username)
             putBoolean(KEY_REMEMBER_PASSWORD, rememberPassword)
             if (rememberPassword && password != null) {
@@ -131,8 +187,26 @@ class CredentialManager @Inject constructor(
             putLong(KEY_SESSION_GENERATION, nextGeneration)
             apply()
         }
+        _configVersion.value += 1
         publishAuthSessionState()
     }
+
+    /**
+     * Sets (canonical form) or clears (null) the LAN address. Does not touch the
+     * session generation, so in-flight token refreshes stay valid (design §3.4).
+     */
+    @Synchronized
+    fun setLanAddress(canonical: String?) {
+        encryptedPrefs.edit().apply {
+            if (canonical == null) remove(KEY_LAN_ADDRESS) else putString(KEY_LAN_ADDRESS, canonical)
+            apply()
+        }
+        _configVersion.value += 1
+        publishAuthSessionState()
+    }
+
+    @Synchronized
+    fun getLanAddress(): String? = encryptedPrefs.getString(KEY_LAN_ADDRESS, null)
 
     /** Retained for callers that already own the current session transaction. */
     @Synchronized
@@ -252,16 +326,25 @@ class CredentialManager @Inject constructor(
         _authSessionState.value = readAuthSessionState()
     }
 
-    private fun readAuthSessionState(): AuthSessionState {
-        val snapshot = getSessionSnapshot()
-        return when {
-            snapshot.identity == null || snapshot.serverAddress.isNullOrBlank() ->
-                AuthSessionState.UNAUTHENTICATED
-            snapshot.isAccessTokenValid() -> AuthSessionState.AUTHENTICATED
-            !snapshot.refreshToken.isNullOrBlank() -> AuthSessionState.REFRESHABLE
-            else -> AuthSessionState.UNAUTHENTICATED
-        }
-    }
+    private fun readAuthSessionState(): AuthSessionState =
+        authSessionStateFor(getSessionSnapshot(), encryptedPrefs.getString(KEY_LAN_ADDRESS, null))
+}
+
+/**
+ * Auth state for a persisted session. A session needs a stable identity and at
+ * least one address (public or LAN, CR-1); a LAN-only login is not "unauthenticated".
+ */
+@VisibleForTesting
+internal fun authSessionStateFor(
+    snapshot: CredentialSessionSnapshot,
+    lanAddress: String?
+): AuthSessionState = when {
+    snapshot.identity == null ||
+        (snapshot.serverAddress.isNullOrBlank() && lanAddress.isNullOrBlank()) ->
+        AuthSessionState.UNAUTHENTICATED
+    snapshot.isAccessTokenValid() -> AuthSessionState.AUTHENTICATED
+    !snapshot.refreshToken.isNullOrBlank() -> AuthSessionState.REFRESHABLE
+    else -> AuthSessionState.UNAUTHENTICATED
 }
 
 enum class AuthSessionState {
@@ -297,6 +380,7 @@ data class CredentialSessionSnapshot(
 
 data class SavedCredentials(
     val serverAddress: String,
+    val lanAddress: String,
     val username: String,
     val password: String,
     val rememberPassword: Boolean

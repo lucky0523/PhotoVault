@@ -9,6 +9,7 @@ import coil.decode.VideoFrameDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.huoyi.photovault.data.local.SettingsPreferences
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
 import com.huoyi.photovault.service.BackgroundScanWorker
 import com.huoyi.photovault.service.ConditionBroadcastReceiver
 import com.huoyi.photovault.service.MediaStoreObserver
@@ -28,6 +29,9 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
 
     @Inject
     lateinit var settingsPreferences: SettingsPreferences
+
+    @Inject
+    lateinit var endpointResolver: EndpointResolver
 
     private var conditionReceiver: ConditionBroadcastReceiver? = null
 
@@ -69,6 +73,10 @@ class PhotoVaultApplication : Application(), Configuration.Provider, ImageLoader
         // OEM ROMs suppress third-party logcat output.
         com.huoyi.photovault.util.FileLogger.init(this, settingsPreferences.getFileLoggingEnabled())
         com.huoyi.photovault.util.FileLogger.log("App", "onCreate; process start")
+
+        // Seed the network state, follow config changes and kick the first LAN
+        // evaluation before any receiver/worker/service can start a backup task.
+        endpointResolver.start()
 
         // Track app foreground/background so background workers can decide whether
         // to resume a user-paused backup silently (background) or ask for

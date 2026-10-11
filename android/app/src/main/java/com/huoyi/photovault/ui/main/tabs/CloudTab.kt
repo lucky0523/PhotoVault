@@ -96,6 +96,10 @@ fun CloudTab(
     // An index rather than the file itself, so the pager can swipe across the
     // whole folder — including pages fetched after the preview was opened.
     var previewIndex by remember { mutableStateOf<Int?>(null) }
+    // Coil-only placeholder prefix (host rewritten by the routing interceptor;
+    // changes only when the server instance changes).
+    val imageBaseUrl = viewModel.imageBaseUrl
+    // Effective address, only for ExoPlayer video URLs.
     val serverBaseUrl = viewModel.serverBaseUrl
     val listState = rememberLazyListState()
 
@@ -184,6 +188,7 @@ fun CloudTab(
                 isLoading = uiState.isTrashLoading,
                 error = uiState.trashError,
                 serverBaseUrl = serverBaseUrl,
+                imageBaseUrl = imageBaseUrl,
                 onBack = { viewModel.exitTrash() },
                 onRestore = { viewModel.restoreFile(it.id) },
                 onPurge = { viewModel.purgeFile(it.id) }
@@ -283,7 +288,7 @@ fun CloudTab(
                             ) { index, file ->
                                 FileItem(
                                     file = file,
-                                    serverBaseUrl = serverBaseUrl,
+                                    imageBaseUrl = imageBaseUrl,
                                     isSelectionMode = uiState.isSelectionMode,
                                     isSelected = file.id in uiState.selectedFileIds,
                                     onClick = {
@@ -385,13 +390,17 @@ fun CloudTab(
     // derived from uiState.files, so pages appended by loadMoreFiles() extend the
     // pager while it is open.
     previewIndex?.let { index ->
-        val previewItems = remember(uiState.files, serverBaseUrl) {
+        val previewItems = remember(uiState.files, imageBaseUrl) {
+            // Videos play via ExoPlayer (no OkHttp routing), so they need the
+            // effective address, read when the preview opens.
+            val videoBaseUrl = viewModel.serverBaseUrl
             uiState.files.map { file ->
+                val isVideo = file.mediaType == "video" ||
+                    file.mimeType?.startsWith("video/") == true
                 PreviewMedia(
                     fileName = file.fileName,
-                    model = "$serverBaseUrl/api/v1/files/download/${file.id}",
-                    isVideo = file.mediaType == "video" ||
-                        file.mimeType?.startsWith("video/") == true
+                    model = "${if (isVideo) videoBaseUrl else imageBaseUrl}/api/v1/files/download/${file.id}",
+                    isVideo = isVideo
                 )
             }
         }
@@ -669,7 +678,7 @@ private fun CloudDirectoryRow(
 @Composable
 private fun FileItem(
     file: FileBrowseInfo,
-    serverBaseUrl: String,
+    imageBaseUrl: String,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -687,9 +696,9 @@ private fun FileItem(
         // Thumbnail
         val thumbnailUrl = if (file.thumbnailUrl != null) {
             if (file.thumbnailUrl.startsWith("http")) file.thumbnailUrl
-            else "$serverBaseUrl${file.thumbnailUrl}"
+            else "$imageBaseUrl${file.thumbnailUrl}"
         } else {
-            "$serverBaseUrl/api/v1/files/thumbnail/${file.id}"
+            "$imageBaseUrl/api/v1/files/thumbnail/${file.id}"
         }
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)

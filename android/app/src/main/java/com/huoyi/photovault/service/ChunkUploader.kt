@@ -16,6 +16,7 @@ import com.huoyi.photovault.data.api.model.UploadState
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
 import com.huoyi.photovault.data.local.entity.PhotoStatusValue
 import com.huoyi.photovault.data.local.entity.UploadRecord
+import com.huoyi.photovault.di.BackupTaskApi
 import com.huoyi.photovault.util.DeviceNameProvider
 import kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
@@ -58,7 +59,8 @@ import javax.net.ssl.SSLException
  */
 @Singleton
 class ChunkUploader @Inject constructor(
-    private val backupApi: BackupApi,
+    // Backup-task client: requests follow the active backup task's route session.
+    @BackupTaskApi private val backupApi: BackupApi,
     private val uploadRecordDao: UploadRecordDao,
     private val fileHasher: FileHasher,
     private val statusSyncManager: StatusSyncManager,

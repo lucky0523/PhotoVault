@@ -58,7 +58,8 @@ class AccountSessionManager @Inject constructor(
      * server-owned caches have been invalidated.
      */
     suspend fun activate(
-        serverAddress: String,
+        serverAddress: String?,
+        lanAddress: String?,
         username: String,
         password: String?,
         rememberPassword: Boolean,
@@ -127,6 +128,7 @@ class AccountSessionManager @Inject constructor(
 
             credentialManager.saveSession(
                 serverAddress = serverAddress,
+                lanAddress = lanAddress,
                 username = username,
                 password = password,
                 rememberPassword = rememberPassword,

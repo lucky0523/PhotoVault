@@ -24,6 +24,8 @@ import com.huoyi.photovault.data.local.dao.PhotoStatusDao
 import com.huoyi.photovault.data.local.entity.BackupHistoryRecord
 import com.huoyi.photovault.data.local.entity.BackupStatus
 import com.huoyi.photovault.data.local.entity.UploadRecord
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
+import com.huoyi.photovault.data.network.endpoint.RouteSession
 import com.huoyi.photovault.data.repository.AuthRepository
 import com.huoyi.photovault.ui.main.tabs.applyBackedUpCountDelta
 import dagger.hilt.android.AndroidEntryPoint
@@ -440,6 +442,9 @@ class BackupForegroundService : Service() {
     @Inject
     lateinit var authRepository: AuthRepository
 
+    @Inject
+    lateinit var endpointResolver: EndpointResolver
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var backupJob: Job? = null
 
@@ -566,276 +571,318 @@ class BackupForegroundService : Service() {
         completedFiles = 0
 
         backupJob = serviceScope.launch {
-            // Defensive gate for direct START/RESUME callers that bypass the scan
-            // worker. Keep the persisted queue intact on every failure.
-            when (authRepository.ensureAuthenticated()) {
-                AuthReadiness.VALID -> Unit
-                AuthReadiness.TRANSIENT_FAILURE -> {
-                    android.util.Log.w(
-                        "PhotoVaultBackup",
-                        "Backup paused: token refresh temporarily unavailable"
-                    )
-                    isPaused = true
-                    pauseReason = PauseReason.CONDITION
-                    updateNotification(
-                        getString(R.string.notification_backup_paused_title),
-                        getString(R.string.notification_backup_server_disconnected)
-                    )
-                    return@launch
-                }
-                AuthReadiness.TERMINAL_FAILURE -> {
-                    android.util.Log.w(
-                        "PhotoVaultBackup",
-                        "Backup stopped: authentication is no longer refreshable"
-                    )
-                    isRunning = false
-                    isPaused = false
-                    currentFileUri = null
-                    _uploadProgress.value = null
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    postAuthRequiredNotification(applicationContext)
-                    stopSelf()
-                    return@launch
-                }
-            }
-
-            // Rebuild the queue from persistence first, so files that were only
-            // queued (not yet started, hence no UploadRecord) survive a process
-            // kill and still get uploaded. Idempotent: files already in the
-            // in-memory queue are skipped.
-            backupQueue.restoreFromPersistence()
-            totalFiles = backupQueue.size()
-            com.huoyi.photovault.util.FileLogger.log(
-                "Service",
-                "backup loop start; queue=$totalFiles isManualRun=$isManualRun"
-            )
-
-            while (backupQueue.size() > 0 && !isPaused) {
-                // Check conditions before each file
-                if (backupConditionChecker.shouldPauseBackup()) {
-                    isPaused = true
-                    pauseReason = PauseReason.CONDITION
-                    updateNotification(
-                        getString(R.string.notification_backup_paused_title),
-                        getString(R.string.notification_backup_waiting_conditions)
-                    )
-                    break
-                }
-
-                val fileInfo = backupQueue.dequeue() ?: break
-                currentFileName = fileInfo.fileName
-                // Mark this file as the single In_Flight_File; cleared on every
-                // path that finishes processing it below (R-25.1/25.2).
-                currentFileUri = fileInfo.uri
-
-                // Fallback guard: if this file's backup folder has been removed,
-                // drop it instead of uploading. The queue is normally purged when
-                // a folder is removed (LocalTabViewModel.removeFolder); this covers
-                // any file already dequeued/in-flight at that moment so a removed
-                // folder never keeps backing up. A null folder here means "no
-                // longer registered" (findFolder already tolerates URL-encoding).
-                val folder = findFolder(fileInfo.folderUri)
-                if (folder == null) {
-                    android.util.Log.i(
-                        "PhotoVaultBackup",
-                        "Skipping ${fileInfo.fileName}: its backup folder was removed"
-                    )
-                    currentFileUri = null
-                    continue
-                }
-
-                // Capture the file's status BEFORE uploading (the uploader flips it
-                // to `active` via StatusSyncManager.markActive on success). A
-                // re-backup of a trashed/purged file must move it out of that
-                // bucket, not just add to backed-up — see [incrementBackedUpCount].
-                val priorStatus = try {
-                    photoStatusDao.getByFileUri(fileInfo.uri)?.status
-                } catch (e: Exception) {
-                    null
-                }
-
-                updateNotification(
-                    title = getString(R.string.notification_backup_file_title, currentFileName),
-                    content = getString(
-                        R.string.notification_backup_progress,
-                        completedFiles + 1,
-                        totalFiles
-                    )
-                )
-
-                // Storage policy for this file, from the folder resolved above.
-                // (Matched by canonical key so a re-backup's URL-decoded
-                // folderUri still resolves to the stored folder row.)
-                val storagePolicy = StoragePolicyConfig(
-                    useCustomPath = folder.useCustomPath,
-                    customPath = folder.customPath,
-                    useYearMonthLayer = folder.useYearMonthLayer
-                )
-
-                // Track speed across progress callbacks
-                var lastBytes = 0L
-                var lastTimeMs = System.currentTimeMillis()
-
-                val result = try {
-                    chunkUploader.uploadFile(
-                        context = applicationContext,
-                        fileInfo = fileInfo,
-                        storagePolicy = storagePolicy
-                    ) { progress ->
-                        val now = System.currentTimeMillis()
-                        val elapsedMs = now - lastTimeMs
-                        if (elapsedMs >= 500) {
-                            val deltaBytes = progress.uploadedBytes - lastBytes
-                            if (deltaBytes > 0) {
-                                transferSpeedBytesPerSec = deltaBytes * 1000 / elapsedMs
-                            }
-                            lastBytes = progress.uploadedBytes
-                            lastTimeMs = now
-                        }
-                        updateNotificationForProgress(progress)
-                    }
-                } catch (ce: kotlinx.coroutines.CancellationException) {
-                    // The job was cancelled mid-upload (e.g. pause() fired because
-                    // WiFi dropped). Put the file back on the queue so it resumes
-                    // from its persisted chunk progress (断点续传) once conditions
-                    // recover, then let the cancellation propagate to end the loop.
-                    backupQueue.enqueue(listOf(fileInfo))
-                    android.util.Log.i(
-                        "PhotoVaultBackup",
-                        "Upload of ${fileInfo.fileName} cancelled; re-queued for resume"
-                    )
-                    currentFileUri = null
-                    throw ce
-                } catch (e: Exception) {
-                    android.util.Log.e(
-                        "PhotoVaultBackup",
-                        "Upload failed for ${fileInfo.fileName}: ${e.message}",
-                        e
-                    )
-                    UploadResult.Failed(
-                        getString(R.string.backup_error_unknown),
-                        shouldRetry = false
-                    )
-                }
-
-                when (result) {
-                    is UploadResult.Success -> {
-                        android.util.Log.i(
-                            "PhotoVaultBackup",
-                            "Uploaded ${fileInfo.fileName} -> ${result.storedPath}"
-                        )
-                        // Save success record and increment backed up count
-                        saveHistoryRecord(fileInfo, BackupStatus.SUCCESS)
-                        incrementBackedUpCount(fileInfo.folderUri, priorStatus)
-                    }
-                    is UploadResult.Duplicate -> {
-                        android.util.Log.i(
-                            "PhotoVaultBackup",
-                            "Skipped duplicate ${fileInfo.fileName}"
-                        )
-                        // Save skipped record with reason "云端已存在" and increment backed up count
-                        saveHistoryRecord(
-                            fileInfo,
-                            BackupStatus.SKIPPED,
-                            getString(R.string.backup_skip_duplicate)
-                        )
-                        incrementBackedUpCount(fileInfo.folderUri, priorStatus)
-                    }
-                    is UploadResult.Skipped -> {
-                        android.util.Log.i(
-                            "PhotoVaultBackup",
-                            "Skipped ${fileInfo.fileName}: ${result.reason}"
-                        )
-                        // Record the skip with its reason. A skipped trashed or
-                        // purged record is not active on the server, so it must stay
-                        // in its existing status bucket instead of increasing 已备份.
-                        saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
-                        if (result.countsAsBackedUp) {
-                            incrementBackedUpCount(fileInfo.folderUri, priorStatus)
-                        }
-                    }
-                    is UploadResult.Failed -> {
-                        // Distinguish a transient interruption (network/battery
-                        // lost while uploading, chunk retries exhausted) from a
-                        // genuine, non-retryable file error. On a transient
-                        // interruption, keep the file queued and pause so the
-                        // condition-recovery path resumes it later (断点续传)
-                        // instead of burning it as a permanent failure.
-                        if (result.shouldRetry && backupConditionChecker.shouldPauseBackup()) {
-                            backupQueue.enqueue(listOf(fileInfo))
-                            isPaused = true
-                            pauseReason = PauseReason.CONDITION
-                            android.util.Log.i(
-                                "PhotoVaultBackup",
-                                "Upload of ${fileInfo.fileName} interrupted by conditions; re-queued for resume"
-                            )
-                            updateNotification(
-                        getString(R.string.notification_backup_paused_title),
-                        getString(R.string.notification_backup_waiting_conditions)
-                    )
-                            currentFileUri = null
-                            break
-                        }
-                        // A retryable failure while battery + network are still fine
-                        // usually means the (home-LAN) server became unreachable
-                        // mid-batch. Treat it like a condition pause — re-queue this
-                        // file and stop — instead of recording it (and then every
-                        // following file) as FAILED. Recording FAILED here would
-                        // poison the per-file retry backoff (up to 24h) and block
-                        // backup even after the server returns / the user gets home.
-                        // Pausing with CONDITION lets it auto-resume once conditions
-                        // change (e.g. joining home WiFi) or on the next reachable
-                        // scan / manual "立即备份".
-                        if (result.shouldRetry && !authRepository.isServerReachable()) {
-                            backupQueue.enqueue(listOf(fileInfo))
-                            isPaused = true
-                            pauseReason = PauseReason.CONDITION
-                            com.huoyi.photovault.util.FileLogger.log(
-                                "Service",
-                                "server unreachable mid-backup; paused and re-queued ${fileInfo.fileName}"
-                            )
-                            android.util.Log.i(
-                                "PhotoVaultBackup",
-                                "Server unreachable; re-queued ${fileInfo.fileName} and paused for resume"
-                            )
-                            updateNotification(
-                                getString(R.string.notification_backup_paused_title),
-                                getString(R.string.notification_backup_server_disconnected)
-                            )
-                            currentFileUri = null
-                            break
-                        }
+            // One route session per backup run (CR-4): evaluated once at start,
+            // afterwards it can only be locked from LAN to PUBLIC. endTask only
+            // clears this run's own session, so a late finally from a cancelled
+            // run cannot clear a newer run's task.
+            var task: RouteSession.Task? = null
+            try {
+                val t = endpointResolver.beginTask().also { task = it }
+                // Defensive gate for direct START/RESUME callers that bypass the scan
+                // worker. Keep the persisted queue intact on every failure.
+                when (authRepository.ensureAuthenticated(t)) {
+                    AuthReadiness.VALID -> Unit
+                    AuthReadiness.TRANSIENT_FAILURE -> {
                         android.util.Log.w(
                             "PhotoVaultBackup",
-                            "Failed ${fileInfo.fileName}: ${result.error}"
+                            "Backup paused: token refresh temporarily unavailable"
                         )
-                        // Save failed record
-                        saveHistoryRecord(fileInfo, BackupStatus.FAILED, result.error)
+                        isPaused = true
+                        pauseReason = PauseReason.CONDITION
+                        updateNotification(
+                            getString(R.string.notification_backup_paused_title),
+                            getString(R.string.notification_backup_server_disconnected)
+                        )
+                        return@launch
+                    }
+                    AuthReadiness.TERMINAL_FAILURE -> {
+                        android.util.Log.w(
+                            "PhotoVaultBackup",
+                            "Backup stopped: authentication is no longer refreshable"
+                        )
+                        isRunning = false
+                        isPaused = false
+                        currentFileUri = null
+                        _uploadProgress.value = null
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        postAuthRequiredNotification(applicationContext)
+                        stopSelf()
+                        return@launch
                     }
                 }
 
-                // This file's processing finished (success / duplicate / skip /
-                // non-retryable failure); it is no longer in flight.
-                currentFileUri = null
-                completedFiles++
-                updateNotification(
-                    title = getString(R.string.notification_backup_active_title),
-                    content = getString(
-                        R.string.notification_backup_completed_count,
-                        completedFiles,
-                        totalFiles
-                    )
+                // Rebuild the queue from persistence first, so files that were only
+                // queued (not yet started, hence no UploadRecord) survive a process
+                // kill and still get uploaded. Idempotent: files already in the
+                // in-memory queue are skipped.
+                backupQueue.restoreFromPersistence()
+                totalFiles = backupQueue.size()
+                com.huoyi.photovault.util.FileLogger.log(
+                    "Service",
+                    "backup loop start; queue=$totalFiles isManualRun=$isManualRun"
                 )
-            }
 
-            if (backupQueue.isEmpty() && !isPaused) {
-                updateNotification(
-                    getString(R.string.notification_backup_complete_title),
-                    getString(R.string.notification_backup_complete_content, completedFiles)
-                )
-                // Auto-stop after a short delay to let user see the completion notification
-                delay(3000)
-                stopBackup()
+                // Files already re-queued once after a mid-file LAN→public switch
+                // in this run; a second failure follows the normal path (no loop).
+                val retriedAfterSwitch = HashSet<String>()
+
+                while (backupQueue.size() > 0 && !isPaused) {
+                    // Check conditions before each file
+                    if (backupConditionChecker.shouldPauseBackup()) {
+                        isPaused = true
+                        pauseReason = PauseReason.CONDITION
+                        updateNotification(
+                            getString(R.string.notification_backup_paused_title),
+                            getString(R.string.notification_backup_waiting_conditions)
+                        )
+                        break
+                    }
+
+                    val fileInfo = backupQueue.dequeue() ?: break
+                    val lockGenAtFileStart = t.lockGeneration
+                    currentFileName = fileInfo.fileName
+                    // Mark this file as the single In_Flight_File; cleared on every
+                    // path that finishes processing it below (R-25.1/25.2).
+                    currentFileUri = fileInfo.uri
+
+                    // Fallback guard: if this file's backup folder has been removed,
+                    // drop it instead of uploading. The queue is normally purged when
+                    // a folder is removed (LocalTabViewModel.removeFolder); this covers
+                    // any file already dequeued/in-flight at that moment so a removed
+                    // folder never keeps backing up. A null folder here means "no
+                    // longer registered" (findFolder already tolerates URL-encoding).
+                    val folder = findFolder(fileInfo.folderUri)
+                    if (folder == null) {
+                        android.util.Log.i(
+                            "PhotoVaultBackup",
+                            "Skipping ${fileInfo.fileName}: its backup folder was removed"
+                        )
+                        currentFileUri = null
+                        continue
+                    }
+
+                    // Capture the file's status BEFORE uploading (the uploader flips it
+                    // to `active` via StatusSyncManager.markActive on success). A
+                    // re-backup of a trashed/purged file must move it out of that
+                    // bucket, not just add to backed-up — see [incrementBackedUpCount].
+                    val priorStatus = try {
+                        photoStatusDao.getByFileUri(fileInfo.uri)?.status
+                    } catch (e: Exception) {
+                        null
+                    }
+
+                    updateNotification(
+                        title = getString(R.string.notification_backup_file_title, currentFileName),
+                        content = getString(
+                            R.string.notification_backup_progress,
+                            completedFiles + 1,
+                            totalFiles
+                        )
+                    )
+
+                    // Storage policy for this file, from the folder resolved above.
+                    // (Matched by canonical key so a re-backup's URL-decoded
+                    // folderUri still resolves to the stored folder row.)
+                    val storagePolicy = StoragePolicyConfig(
+                        useCustomPath = folder.useCustomPath,
+                        customPath = folder.customPath,
+                        useYearMonthLayer = folder.useYearMonthLayer
+                    )
+
+                    // Track speed across progress callbacks
+                    var lastBytes = 0L
+                    var lastTimeMs = System.currentTimeMillis()
+
+                    val result = try {
+                        chunkUploader.uploadFile(
+                            context = applicationContext,
+                            fileInfo = fileInfo,
+                            storagePolicy = storagePolicy
+                        ) { progress ->
+                            val now = System.currentTimeMillis()
+                            val elapsedMs = now - lastTimeMs
+                            if (elapsedMs >= 500) {
+                                val deltaBytes = progress.uploadedBytes - lastBytes
+                                if (deltaBytes > 0) {
+                                    transferSpeedBytesPerSec = deltaBytes * 1000 / elapsedMs
+                                }
+                                lastBytes = progress.uploadedBytes
+                                lastTimeMs = now
+                            }
+                            updateNotificationForProgress(progress)
+                        }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        // The job was cancelled mid-upload (e.g. pause() fired because
+                        // WiFi dropped). Put the file back on the queue so it resumes
+                        // from its persisted chunk progress (断点续传) once conditions
+                        // recover, then let the cancellation propagate to end the loop.
+                        backupQueue.enqueue(listOf(fileInfo))
+                        android.util.Log.i(
+                            "PhotoVaultBackup",
+                            "Upload of ${fileInfo.fileName} cancelled; re-queued for resume"
+                        )
+                        currentFileUri = null
+                        throw ce
+                    } catch (e: Exception) {
+                        android.util.Log.e(
+                            "PhotoVaultBackup",
+                            "Upload failed for ${fileInfo.fileName}: ${e.message}",
+                            e
+                        )
+                        UploadResult.Failed(
+                            getString(R.string.backup_error_unknown),
+                            shouldRetry = false
+                        )
+                    }
+
+                    when (result) {
+                        is UploadResult.Success -> {
+                            android.util.Log.i(
+                                "PhotoVaultBackup",
+                                "Uploaded ${fileInfo.fileName} -> ${result.storedPath}"
+                            )
+                            // Save success record and increment backed up count
+                            saveHistoryRecord(fileInfo, BackupStatus.SUCCESS)
+                            incrementBackedUpCount(fileInfo.folderUri, priorStatus)
+                        }
+                        is UploadResult.Duplicate -> {
+                            android.util.Log.i(
+                                "PhotoVaultBackup",
+                                "Skipped duplicate ${fileInfo.fileName}"
+                            )
+                            // Save skipped record with reason "云端已存在" and increment backed up count
+                            saveHistoryRecord(
+                                fileInfo,
+                                BackupStatus.SKIPPED,
+                                getString(R.string.backup_skip_duplicate)
+                            )
+                            incrementBackedUpCount(fileInfo.folderUri, priorStatus)
+                        }
+                        is UploadResult.Skipped -> {
+                            android.util.Log.i(
+                                "PhotoVaultBackup",
+                                "Skipped ${fileInfo.fileName}: ${result.reason}"
+                            )
+                            // Record the skip with its reason. A skipped trashed or
+                            // purged record is not active on the server, so it must stay
+                            // in its existing status bucket instead of increasing 已备份.
+                            saveHistoryRecord(fileInfo, BackupStatus.SKIPPED, result.reason)
+                            if (result.countsAsBackedUp) {
+                                incrementBackedUpCount(fileInfo.folderUri, priorStatus)
+                            }
+                        }
+                        is UploadResult.Failed -> {
+                            // Distinguish a transient interruption (network/battery
+                            // lost while uploading, chunk retries exhausted) from a
+                            // genuine, non-retryable file error. On a transient
+                            // interruption, keep the file queued and pause so the
+                            // condition-recovery path resumes it later (断点续传)
+                            // instead of burning it as a permanent failure.
+                            // The decision order lives in FailedUploadPolicy (design §5.3).
+                            val action = FailedUploadPolicy.decide(
+                                shouldRetry = result.shouldRetry,
+                                shouldPause = { backupConditionChecker.shouldPauseBackup() },
+                                lockChangedDuringFile = { t.lockGeneration != lockGenAtFileStart },
+                                alreadyRetriedAfterSwitch = fileInfo.uri in retriedAfterSwitch,
+                                isServerReachable = { authRepository.isServerReachable(t) }
+                            )
+                            when (action) {
+                                FailedUploadAction.PAUSE_CONDITION -> {
+                                    backupQueue.enqueue(listOf(fileInfo))
+                                    isPaused = true
+                                    pauseReason = PauseReason.CONDITION
+                                    android.util.Log.i(
+                                        "PhotoVaultBackup",
+                                        "Upload of ${fileInfo.fileName} interrupted by conditions; re-queued for resume"
+                                    )
+                                    updateNotification(
+                                        getString(R.string.notification_backup_paused_title),
+                                        getString(R.string.notification_backup_waiting_conditions)
+                                    )
+                                    currentFileUri = null
+                                    break
+                                }
+                                FailedUploadAction.REQUEUE_AFTER_SWITCH -> {
+                                    // The task was locked LAN→PUBLIC while this file was
+                                    // in flight (e.g. init/complete sent on the LAN and
+                                    // not replayed). Retry it once on public later in
+                                    // this run; the upload session resumes from its
+                                    // persisted chunk progress. Not FAILED, not counted.
+                                    retriedAfterSwitch.add(fileInfo.uri)
+                                    backupQueue.enqueue(listOf(fileInfo))
+                                    com.huoyi.photovault.util.FileLogger.log(
+                                        "Service",
+                                        "route switched to public mid-file; re-queued ${fileInfo.fileName}"
+                                    )
+                                    currentFileUri = null
+                                    continue
+                                }
+                                FailedUploadAction.PAUSE_UNREACHABLE -> {
+                                    // A retryable failure while battery + network are still fine
+                                    // usually means the (home-LAN) server became unreachable
+                                    // mid-batch. Treat it like a condition pause — re-queue this
+                                    // file and stop — instead of recording it (and then every
+                                    // following file) as FAILED. Recording FAILED here would
+                                    // poison the per-file retry backoff (up to 24h) and block
+                                    // backup even after the server returns / the user gets home.
+                                    // Pausing with CONDITION lets it auto-resume once conditions
+                                    // change (e.g. joining home WiFi) or on the next reachable
+                                    // scan / manual "立即备份".
+                                    backupQueue.enqueue(listOf(fileInfo))
+                                    isPaused = true
+                                    pauseReason = PauseReason.CONDITION
+                                    com.huoyi.photovault.util.FileLogger.log(
+                                        "Service",
+                                        "server unreachable mid-backup; paused and re-queued ${fileInfo.fileName}"
+                                    )
+                                    android.util.Log.i(
+                                        "PhotoVaultBackup",
+                                        "Server unreachable; re-queued ${fileInfo.fileName} and paused for resume"
+                                    )
+                                    updateNotification(
+                                        getString(R.string.notification_backup_paused_title),
+                                        getString(R.string.notification_backup_server_disconnected)
+                                    )
+                                    currentFileUri = null
+                                    break
+                                }
+                                FailedUploadAction.RECORD_FAILED -> {
+                                    android.util.Log.w(
+                                        "PhotoVaultBackup",
+                                        "Failed ${fileInfo.fileName}: ${result.error}"
+                                    )
+                                    // Save failed record
+                                    saveHistoryRecord(fileInfo, BackupStatus.FAILED, result.error)
+                                }
+                            }
+                        }
+                    }
+
+                    // This file's processing finished (success / duplicate / skip /
+                    // non-retryable failure); it is no longer in flight.
+                    currentFileUri = null
+                    completedFiles++
+                    updateNotification(
+                        title = getString(R.string.notification_backup_active_title),
+                        content = getString(
+                            R.string.notification_backup_completed_count,
+                            completedFiles,
+                            totalFiles
+                        )
+                    )
+                }
+
+                if (backupQueue.isEmpty() && !isPaused) {
+                    updateNotification(
+                        getString(R.string.notification_backup_complete_title),
+                        getString(R.string.notification_backup_complete_content, completedFiles)
+                    )
+                    // Auto-stop after a short delay to let user see the completion notification
+                    delay(3000)
+                    stopBackup()
+                }
+            } finally {
+                task?.let { endpointResolver.endTask(it) }
             }
         }
     }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.network.ConnectionManager
 import com.huoyi.photovault.data.network.ConnectionState
+import com.huoyi.photovault.data.network.endpoint.EndpointConfigSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -13,7 +14,8 @@ import javax.inject.Inject
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val connectionManager: ConnectionManager,
-    private val credentialManager: CredentialManager
+    private val credentialManager: CredentialManager,
+    private val endpointConfig: EndpointConfigSource
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
@@ -22,11 +24,10 @@ class MainViewModel @Inject constructor(
     val heartbeatCountdown: StateFlow<Int> = connectionManager.heartbeatCountdown
 
     init {
-        // Attempt connection on initialization
-        val serverAddress = credentialManager.getServerAddress()
-        if (!serverAddress.isNullOrEmpty()) {
+        // Attempt connection on initialization (public or LAN address configured)
+        if (endpointConfig.current().hasAnyAddress) {
             viewModelScope.launch {
-                connectionManager.connect(serverAddress)
+                connectionManager.connect()
             }
         }
     }
@@ -37,10 +38,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun retryConnection() {
-        val serverAddress = credentialManager.getServerAddress()
-        if (!serverAddress.isNullOrEmpty()) {
+        if (endpointConfig.current().hasAnyAddress) {
             viewModelScope.launch {
-                connectionManager.connect(serverAddress)
+                connectionManager.connect()
             }
         }
     }

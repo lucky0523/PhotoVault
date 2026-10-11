@@ -169,6 +169,7 @@ class LoginViewModel @Inject constructor(
                 val sessionResult = runCatching {
                     accountSessionManager.activate(
                         serverAddress = state.serverAddress,
+                        lanAddress = null, // FEAT-004 wires the login-page LAN field
                         username = state.username,
                         password = if (state.rememberPassword) state.password else null,
                         rememberPassword = state.rememberPassword,

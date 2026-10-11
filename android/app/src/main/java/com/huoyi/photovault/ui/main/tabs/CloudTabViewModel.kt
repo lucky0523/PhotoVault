@@ -8,7 +8,7 @@ import com.huoyi.photovault.data.api.FileApi
 import com.huoyi.photovault.data.api.model.DirectoryInfo
 import com.huoyi.photovault.data.api.model.FileBrowseInfo
 import com.huoyi.photovault.data.api.model.TrashItemInfo
-import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -86,7 +86,7 @@ data class BreadcrumbItem(
 @HiltViewModel
 class CloudTabViewModel @Inject constructor(
     private val fileApi: FileApi,
-    private val credentialManager: CredentialManager,
+    private val endpointResolver: EndpointResolver,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -97,17 +97,19 @@ class CloudTabViewModel @Inject constructor(
     private var browseGeneration = 0L
 
     /**
-     * Returns the base URL for constructing thumbnail and download URLs.
+     * Coil-only placeholder prefix (`http://<fp16>.photovault.invalid`) for thumbnail
+     * and image URLs; the shared client's routing interceptor rewrites the host, so
+     * the image cache key stays stable across LAN/public switches.
+     */
+    val imageBaseUrl: String
+        get() = endpointResolver.imageBaseUrl()
+
+    /**
+     * Effective ambient base URL, only for ExoPlayer video URLs (ExoPlayer does not
+     * go through OkHttp, so it needs a real address).
      */
     val serverBaseUrl: String
-        get() {
-            val address = credentialManager.getServerAddress() ?: "http://localhost:8000"
-            var url = address.trim()
-            if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                url = "http://$url"
-            }
-            return url.trimEnd('/')
-        }
+        get() = endpointResolver.ambientBaseUrlString() ?: "http://localhost:8000"
 
     init {
         loadDirectory("/")

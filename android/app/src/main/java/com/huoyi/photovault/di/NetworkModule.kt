@@ -3,11 +3,14 @@ package com.huoyi.photovault.di
 import com.huoyi.photovault.data.api.AuthApi
 import com.huoyi.photovault.data.api.AuthInterceptor
 import com.huoyi.photovault.data.api.BackupApi
-import com.huoyi.photovault.data.api.BaseUrlInterceptor
 import com.huoyi.photovault.data.api.FileApi
 import com.huoyi.photovault.data.api.TokenAuthenticator
 import com.huoyi.photovault.data.api.TokenRefreshCoordinator
 import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.network.endpoint.BackupTaskTagInterceptor
+import com.huoyi.photovault.data.network.endpoint.DispatchMarkerInterceptor
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
+import com.huoyi.photovault.data.network.endpoint.EndpointRoutingInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,26 +26,25 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
+    // Placeholder base URL: EndpointRoutingInterceptor rewrites scheme/host/port of
+    // every request to the LAN or public address chosen by the route session.
+    private const val PLACEHOLDER_BASE_URL = "http://photovault.invalid/"
+
     @Provides
     @Singleton
     fun provideAuthInterceptor(
         credentialManager: CredentialManager,
-        tokenRefreshCoordinator: TokenRefreshCoordinator
+        tokenRefreshCoordinator: TokenRefreshCoordinator,
+        resolver: EndpointResolver
     ): AuthInterceptor {
-        return AuthInterceptor(credentialManager, tokenRefreshCoordinator)
-    }
-
-    @Provides
-    @Singleton
-    fun provideBaseUrlInterceptor(credentialManager: CredentialManager): BaseUrlInterceptor {
-        return BaseUrlInterceptor(credentialManager)
+        return AuthInterceptor(credentialManager, tokenRefreshCoordinator, resolver)
     }
 
     @Provides
     @Singleton
     fun provideOkHttpClient(
+        routingInterceptor: EndpointRoutingInterceptor,
         authInterceptor: AuthInterceptor,
-        baseUrlInterceptor: BaseUrlInterceptor,
         tokenAuthenticator: TokenAuthenticator
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
@@ -50,9 +52,10 @@ object NetworkModule {
         }
 
         return OkHttpClient.Builder()
-            .addInterceptor(baseUrlInterceptor)
+            .addInterceptor(routingInterceptor)
             .addInterceptor(authInterceptor)
             .addInterceptor(loggingInterceptor)
+            .addNetworkInterceptor(DispatchMarkerInterceptor)
             .authenticator(tokenAuthenticator)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
@@ -62,21 +65,38 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient, credentialManager: CredentialManager): Retrofit {
-        // Use a placeholder base URL; the actual URL is set dynamically per request
-        val baseUrl = credentialManager.getServerAddress()?.let { address ->
-            if (address.isNotEmpty()) {
-                normalizeServerUrl(address)
-            } else {
-                "http://localhost:8000/"
-            }
-        } ?: "http://localhost:8000/"
-
+    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
-            .baseUrl(baseUrl)
+            .baseUrl(PLACEHOLDER_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
+    }
+
+    /**
+     * Shared client plus [BackupTaskTagInterceptor] in front, so ChunkUploader's
+     * requests follow the active backup task session. Shares the connection pool
+     * and dispatcher with the shared client.
+     */
+    @Provides
+    @Singleton
+    @BackupTaskClient
+    fun provideBackupTaskClient(shared: OkHttpClient, resolver: EndpointResolver): OkHttpClient {
+        return shared.newBuilder()
+            .apply { interceptors().add(0, BackupTaskTagInterceptor(resolver)) }
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    @BackupTaskApi
+    fun provideBackupTaskApi(@BackupTaskClient client: OkHttpClient): BackupApi {
+        return Retrofit.Builder()
+            .baseUrl(PLACEHOLDER_BASE_URL)
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(BackupApi::class.java)
     }
 
     @Provides
@@ -95,16 +115,5 @@ object NetworkModule {
     @Singleton
     fun provideFileApi(retrofit: Retrofit): FileApi {
         return retrofit.create(FileApi::class.java)
-    }
-
-    private fun normalizeServerUrl(address: String): String {
-        var url = address.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "http://$url"
-        }
-        if (!url.endsWith("/")) {
-            url = "$url/"
-        }
-        return url
     }
 }

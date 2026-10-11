@@ -12,6 +12,11 @@ import com.huoyi.photovault.data.api.model.LoginResponse
 import com.huoyi.photovault.data.api.model.RefreshResponse
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.StableAccountIdentity
+import com.huoyi.photovault.data.network.endpoint.EndpointConfigSource
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
+import com.huoyi.photovault.data.network.endpoint.ReachabilityCheck
+import com.huoyi.photovault.data.network.endpoint.RouteSession
+import com.huoyi.photovault.data.network.endpoint.ServerAddress
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -26,6 +31,9 @@ class AuthRepository @Inject constructor(
     private val credentialManager: CredentialManager,
     private val authInterceptor: AuthInterceptor,
     private val tokenRefreshCoordinator: TokenRefreshCoordinator,
+    private val sharedClient: OkHttpClient,
+    private val endpointResolver: EndpointResolver,
+    private val endpointConfig: EndpointConfigSource,
     @ApplicationContext private val context: Context
 ) {
 
@@ -59,18 +67,18 @@ class AuthRepository @Inject constructor(
 
     /**
      * Lightweight probe of whether the configured backup server is reachable
-     * right now. Reuses [testConnection] against the stored server address and
-     * returns false when no address is stored or the probe fails/times out (10s).
+     * right now. Sends GET connection/test through the shared client, so it is
+     * routed (LAN or public, with fallback) by [session] — the ambient session
+     * when null, after awaiting the ambient LAN evaluation (≤ 1.5 s). Returns
+     * false when no address is configured or the check fails (10 s per attempt).
      *
      * Used by the backup pipeline to avoid attempting uploads — and burning files
      * into the per-file retry backoff — when the (typically home-LAN) server is
      * unreachable. Runs a real request to the server, unlike a mere network-
      * interface check, so "手机有网但家里服务器连不上" is detected correctly.
      */
-    suspend fun isServerReachable(): Boolean {
-        val serverAddress = credentialManager.getServerAddress() ?: return false
-        return testConnection(serverAddress).isSuccess
-    }
+    suspend fun isServerReachable(session: RouteSession? = null): Boolean =
+        ReachabilityCheck.isServerReachable(sharedClient, endpointResolver, endpointConfig, session)
 
     suspend fun testConnection(serverAddress: String): Result<ConnectionTestResponse> {
         return try {
@@ -149,13 +157,16 @@ class AuthRepository @Inject constructor(
         )
     }
 
-    /** Used by UI, workers and services before beginning an authenticated batch. */
-    suspend fun ensureAuthenticated(): AuthReadiness {
+    /**
+     * Used by UI, workers and services before beginning an authenticated batch.
+     * A refresh, if needed, is routed by [session] (ambient when null).
+     */
+    suspend fun ensureAuthenticated(session: RouteSession? = null): AuthReadiness {
         if (credentialManager.getStableAccountIdentity() == null) {
             credentialManager.clearTokens()
             return AuthReadiness.TERMINAL_FAILURE
         }
-        return tokenRefreshCoordinator.ensureValidAccessToken()
+        return tokenRefreshCoordinator.ensureValidAccessToken(session ?: endpointResolver.ambient)
     }
 
     fun hasValidToken(): Boolean {
@@ -179,14 +190,5 @@ class AuthRepository @Inject constructor(
         return StableAccountIdentity(validInstanceId, validUserId)
     }
 
-    private fun normalizeServerUrl(address: String): String {
-        var url = address.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "http://$url"
-        }
-        if (!url.endsWith("/")) {
-            url = "$url/"
-        }
-        return url
-    }
+    private fun normalizeServerUrl(address: String): String = ServerAddress.legacyNormalize(address)
 }

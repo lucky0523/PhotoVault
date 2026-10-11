@@ -3,8 +3,12 @@ package com.huoyi.photovault.data.network
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.repeatOnLifecycle
-import com.huoyi.photovault.data.local.CredentialManager
+import com.huoyi.photovault.data.network.endpoint.EndpointConfigSource
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
+import com.huoyi.photovault.data.network.endpoint.Route
+import com.huoyi.photovault.data.network.endpoint.RouteSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.logging.HttpLoggingInterceptor
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,16 +38,27 @@ enum class ConnectionType {
 }
 
 /**
- * ConnectionManager handles server connectivity with LAN-first priority.
+ * Heartbeat client derived from the shared client: keeps the routing layer (so
+ * heartbeats get LAN→public fallback) but drops the BODY logging interceptor,
+ * and uses 5 s connect/read timeouts (design §5.5).
+ */
+@VisibleForTesting
+internal fun buildHeartbeatClient(shared: OkHttpClient): OkHttpClient = shared.newBuilder()
+    .apply { interceptors().removeAll { it is HttpLoggingInterceptor } }
+    .connectTimeout(5, TimeUnit.SECONDS)
+    .readTimeout(5, TimeUnit.SECONDS)
+    .build()
+
+/**
+ * ConnectionManager reports server connectivity for the connection indicator.
  *
- * Strategy:
- * 1. Try LAN connection first (10s timeout)
- * 2. If LAN fails, try WAN connection (15s timeout)
- * 3. If both fail, report disconnected
+ * Every probe is one GET connection/test on the ambient route session through
+ * the routed heartbeat client; which address (LAN or public) is used is decided
+ * by [EndpointResolver], and [ConnectionState.Connected.type] mirrors
+ * [EndpointResolver.displayRoute] (updated immediately when the route changes).
  *
- * While connected, a lightweight heartbeat periodically re-probes the same
- * test endpoint (on the client/transport that last succeeded) to detect
- * disconnects (server restart, network change, etc.) and keep
+ * While connected, a lightweight heartbeat periodically re-probes the test
+ * endpoint to detect disconnects (server restart, network change, etc.) and keep
  * [connectionState] accurate without the UI having to poll anything.
  *
  * Power considerations:
@@ -59,7 +75,9 @@ enum class ConnectionType {
  */
 @Singleton
 class ConnectionManager @Inject constructor(
-    private val credentialManager: CredentialManager
+    private val resolver: EndpointResolver,
+    sharedClient: OkHttpClient,
+    private val config: EndpointConfigSource
 ) {
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -69,37 +87,9 @@ class ConnectionManager @Inject constructor(
     private val _heartbeatCountdown = MutableStateFlow(-1)
     val heartbeatCountdown: StateFlow<Int> = _heartbeatCountdown.asStateFlow()
 
-    private val lanClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .build()
-    }
-
-    private val wanClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .build()
-    }
-
-    // Short-timeout client dedicated to heartbeats, so a stalled/dead
-    // connection is detected in ~5s rather than tying up the (10-15s) client
-    // timeouts used for the initial connect handshake.
-    private val heartbeatClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(5, TimeUnit.SECONDS)
-            .build()
-    }
-
-    // Test URL and transport used by the last successful connect(), reused
-    // by the heartbeat so it doesn't re-run the LAN-then-WAN probe sequence.
-    @Volatile
-    private var activeTestUrl: String? = null
-
-    @Volatile
-    private var activeConnectionType: ConnectionType? = null
+    // Short-timeout routed client used for connect, reconnect and heartbeats, so a
+    // stalled/dead connection is detected in ~5s.
+    private val heartbeatClient: OkHttpClient by lazy { buildHeartbeatClient(sharedClient) }
 
     // Whether the loop should keep trying to (re)connect while disconnected.
     // Set when the user connects, cleared on an explicit disconnect()/logout,
@@ -119,56 +109,38 @@ class ConnectionManager @Inject constructor(
                 runHeartbeatLoop()
             }
         }
+        // Keep the indicator's LAN/WAN label in sync with the route as soon as it
+        // changes (network change, LAN marked unavailable…), not on the next heartbeat.
+        ProcessLifecycleOwner.get().lifecycleScope.launch {
+            resolver.displayRoute.collect {
+                val state = _connectionState.value
+                if (state is ConnectionState.Connected) {
+                    _connectionState.compareAndSet(state, ConnectionState.Connected(currentConnectionType()))
+                }
+            }
+        }
     }
 
-    /**
-     * Result of a successful connectivity probe: which test URL succeeded and
-     * over which transport, so callers can bind these as the active
-     * connection for subsequent heartbeats.
-     */
-    private data class ProbeResult(val testUrl: String, val type: ConnectionType)
-
-    /**
-     * Probe the server for reachability without touching any observable state.
-     * Tries LAN first, then WAN, using the supplied clients so callers can pick
-     * the appropriate timeouts (long for a user-initiated connect, short for a
-     * silent background retry). Returns the winning transport, or null if
-     * neither succeeded.
-     */
-    private suspend fun probe(
-        serverAddress: String,
-        lan: OkHttpClient,
-        wan: OkHttpClient
-    ): ProbeResult? {
-        val baseUrl = normalizeServerUrl(serverAddress)
-        val testUrl = "${baseUrl}api/v1/connection/test"
-
-        if (tryConnect(testUrl, lan)) return ProbeResult(testUrl, ConnectionType.LAN)
-        if (tryConnect(testUrl, wan)) return ProbeResult(testUrl, ConnectionType.WAN)
-        return null
-    }
+    /** Indicator type for the route currently shown by the resolver. */
+    private fun currentConnectionType(): ConnectionType =
+        if (resolver.displayRoute.value == Route.LAN) ConnectionType.LAN else ConnectionType.WAN
 
     /**
      * User-initiated connect (first login / manual retry).
      *
      * This is the only path that surfaces [ConnectionState.Connecting], because
-     * it represents an attempt the user is actively waiting on. Tries LAN first
-     * (10s timeout), then WAN (15s timeout).
+     * it represents an attempt the user is actively waiting on. One routed
+     * probe with the heartbeat timeouts.
      */
-    suspend fun connect(serverAddress: String): ConnectionState {
+    suspend fun connect(): ConnectionState {
         // The user wants a connection; allow the loop to auto-recover if it
         // later drops.
         autoReconnectEnabled = true
         _connectionState.value = ConnectionState.Connecting
 
-        val result = probe(serverAddress, lanClient, wanClient)
-        val state = if (result != null) {
-            activeTestUrl = result.testUrl
-            activeConnectionType = result.type
-            ConnectionState.Connected(result.type)
+        val state = if (tryConnect()) {
+            ConnectionState.Connected(currentConnectionType())
         } else {
-            activeTestUrl = null
-            activeConnectionType = null
             ConnectionState.Disconnected
         }
         _connectionState.value = state
@@ -182,8 +154,6 @@ class ConnectionManager @Inject constructor(
         // Explicit disconnect (e.g. logout): stop auto-reconnect so we don't
         // immediately reconnect on the next loop tick.
         autoReconnectEnabled = false
-        activeTestUrl = null
-        activeConnectionType = null
         _connectionState.value = ConnectionState.Disconnected
     }
 
@@ -203,7 +173,7 @@ class ConnectionManager @Inject constructor(
             // Check immediately on entering the foreground, then on a fixed
             // interval for as long as the app stays foregrounded.
             while (true) {
-                android.util.Log.d("ConnMgrDebug", "heartbeat tick, state=${_connectionState.value}, url=$activeTestUrl")
+                android.util.Log.d("ConnMgrDebug", "heartbeat tick, state=${_connectionState.value}")
                 tickConnection()
                 // Count down second-by-second so the debug UI can show the
                 // time remaining until the next heartbeat probe. The length is
@@ -255,24 +225,21 @@ class ConnectionManager @Inject constructor(
             android.util.Log.d("ConnMgrDebug", "skip reconnect, auto-reconnect disabled (explicit disconnect)")
             return
         }
-        val serverAddress = credentialManager.getServerAddress()
-        if (serverAddress.isNullOrEmpty()) {
+        if (!config.current().hasAnyAddress) {
             android.util.Log.d("ConnMgrDebug", "skip reconnect, no server address configured")
             return
         }
-        android.util.Log.d("ConnMgrDebug", "silently probing reconnect to $serverAddress")
-        val result = probe(serverAddress, heartbeatClient, heartbeatClient)
-        if (result == null) {
+        android.util.Log.d("ConnMgrDebug", "silently probing reconnect")
+        if (!tryConnect()) {
             android.util.Log.d("ConnMgrDebug", "reconnect probe failed, staying disconnected")
             return
         }
         // Only promote to Connected if we're still Disconnected, so we don't
         // clobber a concurrent explicit connect()/disconnect().
         if (_connectionState.value is ConnectionState.Disconnected) {
-            activeTestUrl = result.testUrl
-            activeConnectionType = result.type
-            _connectionState.value = ConnectionState.Connected(result.type)
-            android.util.Log.d("ConnMgrDebug", "reconnect probe succeeded via ${result.type}")
+            val type = currentConnectionType()
+            _connectionState.value = ConnectionState.Connected(type)
+            android.util.Log.d("ConnMgrDebug", "reconnect probe succeeded via $type")
         }
     }
 
@@ -283,54 +250,39 @@ class ConnectionManager @Inject constructor(
             return
         }
 
-        val url = activeTestUrl
-        if (url == null) {
-            android.util.Log.d("ConnMgrDebug", "skip heartbeat, activeTestUrl is null")
-            return
-        }
-
-        val isAlive = tryConnect(url, heartbeatClient)
-        android.util.Log.d("ConnMgrDebug", "heartbeat result isAlive=$isAlive for url=$url")
+        val isAlive = tryConnect()
+        android.util.Log.d("ConnMgrDebug", "heartbeat result isAlive=$isAlive")
         if (!isAlive) {
             // Only downgrade if we're still in the state we just checked,
             // so we don't clobber a state change made concurrently by an
             // explicit connect()/disconnect() call.
             if (_connectionState.value == currentState) {
-                activeTestUrl = null
-                activeConnectionType = null
                 _connectionState.value = ConnectionState.Disconnected
             }
         }
     }
 
-    private suspend fun tryConnect(url: String, client: OkHttpClient): Boolean {
+    /** One GET connection/test on the ambient session through the routed heartbeat client. */
+    private suspend fun tryConnect(): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val request = Request.Builder()
-                    .url(url)
+                    .url(TEST_URL)
+                    .tag(RouteSession::class.java, resolver.ambient)
                     .get()
                     .build()
 
-                val response = client.newCall(request).execute()
-                response.isSuccessful
+                heartbeatClient.newCall(request).execute().use { it.isSuccessful }
             } catch (e: Exception) {
                 false
             }
         }
     }
 
-    private fun normalizeServerUrl(address: String): String {
-        var url = address.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "http://$url"
-        }
-        if (!url.endsWith("/")) {
-            url = "$url/"
-        }
-        return url
-    }
-
     companion object {
+        // Placeholder host; the routing interceptor rewrites it to the LAN/public address.
+        private const val TEST_URL = "http://photovault.invalid/api/v1/connection/test"
+
         // Interval between heartbeat probes. Heartbeats are skipped entirely
         // while disconnected or backgrounded, so this only costs one tiny
         // request per interval while the app is open and connected.

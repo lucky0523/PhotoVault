@@ -1,15 +1,19 @@
 package com.huoyi.photovault.data.api
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.google.gson.Gson
 import com.huoyi.photovault.data.api.model.RefreshRequest
 import com.huoyi.photovault.data.api.model.RefreshResponse
 import com.huoyi.photovault.data.local.CredentialManager
 import com.huoyi.photovault.data.local.CredentialSessionSnapshot
 import com.huoyi.photovault.data.local.StableAccountIdentity
+import com.huoyi.photovault.data.network.endpoint.DispatchMarkerInterceptor
+import com.huoyi.photovault.data.network.endpoint.EndpointConfigSource
+import com.huoyi.photovault.data.network.endpoint.EndpointRoutingInterceptor
+import com.huoyi.photovault.data.network.endpoint.RouteSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,17 +34,22 @@ enum class AuthReadiness {
  * Owns access-token refresh for foreground and background callers.
  *
  * The blocking entry points are intentional: OkHttp interceptors/authenticators are
- * synchronous. A dedicated client with no app interceptors prevents refresh requests
- * from recursively invoking authentication. [refreshLock] merges concurrent refreshes,
+ * synchronous. A dedicated client with only the routing interceptor (no AuthInterceptor)
+ * prevents refresh requests from recursively invoking authentication, while still
+ * following the caller's [RouteSession] (LAN or public, with fallback). [refreshLock] merges concurrent refreshes,
  * while CredentialManager's generation-checked writes prevent an old account's
  * in-flight response from overwriting a newly activated session.
  */
 @Singleton
 class TokenRefreshCoordinator @Inject constructor(
-    private val credentialManager: CredentialManager
+    private val credentialManager: CredentialManager,
+    private val endpointConfig: EndpointConfigSource,
+    routingInterceptor: EndpointRoutingInterceptor
 ) {
     companion object {
         private const val TAG = "PhotoVaultAuth"
+        // Placeholder host; the routing interceptor rewrites scheme/host/port.
+        private const val REFRESH_URL = "http://photovault.invalid/api/v1/auth/refresh"
         private const val PROACTIVE_REFRESH_WINDOW_MS = 5 * 60 * 1000L
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
@@ -52,16 +61,20 @@ class TokenRefreshCoordinator @Inject constructor(
 
     private val gson = Gson()
     private val refreshLock = ReentrantLock()
-    private val refreshClient = OkHttpClient.Builder()
+    // Explicit 15/30/30 s: keep today's timeouts instead of OkHttp's 10/10/10 defaults.
+    @VisibleForTesting
+    internal val refreshClient = OkHttpClient.Builder()
+        .addInterceptor(routingInterceptor)
+        .addNetworkInterceptor(DispatchMarkerInterceptor)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
     /** Ensures workers/services have a usable token and preserves failure type. */
-    suspend fun ensureValidAccessToken(): AuthReadiness = withContext(Dispatchers.IO) {
+    suspend fun ensureValidAccessToken(routeSession: RouteSession): AuthReadiness = withContext(Dispatchers.IO) {
         val snapshot = credentialManager.getSessionSnapshot()
-        val outcome = tokenOutcomeForRequest(snapshot)
+        val outcome = tokenOutcomeForRequest(snapshot, routeSession)
         credentialManager.refreshAuthSessionState()
         outcome.readiness
     }
@@ -70,11 +83,12 @@ class TokenRefreshCoordinator @Inject constructor(
      * Returns a token for an outgoing request, proactively refreshing when it is
      * expired or has less than five minutes remaining.
      */
-    fun accessTokenForRequest(expected: CredentialSessionSnapshot): String? =
-        tokenOutcomeForRequest(expected).token
+    fun accessTokenForRequest(expected: CredentialSessionSnapshot, routeSession: RouteSession): String? =
+        tokenOutcomeForRequest(expected, routeSession).token
 
     private fun tokenOutcomeForRequest(
-        expected: CredentialSessionSnapshot
+        expected: CredentialSessionSnapshot,
+        routeSession: RouteSession
     ): TokenOutcome {
         if (expected.isAccessTokenValid(minimumValidityMillis = PROACTIVE_REFRESH_WINDOW_MS)) {
             return TokenOutcome(expected.accessToken, AuthReadiness.VALID)
@@ -87,7 +101,7 @@ class TokenRefreshCoordinator @Inject constructor(
             if (current.isAccessTokenValid(minimumValidityMillis = PROACTIVE_REFRESH_WINDOW_MS)) {
                 return@withLock TokenOutcome(current.accessToken, AuthReadiness.VALID)
             }
-            refreshLocked(current, fallbackToStillValidToken = true)
+            refreshLocked(current, fallbackToStillValidToken = true, routeSession = routeSession)
         }
     }
 
@@ -97,7 +111,8 @@ class TokenRefreshCoordinator @Inject constructor(
      */
     fun refreshAfterUnauthorized(
         expected: CredentialSessionSnapshot,
-        rejectedAccessToken: String?
+        rejectedAccessToken: String?,
+        routeSession: RouteSession
     ): String? = refreshLock.withLock {
         val current = credentialManager.getSessionSnapshot()
         if (!current.isSameSession(expected)) return@withLock null
@@ -105,28 +120,30 @@ class TokenRefreshCoordinator @Inject constructor(
         if (current.accessToken != rejectedAccessToken && current.isAccessTokenValid()) {
             return@withLock current.accessToken
         }
-        refreshLocked(current, fallbackToStillValidToken = false).token
+        refreshLocked(current, fallbackToStillValidToken = false, routeSession = routeSession).token
     }
 
     private fun refreshLocked(
         session: CredentialSessionSnapshot,
-        fallbackToStillValidToken: Boolean
+        fallbackToStillValidToken: Boolean,
+        routeSession: RouteSession
     ): TokenOutcome {
         val fallback = session.accessToken
             ?.takeIf { fallbackToStillValidToken && session.isAccessTokenValid() }
-        val serverAddress = session.serverAddress?.takeIf { it.isNotBlank() }
-            ?: return terminal(session, "missing server address")
+        // Public or LAN address (a LAN-only login has no server_address, design §3.4).
+        if (!endpointConfig.current().hasAnyAddress) {
+            return terminal(session, "missing server address")
+        }
         val refreshToken = session.refreshToken?.takeIf { it.isNotBlank() }
             ?: return terminal(session, "missing refresh token")
         val identity = session.identity
             ?: return terminal(session, "missing stable account identity")
-        val baseUrl = normalizeServerUrl(serverAddress).toHttpUrlOrNull()
-        val refreshUrl = baseUrl?.resolve("/api/v1/auth/refresh")
-            ?: return terminal(session, "invalid server address")
 
         val request = Request.Builder()
-            .url(refreshUrl)
+            .url(REFRESH_URL)
             .post(gson.toJson(RefreshRequest(refreshToken)).toRequestBody(JSON))
+            .tag(RouteSession::class.java, routeSession)
+            .tag(CredentialSessionSnapshot::class.java, session)
             .build()
 
         return try {
@@ -194,14 +211,5 @@ class TokenRefreshCoordinator @Inject constructor(
         val validInstanceId = instanceId?.takeIf { it.isNotBlank() } ?: return null
         val validUserId = userId?.takeIf { it > 0L } ?: return null
         return StableAccountIdentity(validInstanceId, validUserId)
-    }
-
-    private fun normalizeServerUrl(address: String): String {
-        var url = address.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "http://$url"
-        }
-        if (!url.endsWith('/')) url += "/"
-        return url
     }
 }

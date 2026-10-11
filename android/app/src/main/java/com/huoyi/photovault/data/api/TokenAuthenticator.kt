@@ -1,6 +1,8 @@
 package com.huoyi.photovault.data.api
 
 import com.huoyi.photovault.data.local.CredentialSessionSnapshot
+import com.huoyi.photovault.data.network.endpoint.EndpointResolver
+import com.huoyi.photovault.data.network.endpoint.RouteSession
 import okhttp3.Authenticator
 import okhttp3.Request
 import okhttp3.Response
@@ -8,10 +10,16 @@ import okhttp3.Route
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Refreshes and replays a failed authenticated request at most once. */
+/**
+ * Refreshes and replays a failed authenticated request at most once. The request
+ * carries the credential snapshot and RouteSession tags set by
+ * EndpointRoutingInterceptor (which replaced BaseUrlInterceptor), so the refresh
+ * follows the same route session as the rejected request.
+ */
 @Singleton
 class TokenAuthenticator @Inject constructor(
-    private val tokenRefreshCoordinator: TokenRefreshCoordinator
+    private val tokenRefreshCoordinator: TokenRefreshCoordinator,
+    private val resolver: EndpointResolver
 ) : Authenticator {
 
     override fun authenticate(route: Route?, response: Response): Request? {
@@ -31,7 +39,8 @@ class TokenAuthenticator @Inject constructor(
             ?.takeIf { it.isNotBlank() }
         val refreshedToken = tokenRefreshCoordinator.refreshAfterUnauthorized(
             expected = session,
-            rejectedAccessToken = rejectedToken
+            rejectedAccessToken = rejectedToken,
+            routeSession = response.request.tag(RouteSession::class.java) ?: resolver.ambient
         ) ?: return null
 
         return response.request.newBuilder()

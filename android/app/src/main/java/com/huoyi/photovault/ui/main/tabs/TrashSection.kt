@@ -70,6 +70,7 @@ fun TrashView(
     isLoading: Boolean,
     error: String?,
     serverBaseUrl: String,
+    imageBaseUrl: String,
     onBack: () -> Unit,
     onRestore: (TrashItemInfo) -> Unit,
     onPurge: (TrashItemInfo) -> Unit
@@ -130,7 +131,7 @@ fun TrashView(
                         items(items, key = { it.id }) { item ->
                             TrashGridItem(
                                 item = item,
-                                serverBaseUrl = serverBaseUrl,
+                                imageBaseUrl = imageBaseUrl,
                                 onClick = { previewTarget = it },
                                 onLongPress = { actionTarget = it }
                             )
@@ -180,6 +181,10 @@ fun TrashView(
     // Full-screen preview when a trash item is tapped. Reuse the browser's
     // preview dialog by adapting the trash item into a FileBrowseInfo.
     previewTarget?.let { target ->
+        // Videos play via ExoPlayer (effective address); images go through Coil.
+        val isVideo = target.mediaType == "video" ||
+            target.mimeType?.startsWith("video/") == true
+        val downloadBaseUrl = if (isVideo) serverBaseUrl else imageBaseUrl
         ImagePreviewDialog(
             file = FileBrowseInfo(
                 id = target.id,
@@ -191,7 +196,7 @@ fun TrashView(
                 createdAt = target.createdAt,
                 mediaType = target.mediaType
             ),
-            downloadUrl = "$serverBaseUrl/api/v1/files/download/${target.id}",
+            downloadUrl = "$downloadBaseUrl/api/v1/files/download/${target.id}",
             onDismiss = { previewTarget = null }
         )
     }
@@ -201,7 +206,7 @@ fun TrashView(
 @Composable
 private fun TrashGridItem(
     item: TrashItemInfo,
-    serverBaseUrl: String,
+    imageBaseUrl: String,
     onClick: (TrashItemInfo) -> Unit,
     onLongPress: (TrashItemInfo) -> Unit
 ) {
@@ -216,7 +221,7 @@ private fun TrashGridItem(
     ) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data("$serverBaseUrl/api/v1/files/thumbnail/${item.id}")
+                .data("$imageBaseUrl/api/v1/files/thumbnail/${item.id}")
                 .crossfade(true)
                 .size(200)
                 .build(),

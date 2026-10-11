@@ -3,7 +3,11 @@
     <!--
         允许明文 HTTP 流量。PhotoVault 的 NAS 服务端通常部署在局域网内，
         使用 HTTP 直连（无 HTTPS 证书），因此需要允许明文通信。
-        生产环境若通过 Caddy 配置了 HTTPS，客户端使用 https:// 地址即可走加密通道。
+        局域网地址由用户自行填写（任意 IP 或主机名），而 domain-config 不支持
+        按 IP 段配置，所以这里保持全局允许明文，而不是逐个域名放行。
+        已知取舍（NFR-3）：局域网走 http 时，Bearer token 在局域网内以明文传输。
+        公网地址建议使用 https（例如通过 Caddy / Cloudflare Tunnel 提供证书），
+        客户端填写 https:// 地址即可走加密通道。
     -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
