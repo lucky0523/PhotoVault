@@ -8,7 +8,8 @@
   - 图表配置在 chartModels.ts（buildDistributionChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
   - 「查看数据」打开对话框（StatDataDialog）：上面放大显示同一张图（独立的 Chart 实例，
-    同一个 model），带同一个「数量 / 存储」切换，下面是 StatDataTable。
+    同一个 model），带同一个「数量 / 存储」切换，图下面是和卡片相同的 #note 说明
+    （StatChartNote，插槽原样转发），再下面是 StatDataTable。
 -->
 <template>
   <figure class="pv-panel stat-card">
@@ -36,12 +37,17 @@
       />
     </div>
 
-    <div v-if="$slots.note" class="stat-card__note">
+    <StatChartNote v-if="$slots.note" class="stat-card__note">
       <slot name="note" />
-    </div>
+    </StatChartNote>
 
     <div v-if="!isEmptyRanking" class="stat-card__data">
       <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows">
+        <template v-if="$slots.note" #note>
+          <StatChartNote>
+            <slot name="note" />
+          </StatChartNote>
+        </template>
         <template v-if="allowBytes" #toolbar>
           <el-segmented v-model="mode" size="small" :options="MODE_OPTIONS" aria-label="占比口径" />
         </template>
@@ -77,6 +83,7 @@ import {
   type ChartShape,
 } from './chartModels'
 import StatChartCanvas from './StatChartCanvas.vue'
+import StatChartNote from './StatChartNote.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
@@ -285,9 +292,6 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 
 .stat-card__note {
   margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #606266;
 }
 
 .stat-card__data {

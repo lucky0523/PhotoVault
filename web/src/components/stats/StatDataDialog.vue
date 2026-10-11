@@ -5,6 +5,7 @@
   - 按钮文字固定「查看数据」，aria-haspopup="dialog"；
   - el-dialog 标题即表格标题（如「类型占比数据」），关闭按钮 / Esc / 点遮罩都能关闭；
   - 对话框里先放大显示和卡片同一张图（#chart 插槽，卡片放一个 StatChartCanvas），
+    图下面是和卡片相同的说明（#note 插槽，卡片放一个 StatChartNote），
     再显示 StatDataTable。#toolbar 插槽放和卡片绑定同一状态的口径 / 粒度切换；
   - 对话框里的图是独立的 Chart 实例：destroy-on-close 让对话框内容在打开时挂载、
     关闭过渡结束后卸载，StatChartCanvas 随之创建和 destroy()，卡片自己的 canvas 不动；
@@ -33,6 +34,9 @@
     </div>
     <div v-if="$slots.chart" class="stat-data-dialog__chart">
       <slot name="chart" />
+    </div>
+    <div v-if="$slots.note" class="stat-data-dialog__note">
+      <slot name="note" />
     </div>
     <div class="stat-data-dialog__table" :class="{ 'has-chart': !!$slots.chart }">
       <StatDataTable :caption="title" :columns="columns" :rows="rows" />
@@ -69,6 +73,11 @@ function restoreFocus() {
 }
 
 .stat-data-dialog__chart {
+  min-width: 0;
+  margin-bottom: 12px;
+}
+
+.stat-data-dialog__note {
   min-width: 0;
   margin-bottom: 12px;
 }

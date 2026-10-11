@@ -10,7 +10,8 @@
   - 图表配置在 chartModels.ts（buildTrendChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
   - 「查看数据」对话框上面放大显示同一张图（独立的 Chart 实例，同一个 model），带同一个
-    「按月 / 按年」切换，下面是数据表。
+    「按月 / 按年」切换，图下面是和卡片相同的说明（StatChartNote，#note 插槽原样转发），
+    再下面是数据表。
 -->
 <template>
   <figure class="pv-panel stat-card">
@@ -34,14 +35,17 @@
       />
     </div>
 
-    <div class="stat-card__note">
-      <p v-if="defaultedToYear && granularity === 'year'">时间跨度超过 10 年，默认按年显示</p>
-      <p v-if="unknownText">{{ unknownText }}</p>
+    <StatChartNote class="stat-card__note" :lines="noteLines">
       <slot name="note" />
-    </div>
+    </StatChartNote>
 
     <div v-if="!isEmpty" class="stat-card__data">
       <StatDataDialog title="拍摄趋势数据" :columns="table.columns" :rows="table.rows">
+        <template v-if="noteLines.length > 0 || $slots.note" #note>
+          <StatChartNote :lines="noteLines">
+            <slot name="note" />
+          </StatChartNote>
+        </template>
         <template #toolbar>
           <el-segmented
             v-model="granularity"
@@ -80,6 +84,7 @@ import {
   type TrendGranularity,
 } from './chartModels'
 import StatChartCanvas from './StatChartCanvas.vue'
+import StatChartNote from './StatChartNote.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
@@ -135,6 +140,17 @@ const unknownText = computed(() => {
   if (props.photoMonthly.total > 0) parts.push(`照片 ${props.photoMonthly.unknown} 张`)
   if (props.videoMonthly.total > 0) parts.push(`视频 ${props.videoMonthly.unknown} 个`)
   return parts.length > 0 ? `未知：${parts.join('、')}（没有拍摄时间）` : ''
+})
+
+/**
+ * 卡片和对话框共用的说明。粒度是同一个 ref，在对话框里切换粒度时
+ * 「默认按年显示」的说明在两边一起出现 / 消失。
+ */
+const noteLines = computed(() => {
+  const lines: string[] = []
+  if (defaultedToYear.value && granularity.value === 'year') lines.push('时间跨度超过 10 年，默认按年显示')
+  if (unknownText.value) lines.push(unknownText.value)
+  return lines
 })
 
 const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() => {
@@ -194,13 +210,6 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 
 .stat-card__note {
   margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #606266;
-}
-
-.stat-card__note p {
-  margin: 0;
 }
 
 .stat-card__data {

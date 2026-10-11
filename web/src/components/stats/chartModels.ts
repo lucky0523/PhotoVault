@@ -382,10 +382,11 @@ export function cardChartHeight(shape: ChartShape | 'line', count: number): stri
 }
 
 /**
- * 对话框里放大显示：桌面 360px（横向条形图按条数可以更高），窄屏按 70vw 缩小，
- * 不低于 240px（375px 宽时约 262px）。
+ * 对话框里放大显示：桌面 360px，窄屏按 70vw 缩小，不低于 240px（375px 宽时约 262px）。
+ * 横向条形图另外按条数给出下限 30·条数 + 56px，在任何宽度下都随条数变高，且总比卡片的
+ * 28·条数 + 48px（最低 160px）高：长排行在窄屏不会被 70vw 压扁，对话框内容可以纵向滚动。
  */
 export function dialogChartHeight(shape: ChartShape | 'line', count: number): string {
-  const max = shape === 'hbar' ? Math.max(360, 30 * count + 56) : 360
-  return `clamp(240px, 70vw, ${max}px)`
+  const base = 'clamp(240px, 70vw, 360px)'
+  return shape === 'hbar' ? `max(${30 * count + 56}px, ${base})` : base
 }
