@@ -175,6 +175,9 @@ dependencies {
     // Kotest property-based testing (standalone Arb/checkAll, runs inside JUnit4)
     testImplementation("io.kotest:kotest-property:5.9.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    // MockWebServer (same version as okhttp) — dual-endpoint routing tests need real
+    // sockets for connection-refused / read-timeout / request-dispatched behaviour.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     // Robolectric — provides a real Context + ContentResolver (and SQLite for
     // Room in-memory) so FolderDetailViewModel can be exercised in JVM tests
     // with injectable MediaStore results via ShadowContentResolver.

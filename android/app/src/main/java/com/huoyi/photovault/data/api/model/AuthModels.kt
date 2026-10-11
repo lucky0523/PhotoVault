@@ -29,7 +29,17 @@ data class RefreshResponse(
 
 data class ConnectionTestResponse(
     val status: String,
-    val message: String
+    // The server never sends `message`; kept nullable for source compatibility.
+    val message: String? = null,
+    val app: String? = null,
+    @SerializedName("instance_fingerprint") val instanceFingerprint: String? = null
+)
+
+/** Body of `GET /api/v1/connection/test` as parsed by the LAN probe (all fields optional). */
+data class ProbeResponse(
+    val status: String?,
+    val app: String?,
+    @SerializedName("instance_fingerprint") val instanceFingerprint: String?
 )
 
 data class ApiError(
