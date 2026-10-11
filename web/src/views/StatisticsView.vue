@@ -1,9 +1,12 @@
 <!--
   StatisticsView —— 数据统计页（设计 §7.2、§7.4、§7.7）。
 
-  - 统计范围（目录 + 是否包含子目录）只存在 URL 里：?path=&recursive=0。
-    scopeFromRoute 是 URL → 请求参数的唯一归一化入口，控件变化用 router.replace
-    同步（切换筛选不算导航，不堆历史），watch(route.query) 触发加载；
+  - 统计范围（目录 + 是否包含子目录）和「统计时排除未知项」只存在 URL 里：
+    ?path=&recursive=0&unknown=1。scopeFromRoute 是 URL → 页面状态的唯一归一化入口，
+    控件变化用 router.replace 同步（切换筛选不算导航，不堆历史），watch(fetchKey)
+    （path + recursive）触发加载；
+  - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
+    只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式分布不受影响；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
   - 卡片由 PHOTO_CARDS / VIDEO_CARDS 配置驱动，只渲染响应里存在且 kind 一致的 key
     （服务端以后新增 key 或 kind 时，旧前端不会误渲染）。
@@ -29,6 +32,14 @@
               />
             </span>
           </el-tooltip>
+          <span class="unknown-switch">
+            <el-switch
+              :model-value="scope.excludeUnknown"
+              active-text="统计时排除未知项"
+              aria-label="统计时排除未知项"
+              @update:model-value="onExcludeUnknownChange"
+            />
+          </span>
           <el-button :icon="Refresh" aria-label="刷新统计" :loading="loading" @click="load">
             刷新
           </el-button>
@@ -141,6 +152,7 @@
                 :photo-yearly="trend.photoYearly"
                 :video-monthly="trend.videoMonthly"
                 :video-yearly="trend.videoYearly"
+                :exclude-unknown="scope.excludeUnknown"
               >
                 <template v-if="videoUtcNote" #note>
                   <p>{{ videoUtcNote }}</p>
@@ -167,6 +179,7 @@
                 :x-label="card.config.xLabel"
                 :y-label="card.config.yLabel"
                 :table-variant="card.config.kind === 'ranking' ? 'ranking' : 'distribution'"
+                :exclude-unknown="scope.excludeUnknown"
                 :color="STAT_COLORS.photo"
                 :empty-text="rankingEmptyText(card.config, card.dist)"
                 :dist="card.dist"
@@ -196,6 +209,7 @@
                 :x-label="card.config.xLabel"
                 :y-label="card.config.yLabel"
                 :table-variant="card.config.kind === 'ranking' ? 'ranking' : 'distribution'"
+                :exclude-unknown="scope.excludeUnknown"
                 :color="STAT_COLORS.video"
                 :empty-text="rankingEmptyText(card.config, card.dist)"
                 :dist="card.dist"
@@ -232,7 +246,7 @@ import type { Distribution, MediaStatsParams, MediaStatsResponse } from '@/api/s
 interface CardConfig {
   key: string
   kind: 'distribution' | 'ranking'
-  chart: 'bar' | 'hbar'
+  chart: 'bar' | 'hbar' | 'line'
   title: string
   xLabel: string
   yLabel: string
@@ -242,8 +256,8 @@ interface CardConfig {
 }
 
 const PHOTO_CARDS: CardConfig[] = [
-  { key: 'weekday', kind: 'distribution', chart: 'bar', title: '拍摄星期分布', xLabel: '星期', yLabel: '照片数', unit: '张' },
-  { key: 'hour', kind: 'distribution', chart: 'bar', title: '拍摄小时分布', xLabel: '小时', yLabel: '照片数', unit: '张' },
+  { key: 'weekday', kind: 'distribution', chart: 'line', title: '拍摄星期分布', xLabel: '星期', yLabel: '照片数', unit: '张' },
+  { key: 'hour', kind: 'distribution', chart: 'line', title: '拍摄小时分布', xLabel: '小时', yLabel: '照片数', unit: '张' },
   { key: 'iso', kind: 'distribution', chart: 'bar', title: 'ISO 分布', xLabel: 'ISO', yLabel: '照片数', unit: '张' },
   { key: 'focal_length', kind: 'distribution', chart: 'bar', title: '焦段分布（35mm 等效）', xLabel: '等效焦距', yLabel: '照片数', unit: '张' },
   { key: 'aperture', kind: 'distribution', chart: 'bar', title: '光圈分布', xLabel: '光圈', yLabel: '照片数', unit: '张' },
@@ -253,8 +267,8 @@ const PHOTO_CARDS: CardConfig[] = [
 ]
 
 const VIDEO_CARDS: CardConfig[] = [
-  { key: 'weekday', kind: 'distribution', chart: 'bar', title: '拍摄星期分布', xLabel: '星期', yLabel: '视频数', unit: '个' },
-  { key: 'hour', kind: 'distribution', chart: 'bar', title: '拍摄小时分布', xLabel: '小时', yLabel: '视频数', unit: '个' },
+  { key: 'weekday', kind: 'distribution', chart: 'line', title: '拍摄星期分布', xLabel: '星期', yLabel: '视频数', unit: '个' },
+  { key: 'hour', kind: 'distribution', chart: 'line', title: '拍摄小时分布', xLabel: '小时', yLabel: '视频数', unit: '个' },
   { key: 'duration', kind: 'distribution', chart: 'bar', title: '拍摄时长分布', xLabel: '时长', yLabel: '视频数', unit: '个' },
   { key: 'camera', kind: 'ranking', chart: 'hbar', title: '机身排行', xLabel: '视频数', yLabel: '机身', unit: '个', noun: '机身' },
 ]
@@ -263,12 +277,25 @@ const VIDEO_CARDS: CardConfig[] = [
 
 const first = (v: unknown) => (Array.isArray(v) ? v[0] : v)
 
-/** URL → 请求参数的唯一归一化入口。recursive 除 '0' 以外一律为 true。 */
-function scopeFromRoute(q: LocationQuery): { path: string; recursive: boolean } {
+interface StatsScope {
+  path: string
+  recursive: boolean
+  /** 统计时排除「未知」，只在前端过滤，不发给服务端 */
+  excludeUnknown: boolean
+}
+
+/**
+ * URL → 页面状态的唯一归一化入口。
+ * - recursive 除 '0' 以外一律为 true；
+ * - unknown 只有 '1' 表示包含未知（开关关），其他值（缺省、abc、数组）一律为默认的排除未知。
+ *   这个参数不发给服务端，不会产生 400 / 422，非法值和 recursive 一样宽松处理。
+ */
+function scopeFromRoute(q: LocationQuery): StatsScope {
   const raw = first(q.path)
   const path = typeof raw === 'string' ? raw.replace(/^\/+|\/+$/g, '') : ''
   const recursive = first(q.recursive) !== '0'
-  return { path, recursive }
+  const excludeUnknown = first(q.unknown) !== '1'
+  return { path, recursive, excludeUnknown }
 }
 
 const route = useRoute()
@@ -278,23 +305,38 @@ const scope = computed(() => scopeFromRoute(route.query))
 const isRoot = computed(() => scope.value.path === '')
 const scopeTrail = computed(() => ['全部', ...scope.value.path.split('/').filter(Boolean)].join(' › '))
 
-function replaceScope(path: string, recursive: boolean) {
+/** 默认值不写进 URL：recursive=0 / unknown=1 只在偏离默认时出现 */
+function replaceQuery(next: StatsScope) {
   router.replace({
     name: 'Statistics',
-    query: { path: path || undefined, recursive: recursive ? undefined : '0' },
+    query: {
+      path: next.path || undefined,
+      recursive: next.recursive ? undefined : '0',
+      unknown: next.excludeUnknown ? undefined : '1',
+    },
   })
 }
 
 function onPathChange(path: string) {
-  replaceScope(path, scope.value.recursive)
+  replaceQuery({ ...scope.value, path })
 }
 
 function onRecursiveChange(value: string | number | boolean) {
-  replaceScope(scope.value.path, value === true)
+  replaceQuery({ ...scope.value, recursive: value === true })
 }
 
-function resetFilters() {
-  router.replace({ name: 'Statistics', query: {} })
+function onExcludeUnknownChange(value: string | number | boolean) {
+  replaceQuery({ ...scope.value, excludeUnknown: value === true })
+}
+
+/** 只有 path / recursive 决定请求；「排除未知项」变化不重新请求 */
+const fetchKey = computed(() => `${scope.value.path}\u0000${scope.value.recursive}`)
+
+async function resetFilters() {
+  const before = fetchKey.value
+  await router.replace({ name: 'Statistics', query: {} })
+  // path / recursive 本来就是默认值时 watch(fetchKey) 不会触发，这里自己重新加载，重置不会无效
+  if (fetchKey.value === before) load()
 }
 
 // ---- 请求 ------------------------------------------------------------------
@@ -385,7 +427,7 @@ async function load() {
 }
 
 watch(
-  () => route.query,
+  fetchKey,
   () => {
     // 离开页面时 query 也会变化，不能因此多发一次请求
     if (route.name !== 'Statistics') return
@@ -488,7 +530,13 @@ function videoNote(key: string): string {
   flex-wrap: wrap;
 }
 
+/*
+ * 右侧控件区占满标题右边的剩余宽度（仍靠右对齐、可换行）。目录选择器的宽度是
+ * min(100%, 280px)，几乎不计入控件区的固有宽度；不放开的话桌面宽度下控件区按两个
+ * 开关 + 按钮的宽度收窄，「统计时排除未知项」会被挤到第二行。
+ */
 .stats-page :deep(.pv-page-header__extra) {
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
 }
@@ -507,9 +555,15 @@ function videoNote(key: string): string {
   color: #606266;
 }
 
-.recursive-switch {
+.recursive-switch,
+.unknown-switch {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+}
+
+.unknown-switch :deep(.el-switch) {
+  max-width: 100%;
 }
 
 .scope-line {

@@ -3,9 +3,11 @@
 
   读 photo.monthly / photo.yearly / video.monthly / video.yearly（kind = "series"）。
   服务端保证照片和视频共用同一条月份 / 年份轴，这里按 index 直接对齐。
-  - 照片：实线 + 圆点 #2F6BFF；视频：虚线 [6, 4] + 三角点 #B86E00。线型和点形状
-    不同，不只靠颜色区分；
+  - 照片：实线 + 圆点（STAT_COLORS.photo）；视频：虚线 [6, 4] + 三角点（STAT_COLORS.video）。
+    线型和点形状不同，不只靠颜色区分；
   - 某类文件数为 0 时不画该序列（图例也不出现）；两类都没有有效拍摄时间时显示空状态；
+  - excludeUnknown（「统计时排除未知项」）时四个序列先经 applyUnknownPolicy：占比按已知项
+    重新分配，表格去掉「未知」行、合计为已知数，说明改为「已排除未知：…」（只列排除数 > 0 的类别）；
   - 月份 bucket 数 > 120（跨度超过 10 年）时默认按年显示并注明；
   - 图表配置在 chartModels.ts（buildTrendChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
@@ -77,6 +79,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Distribution } from '@/api/stats'
 import {
+  applyUnknownPolicy,
   buildTrendChart,
   buildTrendSeries,
   cardChartHeight,
@@ -88,12 +91,17 @@ import StatChartNote from './StatChartNote.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
-const props = defineProps<{
-  photoMonthly: Distribution
-  photoYearly: Distribution
-  videoMonthly: Distribution
-  videoYearly: Distribution
-}>()
+const props = withDefaults(
+  defineProps<{
+    photoMonthly: Distribution
+    photoYearly: Distribution
+    videoMonthly: Distribution
+    videoYearly: Distribution
+    /** 统计时排除「未知」（没有拍摄时间的文件） */
+    excludeUnknown?: boolean
+  }>(),
+  { excludeUnknown: false }
+)
 
 const GRANULARITY_OPTIONS = [
   { label: '按月', value: 'month' },
@@ -116,11 +124,17 @@ watch(
   { immediate: true }
 )
 
-const current = computed(() =>
-  granularity.value === 'month'
-    ? { photo: props.photoMonthly, video: props.videoMonthly }
-    : { photo: props.photoYearly, video: props.videoYearly }
-)
+/** 当前粒度的两个序列，已按「统计时排除未知项」处理（图表、对话框和表格共用） */
+const current = computed(() => {
+  const [photo, video] =
+    granularity.value === 'month'
+      ? [props.photoMonthly, props.videoMonthly]
+      : [props.photoYearly, props.videoYearly]
+  return {
+    photo: applyUnknownPolicy(photo, props.excludeUnknown),
+    video: applyUnknownPolicy(video, props.excludeUnknown),
+  }
+})
 
 /** 只画文件数 > 0 的类别 */
 const series = computed(() => buildTrendSeries(current.value.photo, current.value.video))
@@ -135,11 +149,18 @@ const model = computed(() =>
   buildTrendChart({ axis: axis.value, series: series.value, granularity: granularity.value })
 )
 
+/**
+ * 未知（没有拍摄时间）的说明。包含未知时列出有文件的每一类（含 0）；
+ * 排除未知时只列真正排除了的类别，都没有排除时不显示（和分布卡片一致）。
+ */
 const unknownText = computed(() => {
+  const shown = (d: Distribution) => (props.excludeUnknown ? d.unknown > 0 : d.total > 0)
   const parts: string[] = []
-  if (props.photoMonthly.total > 0) parts.push(`照片 ${props.photoMonthly.unknown} 张`)
-  if (props.videoMonthly.total > 0) parts.push(`视频 ${props.videoMonthly.unknown} 个`)
-  return parts.length > 0 ? `未知：${parts.join('、')}（没有拍摄时间）` : ''
+  if (shown(props.photoMonthly)) parts.push(`照片 ${props.photoMonthly.unknown} 张`)
+  if (shown(props.videoMonthly)) parts.push(`视频 ${props.videoMonthly.unknown} 个`)
+  if (parts.length === 0) return ''
+  const prefix = props.excludeUnknown ? '已排除未知' : '未知'
+  return `${prefix}：${parts.join('、')}（没有拍摄时间）`
 })
 
 /**
@@ -170,7 +191,7 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
     unknownCells[s.name] = s.dist.unknown
     totalCells[s.name] = s.dist.total
   }
-  rows.push({ key: '__unknown', cells: unknownCells })
+  if (!props.excludeUnknown) rows.push({ key: '__unknown', cells: unknownCells })
   rows.push({ key: '__total', total: true, cells: totalCells })
   return { columns, rows }
 })

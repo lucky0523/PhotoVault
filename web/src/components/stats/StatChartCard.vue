@@ -1,9 +1,12 @@
 <!--
   StatChartCard —— 单个 distribution / ranking 分布的图表卡片（设计 §7.2、§7.6）。
 
-  - chart：bar（竖向柱状）/ hbar（横向条形，排行和格式）/ doughnut（环形，类型占比）；
+  - chart：bar（竖向柱状）/ hbar（横向条形，排行和格式）/ doughnut（环形，类型占比）/
+    line（折线，拍摄星期 / 小时分布；「未知」不是时间轴上的一点，只出现在说明和表格里）；
   - 「其他」（仅排行，other > 0）和「未知」（unknown > 0）用中性灰排在最后；
-  - 排行没有任何可识别项时显示空状态说明，不画一张全灰的图；
+  - excludeUnknown（「统计时排除未知项」，总览卡片不传）：先经 applyUnknownPolicy 去掉「未知」、
+    按已知项重新计算占比，图表、对话框和表格都用这份结果；说明里注明排除了多少；
+  - 排行没有任何可识别项、或排除未知后没有任何已知项时显示空状态说明，不画一张全灰 / 全 0 的图；
   - allowBytes 时右上角「数量 / 存储」切换图表口径，表格同时列出两种口径；
   - 图表配置在 chartModels.ts（buildDistributionChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
@@ -15,7 +18,7 @@
   <figure class="pv-panel stat-card">
     <figcaption class="stat-card__title">{{ title }}</figcaption>
     <el-segmented
-      v-if="allowBytes && !isEmptyRanking"
+      v-if="allowBytes && !isEmpty"
       v-model="mode"
       class="stat-card__switch"
       size="small"
@@ -25,9 +28,9 @@
 
     <div class="stat-card__body">
       <el-empty
-        v-if="isEmptyRanking"
+        v-if="isEmpty"
         :image-size="60"
-        :description="emptyText"
+        :description="emptyDescription"
       />
       <StatChartCanvas
         v-else
@@ -37,14 +40,14 @@
       />
     </div>
 
-    <StatChartNote v-if="$slots.note" class="stat-card__note">
+    <StatChartNote v-if="noteLines.length > 0 || $slots.note" class="stat-card__note" :lines="noteLines">
       <slot name="note" />
     </StatChartNote>
 
-    <div v-if="!isEmptyRanking" class="stat-card__data">
+    <div v-if="!isEmpty" class="stat-card__data">
       <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows">
-        <template v-if="$slots.note" #note>
-          <StatChartNote>
+        <template v-if="noteLines.length > 0 || $slots.note" #note>
+          <StatChartNote :lines="noteLines">
             <slot name="note" />
           </StatChartNote>
         </template>
@@ -53,10 +56,10 @@
         </template>
         <template #chart>
           <el-empty
-            v-if="isEmptyRanking"
+            v-if="isEmpty"
             class="stat-dialog-empty"
             :image-size="60"
-            :description="emptyText"
+            :description="emptyDescription"
           />
           <StatChartCanvas
             v-else
@@ -76,6 +79,7 @@ import type { Distribution, StatBucket } from '@/api/stats'
 import { STAT_COLORS } from './chartSetup'
 import { formatBytes, formatShare } from './format'
 import {
+  applyUnknownPolicy,
   buildDistributionChart,
   cardChartHeight,
   dialogChartHeight,
@@ -106,6 +110,8 @@ const props = withDefaults(
     color?: string
     /** 排行没有可识别项时的说明 */
     emptyText?: string
+    /** 统计时排除「未知」（照片 / 视频卡片；总览卡片不受影响） */
+    excludeUnknown?: boolean
   }>(),
   {
     xLabel: '',
@@ -114,6 +120,7 @@ const props = withDefaults(
     allowBytes: false,
     color: STAT_COLORS.photo,
     emptyText: '暂无数据',
+    excludeUnknown: false,
   }
 )
 
@@ -132,10 +139,36 @@ const metric = computed<ChartMetric>(() =>
   props.allowBytes && mode.value === 'bytes' ? 'bytes' : 'count'
 )
 
+/** 按「统计时排除未知项」处理后的分布：图表、对话框和表格共用 */
+const view = computed(() => applyUnknownPolicy(props.dist, props.excludeUnknown))
+
+/** 排除未知后没有任何已知项（例如全是没有 EXIF 的截图）：和空排行一样显示空状态，不画全 0 的图 */
+const isAllUnknownExcluded = computed(() => view.value.excludedUnknown > 0 && view.value.total === 0)
+
+const isEmpty = computed(() => isEmptyRanking.value || isAllUnknownExcluded.value)
+
+const emptyDescription = computed(() =>
+  !isEmptyRanking.value && isAllUnknownExcluded.value
+    ? `全部 ${view.value.excludedUnknown} ${props.unit}都是未知，已排除`
+    : props.emptyText
+)
+
+/** 卡片和对话框共用的说明（插槽内容另外原样转发） */
+const noteLines = computed(() => {
+  const v = view.value
+  // 全部为未知时空状态说明已经写明排除了多少，不再重复
+  if (isAllUnknownExcluded.value && !isEmptyRanking.value) return []
+  if (v.excludedUnknown > 0) return [`已排除未知 ${v.excludedUnknown} ${props.unit}，占比按已知项计算`]
+  if (props.chart === 'line' && v.unknown > 0) {
+    return [`未知 ${v.unknown} ${props.unit}（没有拍摄时间，不在折线中显示）`]
+  }
+  return []
+})
+
 /** 卡片和对话框共用的图表配置（各自独立的 Chart 实例） */
 const model = computed(() =>
   buildDistributionChart({
-    dist: props.dist,
+    dist: view.value,
     chart: props.chart,
     unit: props.unit,
     xLabel: props.xLabel,
@@ -153,7 +186,7 @@ function totalShare(total: number): string {
 }
 
 const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() => {
-  const d = props.dist
+  const d = view.value
   const rows: StatTableRow[] = []
 
   if (props.tableVariant === 'overview') {
@@ -212,10 +245,12 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
       key: '__other',
       cells: { label: '其他', count: d.other ?? 0, share: formatShare(d.other_share ?? 0) },
     })
-    rows.push({
-      key: '__unknown',
-      cells: { label: '未知', count: d.unknown, share: formatShare(d.unknown_share) },
-    })
+    if (!props.excludeUnknown) {
+      rows.push({
+        key: '__unknown',
+        cells: { label: '未知', count: d.unknown, share: formatShare(d.unknown_share) },
+      })
+    }
     rows.push({
       key: '__total',
       total: true,
@@ -245,10 +280,12 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
       })
     }
   }
-  rows.push({
-    key: '__unknown',
-    cells: { label: '未知', range: '—', count: d.unknown, share: formatShare(d.unknown_share) },
-  })
+  if (!props.excludeUnknown) {
+    rows.push({
+      key: '__unknown',
+      cells: { label: '未知', range: '—', count: d.unknown, share: formatShare(d.unknown_share) },
+    })
+  }
   rows.push({
     key: '__total',
     total: true,
