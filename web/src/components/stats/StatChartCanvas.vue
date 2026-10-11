@@ -84,7 +84,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 朗读区域 .stat-sr-only 是 position: absolute。外壳不定位的话它的包含块会一路找到
+   初始包含块，不受 .pv-page-body 的 overflow 裁切，1×1 的盒子留在内容底部，
+   把整个文档撑高 —— 内容区滚到底后再滚，整个页面（顶栏、侧栏）都跟着滚走。 */
 .stat-chart {
+  position: relative;
   min-width: 0;
 }
 

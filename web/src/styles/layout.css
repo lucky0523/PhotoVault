@@ -55,6 +55,8 @@
 }
 
 .pv-page-body {
+  /* 滚动容器同时作为绝对定位后代的包含块，视觉隐藏元素等不会越过它把文档撑高（满高型页面的文档本身不能滚动）。 */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;

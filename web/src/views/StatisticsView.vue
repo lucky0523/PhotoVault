@@ -541,6 +541,12 @@ function videoNote(key: string): string {
   max-width: 100%;
 }
 
+/* 内容区滚到底 / 顶时不把滚动传给 el-main 和文档（也去掉 macOS 整页回弹）。
+   只在本页设置：contain 同时会关掉移动浏览器在顶部下拉刷新，其他页面保持默认。 */
+.stats-page > .pv-page-body {
+  overscroll-behavior-y: contain;
+}
+
 /*
  * 文字对比度 ≥ 4.5:1（FR-9.2，设计 §7.6），只在本页覆盖，不改全局主题：
  * - 警告横幅默认 #ffa91f 配 #fff6e8 只有 1.79:1，改用深琥珀 #8a5300（5.91:1，图标随文字色）；
