@@ -7,6 +7,7 @@
     （path + recursive）触发加载；
   - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式分布不受影响；
+  - 总览：数字卡片之后是整行宽的「类型占比」（100% 堆积条形图），再下面是格式分布和拍摄趋势；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
   - 卡片由 PHOTO_CARDS / VIDEO_CARDS 配置驱动，只渲染响应里存在且 kind 一致的 key
     （服务端以后新增 key 或 kind 时，旧前端不会误渲染）。
@@ -126,8 +127,9 @@
               </dl>
               <StatChartCard
                 v-if="data.overview.categories.kind === 'distribution'"
+                class="is-wide"
                 title="类型占比"
-                chart="doughnut"
+                chart="stackedBar"
                 unit="个"
                 table-variant="overview"
                 allow-bytes

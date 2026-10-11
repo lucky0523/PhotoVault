@@ -8,12 +8,12 @@
  * buildConfig() 每次调用都返回新的 data / options 对象：Chart.js 会改写并代理传入的
  * 配置，两个实例不能共用同一份。
  */
-import type { ChartConfiguration, TooltipItem } from 'chart.js'
+import type { ActiveDataPoint, BarElement, ChartConfiguration, Plugin, TooltipItem } from 'chart.js'
 import type { Distribution, StatBucket } from '@/api/stats'
 import { Chart, STAT_COLORS, STAT_TEXT_COLOR, prefersReducedMotion } from './chartSetup'
 import { formatBytes, formatShare } from './format'
 
-export type ChartShape = 'bar' | 'hbar' | 'doughnut' | 'line'
+export type ChartShape = 'bar' | 'hbar' | 'line' | 'stackedBar'
 export type ChartMetric = 'count' | 'bytes'
 export type TrendGranularity = 'month' | 'year'
 
@@ -22,10 +22,15 @@ export interface StatChartModel {
   buildConfig(): ChartConfiguration<any>
   /** canvas 的 aria-label */
   summary: string
-  /** 可键盘浏览的项数（= labels 数） */
+  /** 可键盘浏览的项数（= labels 数；堆积条形图 = 段数） */
   count: number
   /** 第 index 项的朗读文本 */
   describe(index: number): string
+  /**
+   * 键盘浏览第 index 项时要高亮的数据点。缺省时高亮所有可见数据集的第 index 个点
+   * （趋势图两条序列一起）；堆积条形图每段是一个数据集，第 index 项 = 第 index 个数据集。
+   */
+  activeAt?: (index: number) => ActiveDataPoint[]
 }
 
 // ---- 「统计时排除未知项」 ----------------------------------------------------
@@ -113,11 +118,42 @@ interface ChartItem {
   neutral: boolean
 }
 
-/** 环形图（类型占比）按类别取色 */
+/** 堆积条形图（类型占比）每段按类别取色 */
 const KEY_COLORS: Record<string, string> = {
   photo: STAT_COLORS.photo,
   video: STAT_COLORS.video,
   other: STAT_COLORS.other,
+}
+
+/**
+ * 堆积条形图的段内占比文字：白字居中，段宽放不下（文字宽 + 8px）或条高 < 14px 时不画，
+ * 窄屏和窄段自动隐藏，数值仍在图例、tooltip 和表格里。所有段色上白字对比度都 ≥ 4.5:1。
+ *
+ * 内联插件只在创建 Chart 实例时读取一次，之后 StatChartCanvas 换 data / options 时它仍然
+ * 挂着：这里只读 chart.data，不能引用任何闭包里的模型数据。
+ */
+const SEGMENT_LABELS: Plugin<'bar'> = {
+  id: 'pvSegmentLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart
+    ctx.save()
+    ctx.font = `600 12px ${Chart.defaults.font.family}`
+    ctx.fillStyle = '#fff'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    chart.data.datasets.forEach((dataset, i) => {
+      if (!chart.isDatasetVisible(i)) return
+      const el = chart.getDatasetMeta(i).data[0] as unknown as BarElement | undefined
+      if (!el) return
+      const p = el.getProps(['x', 'y', 'base', 'height'])
+      const [x, y, base, height] = [p.x, p.y, p.base, p.height].map(Number)
+      const text = formatShare(Number(dataset.data[0]))
+      if (height >= 14 && ctx.measureText(text).width + 8 <= Math.abs(x - base)) {
+        ctx.fillText(text, (x + base) / 2, y)
+      }
+    })
+    ctx.restore()
+  },
 }
 
 const LABEL_MAX_CHARS = 18
@@ -175,23 +211,30 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
     return item.range ? `${text}，区间 ${item.range}` : text
   }
 
-  const summaryParts: string[] = [
-    isBytes ? `共 ${formatBytes(d.total_bytes ?? 0)}` : `共 ${d.total} ${unit}`,
-  ]
-  let top: ChartItem | null = null
-  for (const item of items) {
-    if (item.neutral || valueOf(item) <= 0) continue
-    if (!top || valueOf(item) > valueOf(top)) top = item
+  // 堆积条形图只画当前口径下 > 0 的段（0 宽的段没有意义，键盘也不该停在上面）；
+  // 段、图例、摘要、键盘逐项都用这同一份列表
+  const segments = chart === 'stackedBar' ? items.filter((i) => valueOf(i) > 0) : items
+
+  const total = isBytes ? `共 ${formatBytes(d.total_bytes ?? 0)}` : `共 ${d.total} ${unit}`
+  const summaryParts: string[] = [total]
+  if (chart === 'stackedBar') {
+    summaryParts.push(segments.length > 0 ? segments.map(describeItem).join('，') : '暂无数据')
+  } else {
+    let top: ChartItem | null = null
+    for (const item of items) {
+      if (item.neutral || valueOf(item) <= 0) continue
+      if (!top || valueOf(item) > valueOf(top)) top = item
+    }
+    if (top) {
+      summaryParts.push(`最多：${top.label} ${formatValue(valueOf(top))}（${formatShare(shareOf(top))}）`)
+    }
+    if (d.unknown > 0) summaryParts.push(`未知 ${d.unknown} ${unit}`)
   }
-  if (top) {
-    summaryParts.push(`最多：${top.label} ${formatValue(valueOf(top))}（${formatShare(shareOf(top))}）`)
-  }
-  if (d.unknown > 0) summaryParts.push(`未知 ${d.unknown} ${unit}`)
   const summary = summaryParts.join('；')
 
   function colorOf(item: ChartItem, index: number): string {
     if (item.neutral) return STAT_COLORS.unknown
-    if (chart === 'doughnut') {
+    if (chart === 'stackedBar') {
       const palette = [STAT_COLORS.photo, STAT_COLORS.video, STAT_COLORS.other]
       return KEY_COLORS[item.key] ?? palette[index % palette.length]
     }
@@ -218,38 +261,93 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
     }
     const animation = prefersReducedMotion() ? false : undefined
 
-    if (chart === 'doughnut') {
+    if (chart === 'stackedBar') {
+      // 一根横向 100% 堆积条：每段一个数据集，段宽 = 占比（数量口径 share，存储口径 bytes_share；
+      // 服务端的占比合计恰好 100.0%）。段之间 2px 白边，不只靠颜色区分
+      const last = segments.length - 1
+      const segColors = segments.map(colorOf)
       return {
-        type: 'doughnut',
+        type: 'bar',
         data: {
-          labels,
-          datasets: [{ data: values, backgroundColor: colors, borderColor: '#fff', borderWidth: 2 }],
+          labels: ['占比'],
+          datasets: segments.map((item, i) => ({
+            label: item.label,
+            data: [shareOf(item)],
+            backgroundColor: segColors[i],
+            borderColor: '#fff',
+            borderWidth: { top: 0, bottom: 0, left: 0, right: i < last ? 2 : 0 },
+            borderSkipped: false,
+            borderRadius: 0,
+            barPercentage: 0.8,
+            categoryPercentage: 1,
+            maxBarThickness: 64,
+          })),
         },
         options: {
+          indexAxis: 'y',
           responsive: true,
           maintainAspectRatio: false,
           animation,
+          interaction: { mode: 'nearest', intersect: true },
           plugins: {
-            tooltip,
+            tooltip: {
+              callbacks: {
+                title: () => '',
+                label: (ctx: TooltipItem<'bar'>) => {
+                  const item = segments[ctx.datasetIndex]
+                  return item ? describeItem(item) : ''
+                },
+              },
+            },
             legend: {
               position: 'bottom',
+              // 窄屏时图例每项一行：默认上限是图表高度的一半，三项会被截掉一行
+              maxHeight: 72,
+              // 隐藏一段后条形不再是 100%，和摘要、键盘朗读对不上：图例只作说明，不可点击
+              onClick: () => {},
               labels: {
                 color: STAT_TEXT_COLOR,
-                // 图例带文字和数量，不只靠颜色区分
+                boxWidth: 12,
+                boxHeight: 12,
+                padding: 6,
+                // 图例带文字、数值和占比：段太窄画不下占比时，图例里仍能看到。图例文字不会换行，
+                // 图表很窄（< 280px）时只留类别和占比，避免被截断；数值仍在 tooltip、朗读和表格里
                 generateLabels: (c: Chart<any>) =>
-                  list.map((item, index) => ({
-                    text: `${item.label} ${formatValue(valueOf(item))}`,
-                    fillStyle: colors[index],
-                    strokeStyle: '#fff',
+                  segments.map((item, i) => ({
+                    text:
+                      c.width < 280
+                        ? `${item.label} ${formatShare(shareOf(item))}`
+                        : `${item.label} ${formatValue(valueOf(item))}（${formatShare(shareOf(item))}）`,
+                    fillStyle: segColors[i],
+                    strokeStyle: segColors[i],
                     lineWidth: 0,
                     fontColor: STAT_TEXT_COLOR,
-                    hidden: !c.getDataVisibility(index),
-                    index,
+                    hidden: !c.isDatasetVisible(i),
+                    datasetIndex: i,
                   })),
               },
             },
           },
+          scales: {
+            x: {
+              stacked: true,
+              min: 0,
+              max: 100,
+              // 不旋转刻度（旋转后占高度，挤扁条形）；放不下时自动隔一个显示
+              ticks: {
+                stepSize: 25,
+                maxRotation: 0,
+                autoSkip: true,
+                autoSkipPadding: 8,
+                callback: (v: number | string) => `${v}%`,
+              },
+              grid: { display: false },
+            },
+            // 只有一根条，类别轴不显示，条形占满宽度（375px 时也是）
+            y: { stacked: true, display: false },
+          },
         },
+        plugins: [SEGMENT_LABELS],
       }
     }
 
@@ -350,11 +448,15 @@ export function buildDistributionChart(input: DistributionChartInput): StatChart
   return {
     buildConfig,
     summary,
-    count: items.length,
+    count: segments.length,
     describe: (index) => {
-      const item = items[index]
+      const item = segments[index]
       return item ? describeItem(item) : ''
     },
+    activeAt:
+      chart === 'stackedBar'
+        ? (index) => (segments[index] ? [{ datasetIndex: index, index: 0 }] : [])
+        : undefined,
   }
 }
 
@@ -484,8 +586,12 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
 
 // ---- 高度 -------------------------------------------------------------------
 
-/** 卡片里：横向条形图的高度随条数变化，竖向图、环形图和折线图固定 240px */
+/**
+ * 卡片里：横向条形图的高度随条数变化；堆积条形图只有一根条，120px（条 + 刻度 + 图例），
+ * 整行宽的卡片不留大片空白；竖向图和折线图固定 240px
+ */
 export function cardChartHeight(shape: ChartShape, count: number): string {
+  if (shape === 'stackedBar') return '120px'
   return shape === 'hbar' ? `${Math.max(160, 28 * count + 48)}px` : '240px'
 }
 
@@ -493,8 +599,11 @@ export function cardChartHeight(shape: ChartShape, count: number): string {
  * 对话框里放大显示：桌面 360px，窄屏按 70vw 缩小，不低于 240px（375px 宽时约 262px）。
  * 横向条形图另外按条数给出下限 30·条数 + 56px，在任何宽度下都随条数变高，且总比卡片的
  * 28·条数 + 48px（最低 160px）高：长排行在窄屏不会被 70vw 压扁，对话框内容可以纵向滚动。
+ * 堆积条形图在任何宽度下固定 200px：比卡片的 120px 高、段内文字更容易放下，下面的表格
+ * 仍然在视野里。
  */
 export function dialogChartHeight(shape: ChartShape, count: number): string {
+  if (shape === 'stackedBar') return '200px'
   const base = 'clamp(240px, 70vw, 360px)'
   return shape === 'hbar' ? `max(${30 * count + 56}px, ${base})` : base
 }

@@ -50,6 +50,7 @@ const keyboard = useChartKeyboard({
   getChart: () => chart,
   count: () => props.model.count,
   describe: (index) => props.model.describe(index),
+  activeAt: (index) => props.model.activeAt?.(index),
 })
 
 function render() {

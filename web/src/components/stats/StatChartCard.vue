@@ -1,7 +1,7 @@
 <!--
   StatChartCard —— 单个 distribution / ranking 分布的图表卡片（设计 §7.2、§7.6）。
 
-  - chart：bar（竖向柱状）/ hbar（横向条形，排行和格式）/ doughnut（环形，类型占比）/
+  - chart：bar（竖向柱状）/ hbar（横向条形，排行和格式）/ stackedBar（100% 堆积条形，类型占比）/
     line（折线，拍摄星期 / 小时分布；「未知」不是时间轴上的一点，只出现在说明和表格里）；
   - 「其他」（仅排行，other > 0）和「未知」（unknown > 0）用中性灰排在最后；
   - excludeUnknown（「统计时排除未知项」，总览卡片不传）：先经 applyUnknownPolicy 去掉「未知」、

@@ -5,8 +5,9 @@
  * - ArrowRight / ArrowDown 下一项，ArrowLeft / ArrowUp 上一项，Home / End 首末项；
  * - Escape 或失焦清除高亮。
  *
- * 每次移动对同一 index 的所有可见数据集一起 setActiveElements（趋势卡片的照片 /
- * 视频两条序列同时高亮），同时把 tooltip 定位到该项，并把同样的文字写进视觉隐藏的
+ * 每次移动默认对同一 index 的所有可见数据集一起 setActiveElements（趋势卡片的照片 /
+ * 视频两条序列同时高亮）；传了 activeAt 时按它给出的数据点高亮（堆积条形图逐段，
+ * 每段是一个数据集）。同时把 tooltip 定位到该项，并把同样的文字写进视觉隐藏的
  * aria-live 区域，读屏软件也能逐项听到。
  */
 import { ref } from 'vue'
@@ -19,6 +20,8 @@ export interface ChartKeyboardOptions {
   count: () => number
   /** 第 index 项的朗读文本 */
   describe: (index: number) => string
+  /** 第 index 项对应的数据点（堆积条形图：第 index 个数据集）；缺省时取所有可见数据集的第 index 个点 */
+  activeAt?: (index: number) => ActiveDataPoint[] | null | undefined
 }
 
 export function useChartKeyboard(options: ChartKeyboardOptions) {
@@ -28,15 +31,19 @@ export function useChartKeyboard(options: ChartKeyboardOptions) {
   function highlight(index: number) {
     const chart = options.getChart()
     if (!chart) return
-    const active: ActiveDataPoint[] = []
-    chart.data.datasets.forEach((_, datasetIndex) => {
-      if (!chart.isDatasetVisible(datasetIndex)) return
-      if (chart.getDatasetMeta(datasetIndex).data[index]) {
-        active.push({ datasetIndex, index })
-      }
-    })
+    const exists = (p: ActiveDataPoint) =>
+      chart.isDatasetVisible(p.datasetIndex) && !!chart.getDatasetMeta(p.datasetIndex).data[p.index]
+    const mapped = options.activeAt?.(index)
+    let active: ActiveDataPoint[]
+    if (Array.isArray(mapped)) {
+      active = mapped.filter(exists)
+    } else {
+      active = chart.data.datasets
+        .map((_, datasetIndex) => ({ datasetIndex, index }))
+        .filter(exists)
+    }
     if (active.length === 0) return
-    const element = chart.getDatasetMeta(active[0].datasetIndex).data[index]
+    const element = chart.getDatasetMeta(active[0].datasetIndex).data[active[0].index]
     const pos = element.tooltipPosition(true)
     chart.setActiveElements(active)
     chart.tooltip?.setActiveElements(active, { x: pos.x ?? 0, y: pos.y ?? 0 })
