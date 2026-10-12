@@ -3,9 +3,9 @@
 # PhotoVault 服务端启动脚本
 #
 # 用法:
-#   ./run.sh                 # 默认 0.0.0.0:8000，开发模式（热重载）
-#   ./run.sh --prod          # 生产模式（无热重载，多 worker）
-#   PHOTOVAULT_BIND_HOST=127.0.0.1 PORT=9000 ./run.sh
+#   scripts/server-run.sh                 # 默认 0.0.0.0:8000，开发模式（热重载）
+#   scripts/server-run.sh --prod          # 生产模式（无热重载，多 worker）
+#   PHOTOVAULT_BIND_HOST=127.0.0.1 PORT=9000 scripts/server-run.sh
 #
 # 可通过环境变量覆盖:
 #   PHOTOVAULT_BIND_HOST  监听地址      (默认 0.0.0.0)
@@ -20,8 +20,8 @@
 #
 set -euo pipefail
 
-# 切换到脚本所在目录（服务端工程根目录）
-cd "$(dirname "$0")"
+# 脚本位于 scripts/，切换到同级的 server/ 目录（服务端工程根目录）
+cd "$(dirname "$0")/../server"
 
 # ---------------------------------------------------------------------------
 # 配置（可被环境变量覆盖）

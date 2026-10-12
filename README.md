@@ -162,7 +162,7 @@ PHOTOVAULT_MODELS_ROOT=/opt/photovault/models   # 模型只读，可与数据分
 
 说明：
 
-- 四项都必须是**绝对路径**，相对路径会在启动时直接报错——相对路径会随服务的工作目录变化（systemd、Docker、`run.sh` 各不相同），静默写错位置比启动失败更难排查。
+- 四项都必须是**绝对路径**，相对路径会在启动时直接报错——相对路径会随服务的工作目录变化（systemd、Docker、`scripts/server-run.sh` 各不相同），静默写错位置比启动失败更难排查。
 - 回收站（`{username}/.trash`）、文件锁（`{username}/.locks`）、缩略图缓存（`.thumbnails`）和上传分块暂存（`.chunks`）都跟随**照片存储目录**。回收站和分块暂存必须与照片同一文件系统，否则移动文件将退化为跨盘复制。
 - 磁盘空间告警与「关于服务端」页显示的可用容量，统计的是**照片存储目录**所在的卷。
 - 已有部署无需改动：不设置新变量时，行为与之前完全一致。
@@ -184,7 +184,7 @@ PHOTOVAULT_MODELS_ROOT=/opt/photovault/models   # 模型只读，可与数据分
 
 | 部署方式 | 放在哪里 |
 |---|---|
-| `./run.sh` 本地开发 | `server/config.yaml` 或 `server/config/config.yaml` |
+| `scripts/server-run.sh` 本地开发 | `server/config.yaml` 或 `server/config/config.yaml` |
 | Docker | 宿主机 `./config/config.yaml`（经卷映射成为容器内 `/app/config/config.yaml`），或容器内 `/app/config.yaml` |
 | 飞牛 NAS | `TRIM_PKGETC/config.yaml`，由 `PHOTOVAULT_CONFIG_PATH` 显式指定 |
 

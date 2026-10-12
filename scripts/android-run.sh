@@ -3,21 +3,22 @@
 # PhotoVault Android 一键 编译 / 安装 / 运行 脚本
 #
 # 用法:
-#   ./run.sh                # 编译 debug 包，安装到设备并启动
-#   ./run.sh -c             # 先 clean 再编译安装运行
-#   ./run.sh -r             # 使用 release 变体
-#   ./run.sh -b             # 只编译，不安装/运行
-#   ./run.sh --no-run       # 编译并安装，但不启动
-#   ./run.sh -t             # 安装前先跑单元测试
-#   ./run.sh -s <serial>    # 指定目标设备/模拟器
-#   ./run.sh -l             # 安装启动后跟随查看应用日志(logcat)
-#   ./run.sh -h             # 显示帮助
+#   scripts/android-run.sh                # 编译 debug 包，安装到设备并启动
+#   scripts/android-run.sh -c             # 先 clean 再编译安装运行
+#   scripts/android-run.sh -r             # 使用 release 变体
+#   scripts/android-run.sh -b             # 只编译，不安装/运行
+#   scripts/android-run.sh --no-run       # 编译并安装，但不启动
+#   scripts/android-run.sh -t             # 安装前先跑单元测试
+#   scripts/android-run.sh -s <serial>    # 指定目标设备/模拟器
+#   scripts/android-run.sh -l             # 安装启动后跟随查看应用日志(logcat)
+#   scripts/android-run.sh -h             # 显示帮助
 #
 set -euo pipefail
 
-# 始终以脚本所在目录(android/)为工作目录
+# 脚本位于 scripts/，始终以同级的 android/ 工程目录为工作目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ANDROID_DIR="$(cd "$SCRIPT_DIR/../android" && pwd)"
+cd "$ANDROID_DIR"
 
 APP_ID="com.huoyi.photovault"
 LAUNCH_ACTIVITY="$APP_ID/.MainActivity"

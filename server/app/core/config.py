@@ -481,7 +481,7 @@ class Settings(BaseSettings):
 
         Empty means "derive it from ``storage_root``". A non-empty value must be
         absolute: a relative override would resolve against the server's working
-        directory, which is different under systemd, Docker and ``./run.sh``, so
+        directory, which is different under systemd, Docker and ``scripts/server-run.sh``, so
         it is rejected at startup instead of silently scattering data.
         """
         if v and not os.path.isabs(v):
