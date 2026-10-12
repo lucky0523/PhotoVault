@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import aiosqlite
 
 from app.core.config import get_settings, sqlite_path_from_url
-from app.services.background_tasks import _database_ready
+from app.services.background_tasks import _database_ready, run_periodic_db_task
 from app.services.media_metadata import (
     BACKFILL_FFPROBE_TIMEOUT,
     CURRENT_META_VERSION,
@@ -223,32 +223,41 @@ async def run_backfill_round(db: aiosqlite.Connection) -> BackfillStats:
 
 
 async def metadata_backfill_task(interval_seconds: int = ROUND_INTERVAL_SECONDS) -> None:
-    """Periodically backfill statistics metadata (loop like cleanup_expired_trash_task)."""
+    """Periodically backfill statistics metadata.
+
+    Shares the loop of the other database tasks (``run_periodic_db_task``): while
+    first-run setup is unfinished it re-checks every ``DB_NOT_READY_POLL_SECONDS``,
+    so the capture_time seeding and the first round run soon after setup instead
+    of one full ``interval_seconds`` later.
+    """
     settings = get_settings()
     # Log the missing-ffprobe WARNING at startup rather than on first use.
     ffprobe_path()
     seeded = False
 
-    while True:
+    async def _round() -> None:
+        nonlocal seeded
+        db = await aiosqlite.connect(sqlite_path_from_url(settings.database_url))
+        db.row_factory = aiosqlite.Row
         try:
-            if _database_ready():
-                db = await aiosqlite.connect(sqlite_path_from_url(settings.database_url))
-                db.row_factory = aiosqlite.Row
-                try:
-                    if not seeded:
-                        count = await seed_capture_times(db)
-                        seeded = True
-                        if count > 0:
-                            logger.info(
-                                "Metadata backfill seeded capture_time for %d rows", count
-                            )
-                    await run_backfill_round(db)
-                finally:
-                    await db.close()
-        except asyncio.CancelledError:
-            logger.info("Metadata backfill task cancelled")
-            raise
-        except Exception:
-            logger.exception("Error during metadata backfill")
+            if not seeded:
+                count = await seed_capture_times(db)
+                seeded = True
+                if count > 0:
+                    logger.info(
+                        "Metadata backfill seeded capture_time for %d rows", count
+                    )
+            await run_backfill_round(db)
+        finally:
+            await db.close()
 
-        await asyncio.sleep(interval_seconds)
+    await run_periodic_db_task(
+        _round,
+        interval_seconds=interval_seconds,
+        task_logger=logger,
+        task_label="Metadata backfill",
+        cancelled_message="Metadata backfill task cancelled",
+        error_message="Error during metadata backfill",
+        # This module's own name, read here at call time, so tests can patch it.
+        is_ready=_database_ready,
+    )

@@ -17,7 +17,7 @@ import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import aiosqlite
 
@@ -35,13 +35,65 @@ def _database_ready() -> bool:
     materialise an empty database at the pre-provisioning path, which is exactly
     the misplacement the wizard exists to prevent.
 
-    Re-checked every round rather than once at startup, so the tasks resume by
-    themselves as soon as setup finishes; no restart needed.
+    While this returns False, :func:`run_periodic_db_task` re-checks it every
+    ``DB_NOT_READY_POLL_SECONDS`` instead of sleeping the task's full interval,
+    so the tasks start within about that long after setup finishes, with no
+    restart and no full-interval wait.
     """
     settings = get_settings()
     if needs_provisioning(settings):
         return False
     return os.path.isfile(settings.database_path)
+
+
+async def run_periodic_db_task(
+    round_fn: Callable[[], Awaitable[object]],
+    *,
+    interval_seconds: float,
+    task_logger: logging.Logger,
+    task_label: str,
+    cancelled_message: str,
+    error_message: str,
+    is_ready: Callable[[], bool] | None = None,
+) -> None:
+    """Run ``round_fn`` forever, but only once the database is ready.
+
+    The shared loop of every periodic task that touches the database. Each
+    iteration checks readiness (``is_ready``, default :func:`_database_ready`):
+
+    - not ready: skip the work and re-check after ``DB_NOT_READY_POLL_SECONDS``.
+      The guard exists so that nothing connects to (and thereby creates) a
+      database before first-run setup has chosen where it lives; polling briefly
+      instead of sleeping the full interval lets the first real round run soon
+      after setup finishes.
+    - ready: run ``round_fn`` and sleep ``interval_seconds``. The first round
+      after a wait logs one INFO line; a task that is ready from the start does
+      not.
+
+    ``CancelledError`` from the check or the round logs ``cancelled_message`` and
+    propagates; any other exception logs ``error_message`` and the loop goes on
+    (sleeping the normal interval, as a failed round always has).
+    """
+    waiting = False
+    while True:
+        ready = False
+        try:
+            # Looked up at call time so tests can patch the module attribute.
+            ready = (is_ready or _database_ready)()
+            if ready:
+                if waiting:
+                    task_logger.info("%s: database ready, running first round", task_label)
+                    waiting = False
+                await round_fn()
+            else:
+                waiting = True
+        except asyncio.CancelledError:
+            task_logger.info(cancelled_message)
+            raise
+        except Exception:
+            task_logger.exception(error_message)
+
+        await asyncio.sleep(interval_seconds if ready else DB_NOT_READY_POLL_SECONDS)
 
 # Module-level state for disk usage stats accessible by the health endpoint
 _disk_stats: dict[str, float] = {
@@ -55,6 +107,8 @@ CLEANUP_INTERVAL_SECONDS: int = 6 * 60 * 60  # 6 hours
 DISK_CHECK_INTERVAL_SECONDS: int = 60 * 60  # 1 hour
 DISK_WARNING_THRESHOLD_GB: float = 1.0
 DISK_ERROR_THRESHOLD_GB: float = 0.5
+# How often a database task re-checks readiness while first-run setup is unfinished.
+DB_NOT_READY_POLL_SECONDS: float = 15.0
 
 # Thumbnail cache cleanup configuration
 THUMBNAIL_CLEANUP_INTERVAL_SECONDS: int = 24 * 60 * 60  # 24 hours
@@ -95,7 +149,9 @@ async def cleanup_expired_sessions_task(
 ) -> None:
     """Periodically clean up expired upload sessions.
 
-    Runs in an infinite loop, sleeping for `interval_seconds` between each run.
+    Runs in an infinite loop, sleeping for `interval_seconds` between each run
+    (re-checking every ``DB_NOT_READY_POLL_SECONDS`` while the database is not
+    ready yet, see :func:`run_periodic_db_task`).
     For each expired session (expires_at < now, status = 'active'):
     - Deletes temporary chunk files from disk
     - Updates session status to 'expired' in the database
@@ -105,17 +161,17 @@ async def cleanup_expired_sessions_task(
     """
     settings = get_settings()
 
-    while True:
-        try:
-            if _database_ready():
-                await _run_session_cleanup(settings.database_url, settings.media_root)
-        except asyncio.CancelledError:
-            logger.info("Expired session cleanup task cancelled")
-            raise
-        except Exception:
-            logger.exception("Error during expired session cleanup")
+    async def _round() -> None:
+        await _run_session_cleanup(settings.database_url, settings.media_root)
 
-        await asyncio.sleep(interval_seconds)
+    await run_periodic_db_task(
+        _round,
+        interval_seconds=interval_seconds,
+        task_logger=logger,
+        task_label="Expired session cleanup",
+        cancelled_message="Expired session cleanup task cancelled",
+        error_message="Error during expired session cleanup",
+    )
 
 
 async def _run_session_cleanup(database_url: str, media_root: str) -> int:
@@ -174,7 +230,9 @@ async def cleanup_thumbnail_cache_task(
 ) -> None:
     """Periodically clean up stale thumbnail cache files.
 
-    Runs in an infinite loop, sleeping for `interval_seconds` between each run.
+    Runs in an infinite loop, sleeping for `interval_seconds` between each run
+    (re-checking every ``DB_NOT_READY_POLL_SECONDS`` while the database is not
+    ready yet, see :func:`run_periodic_db_task`).
     Cleans up:
     - Orphaned thumbnails (no corresponding file record in database)
     - Expired thumbnails (not accessed in THUMBNAIL_EXPIRY_DAYS days)
@@ -185,17 +243,17 @@ async def cleanup_thumbnail_cache_task(
     """
     settings = get_settings()
 
-    while True:
-        try:
-            if _database_ready():
-                await _run_thumbnail_cleanup(settings.database_url, settings.media_root)
-        except asyncio.CancelledError:
-            logger.info("Thumbnail cache cleanup task cancelled")
-            raise
-        except Exception:
-            logger.exception("Error during thumbnail cache cleanup")
+    async def _round() -> None:
+        await _run_thumbnail_cleanup(settings.database_url, settings.media_root)
 
-        await asyncio.sleep(interval_seconds)
+    await run_periodic_db_task(
+        _round,
+        interval_seconds=interval_seconds,
+        task_logger=logger,
+        task_label="Thumbnail cache cleanup",
+        cancelled_message="Thumbnail cache cleanup task cancelled",
+        error_message="Error during thumbnail cache cleanup",
+    )
 
 
 async def disk_space_monitor_task(
@@ -444,30 +502,31 @@ async def cleanup_expired_trash_task(
 ) -> None:
     """Periodically purge expired trash items.
 
-    Runs in an infinite loop, sleeping for `interval_seconds` between each run.
+    Runs in an infinite loop, sleeping for `interval_seconds` between each run
+    (re-checking every ``DB_NOT_READY_POLL_SECONDS`` while the database is not
+    ready yet, see :func:`run_periodic_db_task`).
     Purges trash items older than trash_retention_days from settings (marks purged_at,
     deletes physical file, keeps record for client sync).
     """
     settings = get_settings()
 
-    while True:
-        try:
-            count = 0
-            if _database_ready():
-                count = await _run_trash_purge(
-                    settings.database_url,
-                    settings.media_root,
-                    settings.trash_retention_days,
-                )
-            if count > 0:
-                logger.info("Trash auto-purge: %d items purged", count)
-        except asyncio.CancelledError:
-            logger.info("Trash purge task cancelled")
-            raise
-        except Exception:
-            logger.exception("Error during trash purge")
+    async def _round() -> None:
+        count = await _run_trash_purge(
+            settings.database_url,
+            settings.media_root,
+            settings.trash_retention_days,
+        )
+        if count > 0:
+            logger.info("Trash auto-purge: %d items purged", count)
 
-        await asyncio.sleep(interval_seconds)
+    await run_periodic_db_task(
+        _round,
+        interval_seconds=interval_seconds,
+        task_logger=logger,
+        task_label="Trash purge",
+        cancelled_message="Trash purge task cancelled",
+        error_message="Error during trash purge",
+    )
 
 
 # ---------------------------------------------------------------------------

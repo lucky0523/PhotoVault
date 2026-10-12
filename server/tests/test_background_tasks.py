@@ -1,14 +1,18 @@
 """Tests for background tasks: expired session cleanup and disk space monitoring."""
 
 import asyncio
+import logging
 import shutil
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
 
+from app.core.config import load_settings, needs_provisioning
+from app.services import background_tasks as bt
 from app.services.background_tasks import (
     _run_session_cleanup,
     _check_disk_space,
@@ -16,6 +20,8 @@ from app.services.background_tasks import (
     start_background_tasks,
     stop_background_tasks,
     cleanup_expired_sessions_task,
+    cleanup_expired_trash_task,
+    cleanup_thumbnail_cache_task,
     disk_space_monitor_task,
     DISK_WARNING_THRESHOLD_GB,
     DISK_ERROR_THRESHOLD_GB,
@@ -349,3 +355,153 @@ class TestBackgroundTaskLifecycle:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+
+_GUARDED_TASKS = [
+    pytest.param(cleanup_expired_sessions_task, "_run_session_cleanup", "Expired session cleanup",
+                 "Error during expired session cleanup", id="sessions"),
+    pytest.param(cleanup_thumbnail_cache_task, "_run_thumbnail_cleanup", "Thumbnail cache cleanup",
+                 "Error during thumbnail cache cleanup", id="thumbnails"),
+    pytest.param(cleanup_expired_trash_task, "_run_trash_purge", "Trash purge",
+                 "Error during trash purge", id="trash"),
+]
+
+
+async def _cancel(*tasks: asyncio.Task) -> None:
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+class TestDatabaseReadinessPolling:
+    """Guarded tasks re-check readiness quickly instead of sleeping a full interval."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bt, "DB_NOT_READY_POLL_SECONDS", 0.01)
+        # setup_logging() elsewhere in the suite turns propagation off.
+        monkeypatch.setattr(logging.getLogger("photovault"), "propagate", True)
+        self.settings = SimpleNamespace(
+            database_url=str(tmp_path / "x.db"),
+            media_root=str(tmp_path),
+            trash_retention_days=30,
+        )
+
+    @staticmethod
+    def _runner(side_effect=None):
+        called = asyncio.Event()
+        effects = list(side_effect or [])
+
+        async def run(*args):
+            called.set()
+            if effects:
+                effect = effects.pop(0)
+                if isinstance(effect, BaseException):
+                    raise effect
+            return 0
+
+        return AsyncMock(side_effect=run), called
+
+    @staticmethod
+    def _ready_lines(caplog, label):
+        return [
+            r for r in caplog.records
+            if r.getMessage() == f"{label}: database ready, running first round"
+        ]
+
+    @pytest.mark.parametrize("task_fn, runner_name, label, _err", _GUARDED_TASKS)
+    async def test_runs_promptly_once_database_becomes_ready(
+        self, task_fn, runner_name, label, _err, caplog
+    ):
+        ready = iter([False, False])
+        runner, called = self._runner()
+        with patch("app.services.background_tasks.get_settings", return_value=self.settings), \
+                patch("app.services.background_tasks._database_ready",
+                      side_effect=lambda: next(ready, True)), \
+                patch(f"app.services.background_tasks.{runner_name}", runner), \
+                caplog.at_level(logging.INFO, logger="photovault.background_tasks"):
+            task = asyncio.create_task(task_fn(interval_seconds=3600))
+            try:
+                await asyncio.wait_for(called.wait(), timeout=2)
+                await asyncio.sleep(0.1)
+                assert runner.await_count == 1
+            finally:
+                await _cancel(task)
+        assert len(self._ready_lines(caplog, label)) == 1
+
+    @pytest.mark.parametrize("task_fn, runner_name, label, _err", _GUARDED_TASKS)
+    async def test_always_ready_sleeps_normal_interval(
+        self, task_fn, runner_name, label, _err, caplog
+    ):
+        runner, called = self._runner()
+        with patch("app.services.background_tasks.get_settings", return_value=self.settings), \
+                patch("app.services.background_tasks._database_ready", return_value=True), \
+                patch(f"app.services.background_tasks.{runner_name}", runner), \
+                caplog.at_level(logging.INFO, logger="photovault.background_tasks"):
+            task = asyncio.create_task(task_fn(interval_seconds=3600))
+            try:
+                await asyncio.wait_for(called.wait(), timeout=2)
+                await asyncio.sleep(0.2)
+                # Many poll intervals have passed; only the first round ran.
+                assert runner.await_count == 1
+            finally:
+                await _cancel(task)
+        assert self._ready_lines(caplog, label) == []
+
+    @pytest.mark.parametrize("task_fn, runner_name, label, err", _GUARDED_TASKS)
+    async def test_work_exception_is_logged_and_loop_continues(
+        self, task_fn, runner_name, label, err, caplog
+    ):
+        runner, _ = self._runner(side_effect=[RuntimeError("boom")])
+        with patch("app.services.background_tasks.get_settings", return_value=self.settings), \
+                patch("app.services.background_tasks._database_ready", return_value=True), \
+                patch(f"app.services.background_tasks.{runner_name}", runner), \
+                caplog.at_level(logging.INFO, logger="photovault.background_tasks"):
+            task = asyncio.create_task(task_fn(interval_seconds=0))
+            try:
+                for _ in range(400):
+                    if runner.await_count >= 2:
+                        break
+                    await asyncio.sleep(0.005)
+                assert runner.await_count >= 2
+            finally:
+                await _cancel(task)
+        assert err in caplog.text
+
+    async def test_never_ready_never_touches_database(self, tmp_path):
+        """Unprovisioned: polling must never connect to, and so create, the DB."""
+        from app.services import metadata_backfill as mb
+
+        share = tmp_path / "share"
+        share.mkdir()
+        settings = load_settings(
+            storage_root=str(share),
+            database_url=str(share / "photovault.db"),
+            require_workdir_setup=True,
+        )
+        assert needs_provisioning(settings)
+
+        connect = MagicMock()
+        with patch("app.services.background_tasks.get_settings", return_value=settings), \
+                patch("app.services.metadata_backfill.get_settings", return_value=settings), \
+                patch.object(mb, "ffprobe_path", return_value=None), \
+                patch("aiosqlite.connect", connect):
+            tasks = [
+                asyncio.create_task(fn(interval_seconds=3600))
+                for fn in (
+                    cleanup_expired_sessions_task,
+                    cleanup_thumbnail_cache_task,
+                    cleanup_expired_trash_task,
+                    mb.metadata_backfill_task,
+                )
+            ]
+            try:
+                await asyncio.sleep(0.2)
+                assert all(not t.done() for t in tasks)
+            finally:
+                await _cancel(*tasks)
+
+        connect.assert_not_called()
+        assert not Path(settings.database_path).exists()

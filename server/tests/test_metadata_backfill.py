@@ -16,6 +16,7 @@ from PIL.ExifTags import IFD
 from PIL.TiffImagePlugin import IFDRational
 
 from app.core.database import init_db
+from app.services import background_tasks as bt
 from app.services import media_metadata as mm
 from app.services import metadata_backfill as mb
 from app.services.media_metadata import CURRENT_META_VERSION, MediaMetadata
@@ -24,6 +25,7 @@ from app.services.media_metadata import CURRENT_META_VERSION, MediaMetadata
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch):
     monkeypatch.setattr(mb, "BATCH_PAUSE_SECONDS", 0)
+    monkeypatch.setattr(bt, "DB_NOT_READY_POLL_SECONDS", 0)
     mm._reset_ffprobe_cache()
     yield
     mm._reset_ffprobe_cache()
@@ -443,3 +445,46 @@ class TestMetadataBackfillTask:
             with pytest.raises(asyncio.CancelledError):
                 await task
         assert "Metadata backfill task cancelled" in caplog.text
+
+    async def test_first_round_runs_promptly_after_database_becomes_ready(
+        self, db_path, monkeypatch, caplog
+    ):
+        """Not ready at start: the first seed + round must not wait the full interval."""
+        await init_db(db_path)
+        monkeypatch.setattr(bt, "DB_NOT_READY_POLL_SECONDS", 0.01)
+        # setup_logging() elsewhere in the suite turns propagation off.
+        monkeypatch.setattr(logging.getLogger("photovault"), "propagate", True)
+        ready_values = iter([False, False])
+        calls: list[str] = []
+        round_done = asyncio.Event()
+
+        async def seed(db):
+            calls.append("seed")
+            return 0
+
+        async def run_round(db):
+            calls.append("round")
+            round_done.set()
+            return mb.BackfillStats()
+
+        settings = SimpleNamespace(database_url=db_path)
+        with patch.object(mb, "_database_ready", side_effect=lambda: next(ready_values, True)), \
+                patch.object(mb, "seed_capture_times", side_effect=seed), \
+                patch.object(mb, "run_backfill_round", side_effect=run_round), \
+                patch.object(mb, "get_settings", return_value=settings), \
+                patch.object(mb, "ffprobe_path", return_value=None), \
+                caplog.at_level(logging.INFO, logger="photovault.metadata_backfill"):
+            task = asyncio.create_task(mb.metadata_backfill_task(interval_seconds=3600))
+            try:
+                await asyncio.wait_for(round_done.wait(), timeout=2)
+                assert calls == ["seed", "round"]
+                # The normal (one hour) interval is in force after the first round.
+                await asyncio.sleep(0.1)
+                assert calls.count("round") == 1
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages.count("Metadata backfill: database ready, running first round") == 1
