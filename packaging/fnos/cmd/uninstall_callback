@@ -95,13 +95,28 @@ fi
 #
 # 改名而不是删除：重装时向导会把这个路径作为「上次使用的目录」提示出来。它的选择器
 # 只列已授权目录，授权一旦被收回，旧库的位置就再也无处可查，而且没有手填路径的入口。
-if [ -n "$WORK_DIR" ]; then
-  if mv -f "${SHARE}/.workdir" "${SHARE}/.workdir.previous" 2>/dev/null; then
-    log_line "Retired work dir pointer -> .workdir.previous (${WORK_DIR})"
-  else
-    log_line "WARN: 无法退休工作目录指针 ${SHARE}/.workdir，重装后可能会跳过初始化向导"
-  fi
-fi
+#
+# 升级例外：飞牛把升级当成「卸载旧版 + 安装新版」来跑，本脚本此时也会执行，但
+# TRIM_APP_STATUS=UPGRADE。升级不删照片、不收回授权，退休指针只会让新版本误以为
+# 没初始化、逼管理员重新选一遍工作目录，所以升级时保留 .workdir 原地不动。
+# 万一某个飞牛版本在这一步没报 UPGRADE、指针照旧被退休，upgrade_callback 会在
+# 校验旧库有效后把 .workdir.previous 恢复回来。
+case "${TRIM_APP_STATUS:-}" in
+  UPGRADE)
+    if [ -n "$WORK_DIR" ]; then
+      log_line "Upgrade: keeping work dir pointer (${WORK_DIR})"
+    fi
+    ;;
+  *)
+    if [ -n "$WORK_DIR" ]; then
+      if mv -f "${SHARE}/.workdir" "${SHARE}/.workdir.previous" 2>/dev/null; then
+        log_line "Retired work dir pointer -> .workdir.previous (${WORK_DIR})"
+      else
+        log_line "WARN: 无法退休工作目录指针 ${SHARE}/.workdir，重装后可能会跳过初始化向导"
+      fi
+    fi
+    ;;
+esac
 
 if [ -n "$WORK_DIR" ]; then
   MSG="PhotoVault 已卸载，日志与识别模型已清理。照片与数据库仍保留在: ${WORK_DIR}"

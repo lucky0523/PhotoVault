@@ -28,6 +28,10 @@ PV_APPNAME="${TRIM_APPNAME:-photovault}"
 # PV_PYTHON 的绝对路径，避免系统 PATH 被其它工具覆盖时启动到错误的解释器。
 PV_DEP_RUNTIME_APP="python312"
 PV_PYTHON="/var/apps/python312/target/bin/python3"
+# 仅供测试：飞牛永远不会设置 PV_TEST_PYTHON，只有 server/tests/test_fnos_lifecycle.py
+# 在设备之外跑生命周期脚本时用它指向本机解释器（开发机上没有 /var/apps）。
+# 上面那行必须保持原样，scripts/build.sh 打包时会按字面校验它。
+if [ -n "${PV_TEST_PYTHON:-}" ]; then PV_PYTHON="$PV_TEST_PYTHON"; fi
 PV_RUNTIME_MODE="fnos:python312"
 PATH="/var/apps/python312/target/bin:$PATH"
 export PATH
@@ -154,6 +158,78 @@ pv_migrate_secret() {
       pv_log "Migrated JWT secret from TRIM_PKGVAR to TRIM_PKGETC"
     fi
   fi
+}
+
+# 升级时判断能否把 .workdir.previous 恢复成 .workdir。不打印任何内容：
+#   返回 0：可以恢复，PV_RESTORE_CANDIDATE=工作目录
+#   返回 1：不恢复，PV_RESTORE_SKIP_REASON=原因（供调用方写日志）
+#
+# 只给 upgrade_callback 用，install_callback / main 绝不能调用：真正卸载后再重装时，
+# 飞牛已经收回了对旧工作目录的授权，必须让管理员在向导里重新授权（.workdir.previous
+# 留作向导的提示）。升级不收回授权，所以只有升级可以直接接回旧库。
+#
+# 条件与服务端一致：
+#   - .workdir 缺失或为空，且 .workdir.previous 非空
+#   - 指针内容按 config.py 的 _read_pointer_file 解析：第一条非空行、去掉首尾空白，
+#     必须是绝对路径，且目录存在
+#   - <目录>/photovault.db 是普通文件，且 users 表里至少有一个账号（与 setup.py 的
+#     _has_existing_library 相同）。用只读模式（mode=ro）打开，绝不会建出新库；
+#     解释器缺失、库损坏等任何失败都按「不恢复」处理
+#
+# 不在这里探测可写性：脚本的运行用户未必是服务的运行用户。授权若真的丢了，服务端
+# 启动时的 verify_workdir_writable 会把指针降级回去，向导照常出现。
+pv_previous_workdir_candidate() {
+  local current="${PV_DATA_SHARE}/.workdir"
+  local previous="${PV_DATA_SHARE}/.workdir.previous"
+  local dir db
+  PV_RESTORE_CANDIDATE=""
+  PV_RESTORE_SKIP_REASON=""
+
+  if [ -s "$current" ]; then
+    PV_RESTORE_SKIP_REASON="pointer already present"
+    return 1
+  fi
+  if [ ! -s "$previous" ]; then
+    PV_RESTORE_SKIP_REASON="no .workdir.previous"
+    return 1
+  fi
+
+  dir="$(sed -n '/[^[:space:]]/{p;q;}' "$previous" 2>/dev/null | tr -d '\r' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$dir" in
+    /*) ;;
+    *)
+      PV_RESTORE_SKIP_REASON="not an absolute path: '${dir}'"
+      return 1
+      ;;
+  esac
+  # 与 _read_pointer_file 一样去掉末尾的 /（根目录本身除外）
+  while [ "${#dir}" -gt 1 ] && [ "${dir%/}" != "$dir" ]; do
+    dir="${dir%/}"
+  done
+  if [ ! -d "$dir" ]; then
+    PV_RESTORE_SKIP_REASON="directory missing: ${dir}"
+    return 1
+  fi
+
+  db="${dir}/photovault.db"
+  if [ ! -f "$db" ]; then
+    PV_RESTORE_SKIP_REASON="no photovault.db in ${dir}"
+    return 1
+  fi
+  if ! "$PV_PYTHON" -c 'import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+"?mode=ro", uri=True); n=c.execute("SELECT COUNT(*) FROM users").fetchone()[0]; c.close(); sys.exit(0 if n>0 else 1)' "$db" 2>/dev/null; then
+    PV_RESTORE_SKIP_REASON="no accounts in ${db}"
+    return 1
+  fi
+
+  PV_RESTORE_CANDIDATE="$dir"
+  return 0
+}
+
+# 把 .workdir.previous 改回 .workdir。只在 pv_previous_workdir_candidate 通过后、
+# 且只由 upgrade_callback 调用（理由见上）。返回 mv 的退出码。
+pv_restore_previous_workdir() {
+  mv -f "${PV_DATA_SHARE}/.workdir.previous" "${PV_DATA_SHARE}/.workdir" 2>>"$PV_LOG_FILE"
 }
 
 # 共享目录用的是 Windows ACL 而不是 POSIX ACL，`test -w` 在这种模型下可能给出
