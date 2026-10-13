@@ -15,11 +15,14 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -27,13 +30,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -62,10 +67,13 @@ import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +87,16 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -107,8 +124,11 @@ import kotlin.math.roundToInt
 /**
  * Login screen.
  *
- * The whole page fits on one screen without scrolling. The credentials pane stays
- * centered within the space remaining above the keyboard.
+ * The credentials card is centered in the space inside the system bars and always
+ * keeps its natural size. When the keyboard opens, the whole card (glass and
+ * content) moves up with it so its bottom edge always sits 16dp above the keyboard,
+ * whichever field is focused (see [loginCardShiftPx]). The top of the card may go
+ * under the status bar meanwhile. Keyboard hidden, nothing moves.
  *
  * Behind everything, a wall of photographs drifts continuously: three columns of
  * prints scrolling at different speeds and directions, tilted a few degrees. It
@@ -116,6 +136,7 @@ import kotlin.math.roundToInt
  * the liquid-glass form real texture to blur and refract as the pictures pass
  * behind it.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
@@ -124,6 +145,14 @@ fun LoginScreen(
     val uiState by viewModel.uiState.collectAsState()
     var passwordVisible by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val editableTouchMarker = remember { EditableTouchMarker() }
+    val imeVisible = rememberUpdatedState(WindowInsets.isImeVisible)
+    val dismissKeyboard: State<() -> Unit> = rememberUpdatedState {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        Unit
+    }
 
     // QR scanner: the web console shows a server QR code that encodes the full
     // server URL (e.g. http://192.168.1.100:8000). Scanning it fills the field.
@@ -195,7 +224,23 @@ fun LoginScreen(
     // would feed back on itself.
     val bgBackdrop = rememberLayerBackdrop()
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // Keyboard-driven card shift. The IME inset is read only inside the card's
+    // offset lambda (placement), so it never changes measurement or recomposes.
+    val imeInsets = WindowInsets.ime
+    // Un-shifted card bottom and root height in window px, from the slot around the
+    // offset card.
+    var cardBottomPx by remember { mutableIntStateOf(0) }
+    var rootHeightPx by remember { mutableIntStateOf(0) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .dismissKeyboardOnOutsideTap(
+                marker = editableTouchMarker,
+                imeVisible = imeVisible,
+                onDismiss = dismissKeyboard
+            )
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -229,301 +274,407 @@ fun LoginScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
+                    // System bars only. The IME is deliberately not applied here: it
+                    // never changes measurement and is handled only as the card offset.
+                    .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(start = 24.dp, top = 32.dp, end = 24.dp, bottom = 0.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // Credentials pane — real frosted glass that refracts + blurs the
-                // moving photo wall (falls back to a translucent card pre-API 31).
-                GlassBar(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(30.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Natural height even if taller than the space (landscape): never squashed.
+                        .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                        // Un-shifted card bounds: the offset below moves only the child,
+                        // so this never depends on the shift (no layout feedback loop).
+                        .onGloballyPositioned { coords ->
+                            cardBottomPx =
+                                coords.positionInWindow().y.roundToInt() + coords.size.height
+                            rootHeightPx = coords.findRootCoordinates().size.height
+                        }
                 ) {
-                    Column(
+                    // Credentials pane — real frosted glass that refracts + blurs the
+                    // moving photo wall (falls back to a translucent card pre-API 31).
+                    GlassBar(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 20.dp)
+                            // Whole card (glass + content) rides up with the keyboard. Layout
+                            // placement, not graphicsLayer: drawBackdrop re-samples the wall at
+                            // the card's real position via onGloballyPositioned/localPositionOf.
+                            .offset {
+                                IntOffset(
+                                    x = 0,
+                                    y = -loginCardShiftPx(
+                                        cardBottomPx = cardBottomPx,
+                                        rootHeightPx = rootHeightPx,
+                                        imeBottomPx = imeInsets.getBottom(this),
+                                        marginPx = LoginCardKeyboardMargin.roundToPx()
+                                    )
+                                )
+                            },
+                        shape = RoundedCornerShape(30.dp)
                     ) {
-                        // Section header: what this pane is for + live connection state.
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "连接你的服务器",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-                            ConnectionStatusPill(
-                                isTesting = uiState.isTesting,
-                                testResult = testSummary,
-                                onTest = viewModel::testConnection,
-                                enabled = !uiState.isLoading && !uiState.isTesting
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // One notice slot for both failure kinds: a failed login
-                        // and a failed connection test are the same problem class
-                        // from the user's point of view, so they share one banner
-                        // instead of a banner plus a snackbar.
-                        val notice = uiState.errorMessage
-                            ?: (testSummary as? TestConnectionResult.Failure)?.message
-                        // Retained so the text stays put while the banner animates out.
-                        var noticeText by remember { mutableStateOf("") }
-                        LaunchedEffect(notice) {
-                            if (notice != null) noticeText = notice
-                        }
-
-                        AnimatedVisibility(
-                            visible = notice != null,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            Column {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(MaterialTheme.colorScheme.errorContainer)
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ErrorOutline,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onErrorContainer
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = noticeText,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(12.dp))
-                            }
-                        }
-
-                        val fieldColors = glassFieldColors(dark)
-
-                        // Public address — the one field users can't guess, so it
-                        // carries the QR shortcut as a trailing action.
-                        OutlinedTextField(
-                            value = uiState.serverAddress,
-                            onValueChange = viewModel::onServerAddressChange,
-                            placeholder = { Text(stringResource(R.string.login_public_address_hint)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = fieldColors,
-                            isError = uiState.serverAddressError != null,
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.Dns,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            trailingIcon = {
-                                IconButton(
-                                    onClick = launchScanner,
-                                    enabled = !uiState.isLoading
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.QrCodeScanner,
-                                        contentDescription = "扫描服务器二维码",
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            },
-                            supportingText = {
-                                AddressSupportingText(
-                                    error = uiState.serverAddressError,
-                                    testResult = uiState.publicTestResult,
-                                    default = "可扫描 Web 端的服务器二维码自动填写"
-                                )
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Uri,
-                                imeAction = ImeAction.Next
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onNext = { focusManager.moveFocus(FocusDirection.Down) }
-                            ),
-                            enabled = !uiState.isLoading
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Optional LAN address: direct connection to the NAS at home.
-                        OutlinedTextField(
-                            value = uiState.lanAddress,
-                            onValueChange = viewModel::onLanAddressChange,
-                            placeholder = { Text(stringResource(R.string.login_lan_address_hint)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = fieldColors,
-                            isError = uiState.lanAddressError != null,
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.Lan,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            supportingText = {
-                                AddressSupportingText(
-                                    error = uiState.lanAddressError,
-                                    testResult = uiState.lanTestResult,
-                                    default = stringResource(R.string.login_lan_address_supporting)
-                                )
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Uri,
-                                imeAction = ImeAction.Next
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onNext = { focusManager.moveFocus(FocusDirection.Down) }
-                            ),
-                            enabled = !uiState.isLoading
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        OutlinedTextField(
-                            value = uiState.username,
-                            onValueChange = viewModel::onUsernameChange,
-                            placeholder = { Text("用户名") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = fieldColors,
-                            isError = uiState.usernameError != null,
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.Person,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            supportingText = uiState.usernameError?.let { error ->
-                                { Text(error) }
-                            },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                            keyboardActions = KeyboardActions(
-                                onNext = { focusManager.moveFocus(FocusDirection.Down) }
-                            ),
-                            enabled = !uiState.isLoading
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        OutlinedTextField(
-                            value = uiState.password,
-                            onValueChange = viewModel::onPasswordChange,
-                            placeholder = { Text("密码") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = fieldColors,
-                            isError = uiState.passwordError != null,
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.Lock,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            supportingText = uiState.passwordError?.let { error ->
-                                { Text(error) }
-                            },
-                            visualTransformation = if (passwordVisible) {
-                                VisualTransformation.None
-                            } else {
-                                PasswordVisualTransformation()
-                            },
-                            trailingIcon = {
-                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                                    Icon(
-                                        imageVector = if (passwordVisible) {
-                                            Icons.Rounded.VisibilityOff
-                                        } else {
-                                            Icons.Rounded.Visibility
-                                        },
-                                        contentDescription = if (passwordVisible) {
-                                            "隐藏密码"
-                                        } else {
-                                            "显示密码"
-                                        }
-                                    )
-                                }
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password,
-                                imeAction = ImeAction.Done
-                            ),
-                            keyboardActions = KeyboardActions(
-                                onDone = {
-                                    focusManager.clearFocus()
-                                    viewModel.login()
-                                }
-                            ),
-                            enabled = !uiState.isLoading
-                        )
-
-                        // Whole row toggles, so the label is part of the hit target.
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable(
-                                    enabled = !uiState.isLoading,
-                                    role = Role.Switch,
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    viewModel.onRememberPasswordChange(!uiState.rememberPassword)
-                                }
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(horizontal = 20.dp, vertical = 20.dp)
                         ) {
-                            Text(
-                                text = "记住密码",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White
-                            )
-                            Switch(
-                                checked = uiState.rememberPassword,
-                                onCheckedChange = viewModel::onRememberPasswordChange,
-                                enabled = !uiState.isLoading,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                                    checkedTrackColor = MaterialTheme.colorScheme.primary
+                            // Section header: what this pane is for + live connection state.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "连接你的服务器",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White
                                 )
+                                Spacer(modifier = Modifier.weight(1f))
+                                ConnectionStatusPill(
+                                    isTesting = uiState.isTesting,
+                                    testResult = testSummary,
+                                    onTest = viewModel::testConnection,
+                                    enabled = !uiState.isLoading && !uiState.isTesting
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // One notice slot for both failure kinds: a failed login
+                            // and a failed connection test are the same problem class
+                            // from the user's point of view, so they share one banner
+                            // instead of a banner plus a snackbar.
+                            val notice = uiState.errorMessage
+                                ?: (testSummary as? TestConnectionResult.Failure)?.message
+                            // Retained so the text stays put while the banner animates out.
+                            var noticeText by remember { mutableStateOf("") }
+                            LaunchedEffect(notice) {
+                                if (notice != null) noticeText = notice
+                            }
+
+                            AnimatedVisibility(
+                                visible = notice != null,
+                                enter = fadeIn() + expandVertically(),
+                                exit = fadeOut() + shrinkVertically()
+                            ) {
+                                Column {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(MaterialTheme.colorScheme.errorContainer)
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.ErrorOutline,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = noticeText,
+                                            color = MaterialTheme.colorScheme.onErrorContainer,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                }
+                            }
+
+                            val fieldColors = glassFieldColors(dark)
+
+                            // Public address — the one field users can't guess, so it
+                            // carries the QR shortcut as a trailing action.
+                            OutlinedTextField(
+                                value = uiState.serverAddress,
+                                onValueChange = viewModel::onServerAddressChange,
+                                placeholder = { Text(stringResource(R.string.login_public_address_hint)) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .markEditableTouchTarget(editableTouchMarker),
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = fieldColors,
+                                isError = uiState.serverAddressError != null,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Dns,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = launchScanner,
+                                        enabled = !uiState.isLoading
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.QrCodeScanner,
+                                            contentDescription = "扫描服务器二维码",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                },
+                                supportingText = {
+                                    AddressSupportingText(
+                                        error = uiState.serverAddressError,
+                                        testResult = uiState.publicTestResult,
+                                        default = "可扫描 Web 端的服务器二维码自动填写"
+                                    )
+                                },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Uri,
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                                ),
+                                enabled = !uiState.isLoading
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Optional LAN address: direct connection to the NAS at home.
+                            OutlinedTextField(
+                                value = uiState.lanAddress,
+                                onValueChange = viewModel::onLanAddressChange,
+                                placeholder = { Text(stringResource(R.string.login_lan_address_hint)) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .markEditableTouchTarget(editableTouchMarker),
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = fieldColors,
+                                isError = uiState.lanAddressError != null,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Lan,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                supportingText = {
+                                    AddressSupportingText(
+                                        error = uiState.lanAddressError,
+                                        testResult = uiState.lanTestResult,
+                                        default = stringResource(R.string.login_lan_address_supporting)
+                                    )
+                                },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Uri,
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                                ),
+                                enabled = !uiState.isLoading
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = uiState.username,
+                                onValueChange = viewModel::onUsernameChange,
+                                placeholder = { Text("用户名") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .markEditableTouchTarget(editableTouchMarker),
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = fieldColors,
+                                isError = uiState.usernameError != null,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Person,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                supportingText = uiState.usernameError?.let { error ->
+                                    { Text(error) }
+                                },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                                ),
+                                enabled = !uiState.isLoading
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = uiState.password,
+                                onValueChange = viewModel::onPasswordChange,
+                                placeholder = { Text("密码") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .markEditableTouchTarget(editableTouchMarker),
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = fieldColors,
+                                isError = uiState.passwordError != null,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Lock,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                supportingText = uiState.passwordError?.let { error ->
+                                    { Text(error) }
+                                },
+                                visualTransformation = if (passwordVisible) {
+                                    VisualTransformation.None
+                                } else {
+                                    PasswordVisualTransformation()
+                                },
+                                trailingIcon = {
+                                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                        Icon(
+                                            imageVector = if (passwordVisible) {
+                                                Icons.Rounded.VisibilityOff
+                                            } else {
+                                                Icons.Rounded.Visibility
+                                            },
+                                            contentDescription = if (passwordVisible) {
+                                                "隐藏密码"
+                                            } else {
+                                                "显示密码"
+                                            }
+                                        )
+                                    }
+                                },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Password,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        focusManager.clearFocus()
+                                        viewModel.login()
+                                    }
+                                ),
+                                enabled = !uiState.isLoading
+                            )
+
+                            // Whole row toggles, so the label is part of the hit target.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable(
+                                        enabled = !uiState.isLoading,
+                                        role = Role.Switch,
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) {
+                                        viewModel.onRememberPasswordChange(!uiState.rememberPassword)
+                                    }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "记住密码",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color.White
+                                )
+                                Switch(
+                                    checked = uiState.rememberPassword,
+                                    onCheckedChange = viewModel::onRememberPasswordChange,
+                                    enabled = !uiState.isLoading,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                                        checkedTrackColor = MaterialTheme.colorScheme.primary
+                                    )
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            PrimaryActionButton(
+                                label = if (uiState.isLoading) "正在连接…" else "登录",
+                                loading = uiState.isLoading,
+                                enabled = !uiState.isLoading && !uiState.isTesting,
+                                dark = dark,
+                                onClick = viewModel::login
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        PrimaryActionButton(
-                            label = if (uiState.isLoading) "正在连接…" else "登录",
-                            loading = uiState.isLoading,
-                            enabled = !uiState.isLoading && !uiState.isTesting,
-                            dark = dark,
-                            onClick = viewModel::login
-                        )
                     }
                 }
             }
+        }
+    }
+}
+
+private class EditableTouchMarker {
+    var downHitEditable = false
+}
+
+private fun Modifier.markEditableTouchTarget(marker: EditableTouchMarker): Modifier =
+    pointerInput(marker) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.any { it.changedToDownIgnoreConsumed() }) {
+                    // The root resets first on Initial; descendants then identify field hits.
+                    marker.downHitEditable = true
+                }
+            }
+        }
+    }
+
+private fun Modifier.dismissKeyboardOnOutsideTap(
+    marker: EditableTouchMarker,
+    imeVisible: State<Boolean>,
+    onDismiss: State<() -> Unit>
+): Modifier = pointerInput(marker) {
+    val touchSlop = viewConfiguration.touchSlop
+    awaitEachGesture {
+        marker.downHitEditable = false
+        val down = awaitFirstDown(
+            requireUnconsumed = false,
+            pass = PointerEventPass.Initial
+        )
+        var isTap = true
+        var finished = false
+
+        while (!finished) {
+            // Final observes child controls after their Main-pass handling and consumes nothing.
+            val event = awaitPointerEvent(PointerEventPass.Final)
+            if (event.changes.any { it.id != down.id }) {
+                isTap = false
+            }
+
+            val primary = event.changes.firstOrNull { it.id == down.id }
+            if (primary == null) {
+                isTap = false
+                finished = true
+            } else {
+                if ((primary.position - down.position).getDistance() > touchSlop) {
+                    isTap = false
+                }
+                when {
+                    primary.changedToUpIgnoreConsumed() -> {
+                        // Dismiss on a completed tap, never on pointer-down or cancellation.
+                        if (event.type != PointerEventType.Release) isTap = false
+                        finished = true
+                    }
+                    !primary.pressed -> {
+                        isTap = false
+                        finished = true
+                    }
+                }
+            }
+        }
+
+        if (isTap && !marker.downHitEditable && imeVisible.value) {
+            onDismiss.value()
         }
     }
 }
