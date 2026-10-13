@@ -12,6 +12,11 @@ UTC-only capture times are converted with ``temp.stats_tz``, an interval table o
 :func:`app.services.stats_buckets.utc_offset_intervals`, so the conversion is
 also done row-by-row inside SQL.
 
+The photo scene EV (EV100, ``scene_ev`` column) is computed row-by-row inside SQL by
+``pv_ev100``, a Python function registered on the connection by
+:func:`app.services.exposure_value.register_sql_functions` — the same code as
+the pure helper, so there is no second (SQL) copy of the formula.
+
 The caller (``app.api.stats``) is responsible for validating and normalising the
 path; this module only asserts it.
 """
@@ -23,6 +28,7 @@ from typing import Any
 
 import aiosqlite
 
+from app.services.exposure_value import SQL_EV100_FUNCTION, register_sql_functions
 from app.services.media_metadata import CURRENT_META_VERSION
 from app.services.stats_buckets import (
     APERTURE_SPEC,
@@ -38,6 +44,7 @@ from app.services.stats_buckets import (
     HOUR_BUCKETS,
     IMAGE_EXTS,
     ISO_SPEC,
+    SCENE_EV_SPEC,
     SHUTTER_SPEC,
     UNKNOWN_KEY,
     WEEKDAY_BUCKETS,
@@ -48,6 +55,7 @@ from app.services.stats_buckets import (
     build_ranking,
     build_trends,
     camera_display_name,
+    ev_summary,
     format_group,
     lens_display_name,
     pct,
@@ -107,7 +115,8 @@ SELECT cat, ext, is_motion, pending, file_size,
        CAST(strftime('%H', lt) AS INTEGER) AS hr,
        substr(lt, 1, 7)                    AS ym,
        iso, duration_sec, focal_35mm, focal_35mm_source,
-       f_number, exposure_time, camera_make, camera_model, lens_model
+       f_number, exposure_time, camera_make, camera_model, lens_model,
+       CASE WHEN cat = 'photo' THEN {SQL_EV100_FUNCTION}(iso, f_number, exposure_time) END AS scene_ev
 FROM valid
 """
 
@@ -136,6 +145,21 @@ _Q_TREND = (
     "SELECT cat, ym, COUNT(*) FROM temp.stats_scope "
     "WHERE cat IN ('photo', 'video') AND ym IS NOT NULL GROUP BY cat, ym"
 )
+# Scene EV summary: sample count / mean, then the median by LIMIT/OFFSET.
+_Q_SCENE_EV_STATS = (
+    "SELECT COUNT(scene_ev), AVG(scene_ev) FROM temp.stats_scope "
+    "WHERE cat = 'photo' AND scene_ev IS NOT NULL"
+)
+_Q_SCENE_EV_MEDIAN = (
+    "SELECT AVG(scene_ev) FROM (SELECT scene_ev FROM temp.stats_scope "
+    "WHERE cat = 'photo' AND scene_ev IS NOT NULL "
+    "ORDER BY scene_ev LIMIT ? OFFSET ?)"
+)
+
+
+def _float_or_none(value: object) -> float | None:
+    """SQLite AVG() result -> float; NULL stays None."""
+    return None if value is None else float(value)
 
 
 def _assert_normalized(path: str) -> None:
@@ -212,6 +236,7 @@ class MediaStatsService:
         db = self._db
         try:
             await db.execute("PRAGMA temp_store = MEMORY")
+            await register_sql_functions(db)
             await self._drop_temp_tables()
             await db.execute(
                 "CREATE TEMP TABLE stats_tz("
@@ -329,6 +354,15 @@ class MediaStatsService:
 
         photo["aperture"] = await self._spec_distribution(APERTURE_SPEC, "photo")
         photo["shutter"] = await self._spec_distribution(SHUTTER_SPEC, "photo")
+
+        # scene EV: buckets + samples / median / mean (all in SQL)
+        scene = await self._spec_distribution(SCENE_EV_SPEC, "photo")
+        n, mean = (await self._rows(_Q_SCENE_EV_STATS))[0]
+        median = None
+        if n:
+            median = (await self._rows(_Q_SCENE_EV_MEDIAN, [2 - n % 2, (n - 1) // 2]))[0][0]
+        scene["summary"] = ev_summary(int(n), _float_or_none(median), _float_or_none(mean))
+        photo["scene_ev"] = scene
         video["duration"] = await self._spec_distribution(DURATION_SPEC, "video")
 
         # 9. cameras

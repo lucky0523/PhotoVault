@@ -8,6 +8,8 @@
   - excludeUnknown（「统计时排除未知项」，总览卡片不传）：先经 applyUnknownPolicy 去掉「未知」、
     按已知项重新计算占比，图表、对话框和表格都用这份结果；说明里注明排除了多少；
   - 排行没有任何可识别项、或排除未知后没有任何已知项时显示空状态说明，不画一张全灰 / 全 0 的图；
+  - emptyWhenNoKnown（场景亮度）：没有任何已知项时不论开关状态都显示 emptyText 空状态，
+    卡片自带的说明行清空，#note 插槽照常显示；
   - allowBytes 时右上角「数量 / 存储」切换图表口径，表格同时列出两种口径；
   - 图表配置在 chartModels.ts（buildDistributionChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
@@ -113,6 +115,8 @@ const props = withDefaults(
     emptyText?: string
     /** 统计时排除「未知」（照片 / 视频卡片；总览卡片不受影响） */
     excludeUnknown?: boolean
+    /** 没有任何已知项时（不论是否排除未知）显示 emptyText 空状态 */
+    emptyWhenNoKnown?: boolean
   }>(),
   {
     xLabel: '',
@@ -122,6 +126,7 @@ const props = withDefaults(
     color: STAT_COLORS.photo,
     emptyText: '暂无数据',
     excludeUnknown: false,
+    emptyWhenNoKnown: false,
   }
 )
 
@@ -146,10 +151,15 @@ const view = computed(() => applyUnknownPolicy(props.dist, props.excludeUnknown)
 /** 排除未知后没有任何已知项（例如全是没有 EXIF 的截图）：和空排行一样显示空状态，不画全 0 的图 */
 const isAllUnknownExcluded = computed(() => view.value.excludedUnknown > 0 && view.value.total === 0)
 
-const isEmpty = computed(() => isEmptyRanking.value || isAllUnknownExcluded.value)
+/** emptyWhenNoKnown 时没有任何已知项（不看开关状态） */
+const isNoKnown = computed(
+  () => props.emptyWhenNoKnown && props.dist.total - props.dist.unknown <= 0
+)
+
+const isEmpty = computed(() => isEmptyRanking.value || isNoKnown.value || isAllUnknownExcluded.value)
 
 const emptyDescription = computed(() =>
-  !isEmptyRanking.value && isAllUnknownExcluded.value
+  !isEmptyRanking.value && !isNoKnown.value && isAllUnknownExcluded.value
     ? `全部 ${view.value.excludedUnknown} ${props.unit}都是未知，已排除`
     : props.emptyText
 )
@@ -157,6 +167,8 @@ const emptyDescription = computed(() =>
 /** 卡片和对话框共用的说明（插槽内容另外原样转发） */
 const noteLines = computed(() => {
   const v = view.value
+  // emptyWhenNoKnown 的空状态文案已经写明张数
+  if (isNoKnown.value) return []
   // 全部为未知时空状态说明已经写明排除了多少，不再重复
   if (isAllUnknownExcluded.value && !isEmptyRanking.value) return []
   if (v.excludedUnknown > 0) return [`已排除未知 ${v.excludedUnknown} ${props.unit}，占比按已知项计算`]

@@ -10,7 +10,9 @@
   - 总览：数字卡片之后是整行宽的「类型占比」「格式占比」（100% 堆积条形图），再下面是拍摄趋势；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
   - 卡片由 PHOTO_CARDS / VIDEO_CARDS 配置驱动，只渲染响应里存在且 kind 一致的 key
-    （服务端以后新增 key 或 kind 时，旧前端不会误渲染）。
+    （服务端以后新增 key 或 kind 时，旧前端不会误渲染）；
+  - 「场景亮度（EV100）」卡片说明里的汇总数字（中位数 / 平均 / 有效 / 无曝光数据）取自原始分布，
+    不受「统计时排除未知项」影响。
 -->
 <template>
   <div class="pv-page--fill stats-page">
@@ -181,11 +183,12 @@
                 :table-variant="card.config.kind === 'ranking' ? 'ranking' : 'distribution'"
                 :exclude-unknown="scope.excludeUnknown"
                 :color="STAT_COLORS.photo"
-                :empty-text="rankingEmptyText(card.config, card.dist)"
+                :empty-text="cardEmptyText(card.config, card.dist)"
+                :empty-when-no-known="card.config.emptyWhenNoKnown"
                 :dist="card.dist"
               >
-                <template v-if="photoNote(card.config.key, card.dist)" #note>
-                  {{ photoNote(card.config.key, card.dist) }}
+                <template v-if="photoNotes(card.config.key, card.dist).length > 0" #note>
+                  <div v-for="line in photoNotes(card.config.key, card.dist)" :key="line">{{ line }}</div>
                 </template>
               </StatChartCard>
             </div>
@@ -237,7 +240,7 @@ import DirectoryTreeSelect from '@/components/DirectoryTreeSelect.vue'
 import StatChartCard from '@/components/stats/StatChartCard.vue'
 import StatTrendCard from '@/components/stats/StatTrendCard.vue'
 import { STAT_COLORS } from '@/components/stats/chartSetup'
-import { formatBytes } from '@/components/stats/format'
+import { formatBytes, formatEv } from '@/components/stats/format'
 import { getMediaStats } from '@/api/stats'
 import type { Distribution, MediaStatsParams, MediaStatsResponse } from '@/api/stats'
 
@@ -253,6 +256,8 @@ interface CardConfig {
   unit: string
   /** 排行为空时说明里的名词 */
   noun?: string
+  /** 没有任何已知项时显示卡片空状态（场景亮度） */
+  emptyWhenNoKnown?: boolean
 }
 
 const PHOTO_CARDS: CardConfig[] = [
@@ -262,6 +267,7 @@ const PHOTO_CARDS: CardConfig[] = [
   { key: 'focal_length', kind: 'distribution', chart: 'bar', title: '焦段分布（35mm 等效）', xLabel: '等效焦距', yLabel: '照片数', unit: '张' },
   { key: 'aperture', kind: 'distribution', chart: 'bar', title: '光圈分布', xLabel: '光圈', yLabel: '照片数', unit: '张' },
   { key: 'shutter', kind: 'distribution', chart: 'bar', title: '快门分布', xLabel: '快门速度', yLabel: '照片数', unit: '张' },
+  { key: 'scene_ev', kind: 'distribution', chart: 'bar', title: '场景亮度（EV100）', xLabel: 'EV100', yLabel: '照片数', unit: '张', emptyWhenNoKnown: true },
   { key: 'camera', kind: 'ranking', chart: 'hbar', title: '机身排行', xLabel: '照片数', yLabel: '机身', unit: '张', noun: '机身' },
   { key: 'lens', kind: 'ranking', chart: 'hbar', title: '镜头排行', xLabel: '照片数', yLabel: '镜头', unit: '张', noun: '镜头' },
 ]
@@ -496,14 +502,30 @@ function rankingEmptyText(config: CardConfig, dist: Distribution): string {
   return `没有记录${config.noun ?? ''}信息（未知 ${dist.unknown} ${config.unit}）`
 }
 
-function photoNote(key: string, dist: Distribution): string {
+function cardEmptyText(config: CardConfig, dist: Distribution): string {
+  if (config.key === 'scene_ev') {
+    return `没有可计算场景亮度的照片（无曝光数据 ${dist.unknown.toLocaleString()} 张）`
+  }
+  return rankingEmptyText(config, dist)
+}
+
+/** 照片卡片的说明行；scene_ev 的汇总取原始 dist，不受「统计时排除未知项」影响 */
+function photoNotes(key: string, dist: Distribution): string[] {
   if (key === 'focal_length') {
     const byExif = dist.meta?.by_exif ?? 0
     const byDerived = dist.meta?.by_derived ?? 0
-    return `EXIF 等效焦距 ${byExif} 张 / 由裁切系数换算 ${byDerived} 张 / 未知 ${dist.unknown} 张；未记录等效焦距且无法可靠换算的照片计为未知`
+    return [`EXIF 等效焦距 ${byExif} 张 / 由裁切系数换算 ${byDerived} 张 / 未知 ${dist.unknown} 张；未记录等效焦距且无法可靠换算的照片计为未知`]
   }
-  if (key === 'shutter') return '「1/15–1s」档表示 1/30 秒以上、1 秒及以下'
-  return ''
+  if (key === 'shutter') return ['「1/15–1s」档表示 1/30 秒以上、1 秒及以下']
+  if (key === 'scene_ev') {
+    const s = dist.summary
+    return [
+      `中位数 EV100 ${formatEv(s?.median)} · 平均 EV100 ${formatEv(s?.mean)} · 有效 ${(s?.samples ?? 0).toLocaleString()} 张 · 无曝光数据 ${dist.unknown.toLocaleString()} 张`,
+      '场景亮度按 ISO 100 换算（EV100 = log2(N²/t) − log2(ISO/100)，N 为光圈值，t 为快门秒数），缺少 ISO、光圈或快门的照片计为无曝光数据（即「未知」项）',
+      '参考：EV100 约 15 为晴天户外，8–10 为室内照明，≤ 3 为夜景',
+    ]
+  }
+  return []
 }
 
 /** 视频只有 UTC 时间、已按默认时区换算的说明 */

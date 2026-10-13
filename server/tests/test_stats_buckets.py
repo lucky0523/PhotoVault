@@ -21,12 +21,14 @@ from app.services.stats_buckets import (
     DURATION_SPEC,
     FOCAL_SPEC,
     ISO_SPEC,
+    SCENE_EV_SPEC,
     SHUTTER_SPEC,
     Bucket,
     BucketSpec,
     ResolvedTz,
     allocate_shares,
     bucket_case_sql,
+    ev_summary,
     build_ranking,
     build_trends,
     camera_display_name,
@@ -191,6 +193,94 @@ class TestValidateSpec:
                 [Bucket("a", "a", 1, ""), Bucket("b", "b", 1.5, ""), Bucket("c", "c", None, "")],
                 rel_tolerance=0.6,
             ))
+
+    def test_signed_rejects_tolerance(self):
+        with pytest.raises(AssertionError):
+            sb._validate_spec(BucketSpec(
+                "x", "upper_inclusive",
+                (Bucket("a", "a", 1, ""), Bucket("b", "b", None, "")),
+                rel_tolerance=1e-6, signed=True,
+            ))
+
+
+# ---------------------------------------------------------------------------
+# Scene EV spec (scene-ev design §4.2; AC7)
+# ---------------------------------------------------------------------------
+
+# bucket_case_sql output before the ``signed`` field was added.
+_LEGACY_CASE_SQL = {
+    "ISO_SPEC": "CASE WHEN iso IS NULL OR iso <= 0 THEN '__unknown' WHEN iso <= ? THEN 'iso_le_50' WHEN iso <= ? THEN 'iso_51_100' WHEN iso <= ? THEN 'iso_101_200' WHEN iso <= ? THEN 'iso_201_400' WHEN iso <= ? THEN 'iso_401_800' WHEN iso <= ? THEN 'iso_801_1600' WHEN iso <= ? THEN 'iso_1601_3200' WHEN iso <= ? THEN 'iso_3201_6400' WHEN iso <= ? THEN 'iso_6401_12799' ELSE 'iso_ge_12800' END",  # noqa: E501
+    "FOCAL_SPEC": "CASE WHEN focal_35mm IS NULL OR focal_35mm <= 0 THEN '__unknown' WHEN focal_35mm <= ? THEN 'fl_le_16' WHEN focal_35mm <= ? THEN 'fl_17_24' WHEN focal_35mm <= ? THEN 'fl_25_35' WHEN focal_35mm <= ? THEN 'fl_36_50' WHEN focal_35mm <= ? THEN 'fl_51_85' WHEN focal_35mm <= ? THEN 'fl_86_135' WHEN focal_35mm <= ? THEN 'fl_136_200' ELSE 'fl_gt_200' END",  # noqa: E501
+    "APERTURE_SPEC": "CASE WHEN f_number IS NULL OR f_number <= 0 THEN '__unknown' WHEN f_number < ? THEN 'ap_le_1_4' WHEN f_number < ? THEN 'ap_1_8' WHEN f_number < ? THEN 'ap_2' WHEN f_number < ? THEN 'ap_2_8' WHEN f_number < ? THEN 'ap_4' WHEN f_number < ? THEN 'ap_5_6' WHEN f_number < ? THEN 'ap_8' WHEN f_number < ? THEN 'ap_11' ELSE 'ap_16_plus' END",  # noqa: E501
+    "SHUTTER_SPEC": "CASE WHEN exposure_time IS NULL OR exposure_time <= 0 THEN '__unknown' WHEN exposure_time <= ? THEN 'ss_le_1_4000' WHEN exposure_time <= ? THEN 'ss_1_4000_1_2000' WHEN exposure_time <= ? THEN 'ss_1_2000_1_1000' WHEN exposure_time <= ? THEN 'ss_1_1000_1_500' WHEN exposure_time <= ? THEN 'ss_1_500_1_250' WHEN exposure_time <= ? THEN 'ss_1_250_1_125' WHEN exposure_time <= ? THEN 'ss_1_125_1_60' WHEN exposure_time <= ? THEN 'ss_1_60_1_30' WHEN exposure_time <= ? THEN 'ss_1_30_1' ELSE 'ss_gt_1' END",  # noqa: E501
+    "DURATION_SPEC": "CASE WHEN duration_sec IS NULL OR duration_sec <= 0 THEN '__unknown' WHEN duration_sec < ? THEN 'd_lt_10' WHEN duration_sec < ? THEN 'd_10_30' WHEN duration_sec < ? THEN 'd_30_60' WHEN duration_sec < ? THEN 'd_60_180' WHEN duration_sec < ? THEN 'd_180_600' ELSE 'd_ge_600' END",  # noqa: E501
+}
+
+
+class TestSceneEvSpec:
+    def test_boundaries_ac7(self):
+        _check(SCENE_EV_SPEC, {
+            -5.51: "ev_le_m6",
+            -5.5: "ev_m5",
+            3.49: "ev_3",
+            3.5: "ev_4",
+            19.49: "ev_19",
+            19.5: "ev_ge_20",
+            0: "ev_0",
+            -0.4: "ev_0",
+            -3: "ev_m3",
+            None: "__unknown",
+        })
+
+    def test_keys_and_labels(self):
+        buckets = SCENE_EV_SPEC.buckets
+        assert len(buckets) == 27
+        assert [b.key for b in buckets] == (
+            ["ev_le_m6"] + [f"ev_m{k}" for k in range(5, 0, -1)]
+            + [f"ev_{k}" for k in range(0, 20)] + ["ev_ge_20"]
+        )
+        assert [b.label for b in buckets] == (
+            ["≤−6"] + [f"−{k}" for k in range(5, 0, -1)]
+            + [str(k) for k in range(0, 20)] + ["≥20"]
+        )
+        assert SCENE_EV_SPEC.signed is True
+        assert SCENE_EV_SPEC.mode == "lower_inclusive"
+        assert SCENE_EV_SPEC.column == "scene_ev"
+
+    def test_ranges_are_contiguous(self):
+        ranges = [b.range for b in SCENE_EV_SPEC.buckets]
+        assert all(ranges)
+        assert ranges[0] == "(−∞, −5.5)"
+        assert ranges[1] == "[−5.5, −4.5)"
+        assert ranges[-1] == "[19.5, ∞)"
+        for prev, nxt in zip(ranges, ranges[1:]):
+            right = prev[1:-1].split(", ")[1]
+            left = nxt[1:-1].split(", ")[0]
+            assert right == left, (prev, nxt)
+
+    def test_text_helpers(self):
+        assert sb._ev_text(-5.5) == "−5.5"
+        assert sb._ev_text(0) == "0"
+        assert sb._ev_text(19.5) == "19.5"
+        assert sb._ev_key(-5) == "ev_m5"
+        assert sb._ev_key(0) == "ev_0"
+        assert sb._ev_key(19) == "ev_19"
+
+    def test_signed_unknown_condition(self):
+        case_sql, params = bucket_case_sql(SCENE_EV_SPEC)
+        assert case_sql.startswith("CASE WHEN scene_ev IS NULL THEN '__unknown'")
+        assert "<= 0" not in case_sql
+        assert len(params) == 26
+
+    @pytest.mark.parametrize("name", sorted(_LEGACY_CASE_SQL))
+    def test_existing_specs_sql_unchanged(self, name):
+        assert bucket_case_sql(getattr(sb, name))[0] == _LEGACY_CASE_SQL[name]
+
+    def test_ev_summary(self):
+        assert ev_summary(0, 1.0, 2.0) == {"samples": 0, "median": None, "mean": None}
+        assert ev_summary(3, 12.25, 9.123456789) == {
+            "samples": 3, "median": 12.25, "mean": 9.123456789,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -24,3 +24,11 @@ export function formatShare(share: number): string {
   if (!Number.isFinite(share)) return '0.0%'
   return `${share.toFixed(1)}%`
 }
+
+/** 场景亮度 EV100 → 「12.5」「−3.2」（1 位小数，负号用 U+2212，与桶标签一致）；无值时为「—」。 */
+export function formatEv(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—'
+  let text = v.toFixed(1)
+  if (text === '-0.0') text = '0.0'
+  return text.startsWith('-') ? `\u2212${text.slice(1)}` : text
+}

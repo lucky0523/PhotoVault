@@ -5,6 +5,8 @@ Single source of truth for:
 - the five numeric bucket specs (ISO, 35mm-equivalent focal length, aperture,
   shutter, video duration) and the SQL ``CASE`` expression that assigns a row to
   a bucket (:func:`bucket_case_sql`);
+- the signed scene EV spec (:data:`SCENE_EV_SPEC`) and its ``summary`` dict
+  (:func:`ev_summary`);
 - the fixed weekday / hour enumerations;
 - format grouping (:data:`FORMAT_GROUPS`, :func:`format_group`);
 - integer per-mille share allocation (:func:`allocate_shares`);
@@ -60,6 +62,7 @@ class BucketSpec:
     mode: Literal["upper_inclusive", "lower_inclusive"]   # (lo, hi] or [lo, hi)
     buckets: tuple[Bucket, ...]
     rel_tolerance: float = 0.0   # bound threshold = upper * (1 + rel_tolerance)
+    signed: bool = False     # True: 0 and negatives are valid values, only NULL is unknown
 
 
 def _validate_spec(spec: BucketSpec) -> BucketSpec:
@@ -86,6 +89,8 @@ def _validate_spec(spec: BucketSpec) -> BucketSpec:
         raise AssertionError(f"{spec.column}: unknown mode {spec.mode!r}")
     if spec.rel_tolerance < 0:
         raise AssertionError(f"{spec.column}: rel_tolerance must be >= 0")
+    if spec.signed and spec.rel_tolerance != 0:
+        raise AssertionError(f"{spec.column}: rel_tolerance is not allowed with signed")
     if spec.rel_tolerance:
         if spec.mode != "upper_inclusive":
             raise AssertionError(
@@ -180,20 +185,65 @@ SHUTTER_SPEC = _validate_spec(BucketSpec(
     ),
 ))
 
+SCENE_EV_MIN, SCENE_EV_MAX = -6, 20   # end buckets「≤−6」「≥20」
+
+
+def _ev_text(x: float) -> str:
+    """-5.5 -> "−5.5", 0 -> "0", 19.5 -> "19.5"; minus sign is U+2212."""
+    return f"{x:g}".replace("-", "\u2212")
+
+
+def _ev_key(k: int) -> str:
+    """-5 -> "ev_m5", 0 -> "ev_0", 19 -> "ev_19"."""
+    return f"ev_m{-k}" if k < 0 else f"ev_{k}"
+
+
+# Scene EV rounded to the nearest integer: bucket k covers [k − 0.5, k + 0.5).
+SCENE_EV_SPEC = _validate_spec(BucketSpec(
+    column="scene_ev",
+    mode="lower_inclusive",
+    signed=True,
+    buckets=(
+        Bucket("ev_le_m6", "≤−6", -5.5, "(−∞, −5.5)"),
+        *(
+            Bucket(_ev_key(k), _ev_text(k), k + 0.5,
+                   f"[{_ev_text(k - 0.5)}, {_ev_text(k + 0.5)})")
+            for k in range(SCENE_EV_MIN + 1, SCENE_EV_MAX)
+        ),
+        Bucket("ev_ge_20", "≥20", None, "[19.5, ∞)"),
+    ),
+))
+
+
+def ev_summary(
+    samples: int, median: float | None, mean: float | None
+) -> dict[str, int | float | None]:
+    """``{"samples", "median", "mean"}`` of ``photo.scene_ev`` (not rounded).
+
+    The only constructor of the ``summary`` dict; ``samples == 0`` forces
+    median / mean to None.
+    """
+    if samples == 0:
+        median = mean = None
+    return {"samples": samples, "median": median, "mean": mean}
+
+
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 def bucket_case_sql(spec: BucketSpec) -> tuple[str, list[float]]:
     """Build the ``CASE`` expression assigning ``spec.column`` to a bucket key.
 
-    NULL or <= 0 -> ``'__unknown'``. Thresholds are bound parameters (value
+    NULL or <= 0 -> ``'__unknown'``; with ``spec.signed`` only NULL is unknown
+    (0 and negatives are valid values). Thresholds are bound parameters (value
     ``upper * (1 + rel_tolerance)``); keys and the column name are code constants.
     """
     if not _IDENT_RE.match(spec.column):
         raise ValueError(f"invalid column name {spec.column!r}")
     col = spec.column
     op = "<=" if spec.mode == "upper_inclusive" else "<"
-    parts = [f"CASE WHEN {col} IS NULL OR {col} <= 0 THEN '{UNKNOWN_KEY}'"]
+    unknown_cond = f"{col} IS NULL" if spec.signed else f"{col} IS NULL OR {col} <= 0"
+    parts = [f"CASE WHEN {unknown_cond} THEN '{UNKNOWN_KEY}'"]
     params: list[float] = []
     for bucket in spec.buckets[:-1]:
         parts.append(f"WHEN {col} {op} ? THEN '{bucket.key}'")

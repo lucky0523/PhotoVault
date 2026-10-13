@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+import re
 import sqlite3
+import statistics
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -25,11 +28,13 @@ from app.core.config import get_settings, reset_settings
 from app.core.database import get_db, init_db
 from app.services import media_stats_service
 from app.services.auth_service import AuthService
+from app.services.exposure_value import SQL_EV100_FUNCTION, ev100_value
+from app.services.stats_buckets import SCENE_EV_SPEC, bucket_case_sql
 
 URL = "/stats/media"
 
 PHOTO_KEYS = {
-    "weekday", "hour", "iso", "focal_length", "aperture", "shutter",
+    "weekday", "hour", "iso", "focal_length", "aperture", "shutter", "scene_ev",
     "camera", "lens", "monthly", "yearly",
 }
 VIDEO_KEYS = {"weekday", "hour", "duration", "camera", "monthly", "yearly"}
@@ -90,7 +95,7 @@ async def db_path(tmp_path):
     reset_settings()
 
 
-def _make_app(db_path: str) -> FastAPI:
+def _make_app(db_path: str, on_connect=None) -> FastAPI:
     app = FastAPI()
 
     async def _override_get_db():
@@ -98,6 +103,8 @@ def _make_app(db_path: str) -> FastAPI:
         await db.execute("PRAGMA foreign_keys=ON;")
         db.row_factory = aiosqlite.Row
         try:
+            if on_connect:
+                await on_connect(db)
             yield db
         finally:
             await db.close()
@@ -744,7 +751,7 @@ class TestResponseStructure:
         sizes = {k: len(v["buckets"]) for k, v in data["photo"].items()}
         assert sizes == {
             "weekday": 7, "hour": 24, "iso": 10, "focal_length": 8, "aperture": 9,
-            "shutter": 10, "camera": 0, "lens": 0, "monthly": 0, "yearly": 0,
+            "shutter": 10, "scene_ev": 27, "camera": 0, "lens": 0, "monthly": 0, "yearly": 0,
         }
         vsizes = {k: len(v["buckets"]) for k, v in data["video"].items()}
         assert vsizes == {
@@ -801,6 +808,11 @@ class TestResponseStructure:
         assert "meta" not in data["photo"]["iso"]
         assert "meta" in data["photo"]["weekday"]
         assert "range" in data["photo"]["iso"]["buckets"][0]
+        # Only photo.scene_ev carries a summary.
+        assert all("summary" not in d for k, d in data["photo"].items() if k != "scene_ev")
+        assert all("summary" not in d for d in data["video"].values())
+        assert "summary" not in data["overview"]["categories"]
+        assert "summary" in data["photo"]["scene_ev"]
 
     async def test_ffprobe_missing_notice(self, client, db_path):
         uid, t = await _create_user(db_path, "alice")
@@ -852,3 +864,181 @@ class TestResponseStructure:
                                   True, 10, 2100)
             cursor = await db.execute("SELECT name FROM sqlite_temp_master WHERE type = 'table'")
             assert await cursor.fetchall() == []
+
+
+# ---------------------------------------------------------------------------
+# Scene EV (scene-ev design §4.3, §7; AC4–AC12)
+# ---------------------------------------------------------------------------
+
+# (iso, f_number, exposure_time) -> scene EV 13, 4, 12, 17, −11, 22 (requirements AC4).
+_AC4_PHOTOS = [
+    (100, 8, 1 / 128),
+    (400, 4, 1 / 4),
+    (200, 8, 1 / 128),
+    (50, 16, 1 / 256),
+    (6400, 1, 32),
+    (25, 32, 1 / 1024),
+]
+_AC4_COUNTS = {"ev_13": 1, "ev_4": 1, "ev_12": 1, "ev_17": 1, "ev_le_m6": 1, "ev_ge_20": 1}
+
+# Missing or illegal inputs (requirements AC5).
+_AC5_BAD = [
+    (None, 8, 1 / 128),
+    (100, None, 1 / 128),
+    (100, 8, None),
+    (0, 8, 1 / 128),
+    (100, 0, 1 / 128),
+    (100, 8, 0),
+    (100, 8, -1),
+]
+
+
+async def _insert_exposures(db_path, uid, username, triples, prefix="D/ev", ext="jpg"):
+    for i, (iso, f, t) in enumerate(triples):
+        await _insert(db_path, uid, username, f"{prefix}{i}.{ext}",
+                      iso=iso, f_number=f, exposure_time=t)
+
+
+def _expected_key(x: float) -> str:
+    return next(b.key for b in SCENE_EV_SPEC.buckets if b.upper is None or x < b.upper)
+
+
+class TestSceneEv:
+    def _assert_ac4(self, dist, *, unknown=0):
+        assert dist["kind"] == "distribution"
+        counts = _counts(dist)
+        assert len(counts) == 27
+        assert {k: v for k, v in counts.items() if v} == _AC4_COUNTS
+        assert dist["unknown"] == unknown
+        assert dist["total"] == 6 + unknown
+        summary = dist["summary"]
+        assert set(summary) == {"samples", "median", "mean"}
+        assert summary["samples"] == 6
+        assert summary["median"] == pytest.approx(12.5, abs=1e-9)
+        assert summary["mean"] == pytest.approx(9.5, abs=1e-9)
+        assert summary["samples"] + dist["unknown"] == dist["total"]
+        assert summary["samples"] == sum(counts.values())
+
+    async def test_buckets_and_summary_ac4(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC4_PHOTOS)
+        dist = (await _get(client, t))["photo"]["scene_ev"]
+        self._assert_ac4(dist)
+        assert all("range" in b for b in dist["buckets"])
+        assert dist["buckets"][0]["label"] == "≤−6"
+        assert dist["buckets"][-1]["label"] == "≥20"
+
+    async def test_missing_or_illegal_is_unknown_ac5(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC4_PHOTOS)
+        await _insert_exposures(db_path, uid, "alice", _AC5_BAD, prefix="D/bad")
+        dist = (await _get(client, t))["photo"]["scene_ev"]
+        self._assert_ac4(dist, unknown=7)
+        assert dist["total"] == 13
+
+    async def test_video_and_other_excluded_ac6(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC4_PHOTOS)
+        await _insert(db_path, uid, "alice", "D/v.mp4", iso=100, f_number=8, exposure_time=1 / 128)
+        await _insert(db_path, uid, "alice", "D/n.txt", iso=100, f_number=8, exposure_time=1 / 128)
+        data = await _get(client, t)
+        assert _counts(data["overview"]["categories"]) == {"photo": 6, "video": 1, "other": 1}
+        self._assert_ac4(data["photo"]["scene_ev"])
+        assert "scene_ev" not in data["video"]
+
+    async def test_no_valid_samples_ac8(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC5_BAD[:3], prefix="Bad/x")
+        dist = (await _get(client, t, path="Bad"))["photo"]["scene_ev"]
+        assert dist["total"] == 3
+        assert dist["unknown"] == 3
+        summary = dist["summary"]
+        assert "median" in summary and "mean" in summary
+        assert summary["samples"] == 0
+        assert summary["median"] is None
+        assert summary["mean"] is None
+
+        empty = (await _get(client, t, path="NoSuch"))["photo"]["scene_ev"]
+        assert empty["total"] == 0 and empty["unknown"] == 0
+        assert empty["summary"] == {"samples": 0, "median": None, "mean": None}
+
+    async def test_scope_and_isolation_ac9(self, client, db_path):
+        alice, ta = await _create_user(db_path, "alice")
+        bob, _ = await _create_user(db_path, "bob")
+        await _insert_exposures(db_path, alice, "alice", _AC4_PHOTOS, prefix="Cam/ev")
+        good = (100, 8, 1 / 128)
+        await _insert_exposures(db_path, bob, "bob", [good], prefix="Cam/bob")
+        await _insert(db_path, alice, "alice", "Cam/deleted.jpg", iso=100, f_number=8,
+                      exposure_time=1 / 128, deleted_at="2024-01-01T00:00:00")
+        await _insert_exposures(db_path, alice, "alice", [good], prefix="Other/out")
+        await _insert_exposures(db_path, alice, "alice", [good], prefix="Cam/Sub/deep")
+
+        direct = (await _get(client, ta, path="Cam", recursive="false"))["photo"]["scene_ev"]
+        self._assert_ac4(direct)
+
+        recursive = (await _get(client, ta, path="Cam"))["photo"]["scene_ev"]
+        assert recursive["summary"]["samples"] == 7
+        assert _counts(recursive)["ev_13"] == 2
+
+    async def test_sql_matches_pure_function_ac10(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        rng = random.Random(20261012)
+        triples = [
+            (rng.choice([50, 100, 200, 400, 800, 1600, 3200, 6400, 12800]),
+             round(rng.uniform(1.0, 22.0), 2),
+             2 ** rng.uniform(-13, 5))
+            for _ in range(30)
+        ]
+        await _insert_exposures(db_path, uid, "alice", triples)
+        dist = (await _get(client, t))["photo"]["scene_ev"]
+
+        values = [ev100_value(*x) for x in triples]
+        assert all(v is not None for v in values)
+        expected_counts: dict[str, int] = {}
+        for v in values:
+            key = _expected_key(v)
+            expected_counts[key] = expected_counts.get(key, 0) + 1
+        assert len(expected_counts) >= 5
+        assert {k: c for k, c in _counts(dist).items() if c} == expected_counts
+        assert dist["unknown"] == 0
+        assert dist["summary"]["samples"] == len(values)
+        assert dist["summary"]["median"] == pytest.approx(statistics.median(values), abs=1e-9)
+        assert dist["summary"]["mean"] == pytest.approx(statistics.fmean(values), abs=1e-9)
+
+    async def test_odd_sample_count_median(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC4_PHOTOS[:3])  # 13, 4, 12
+        summary = (await _get(client, t))["photo"]["scene_ev"]["summary"]
+        assert summary["samples"] == 3
+        assert summary["median"] == pytest.approx(12, abs=1e-9)
+        assert summary["mean"] == pytest.approx(29 / 3, abs=1e-9)
+
+    async def test_scene_ev_without_sqlite_math_functions(self, db_path):
+        """AC12: SQLite math functions are never used (they raise here)."""
+        def _no_math(*_):
+            raise RuntimeError("math functions unavailable")
+
+        async def _disable_math(db):
+            for name, n in (("log2", 1), ("log", 1), ("log", 2), ("ln", 1), ("log10", 1),
+                            ("pow", 2), ("power", 2), ("exp", 1)):
+                await db.create_function(name, n, _no_math)
+
+        uid, t = await _create_user(db_path, "alice")
+        await _insert_exposures(db_path, uid, "alice", _AC4_PHOTOS)
+        transport = ASGITransport(app=_make_app(db_path, on_connect=_disable_math))
+        async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+            resp = await c.get(URL, headers=_auth(t))
+        assert resp.status_code == 200, resp.text
+        self._assert_ac4(resp.json()["photo"]["scene_ev"])
+
+    def test_scene_ev_sql_has_no_math_functions(self):
+        pattern = re.compile(r"\b(log2|log10|log|ln|pow|power|exp)\s*\(", re.I)
+        sqls = [media_stats_service._CREATE_SCOPE_SQL, bucket_case_sql(SCENE_EV_SPEC)[0]]
+        sqls += [
+            v for k, v in vars(media_stats_service).items()
+            if k.startswith("_Q_") and isinstance(v, str)
+        ]
+        assert len(sqls) >= 4
+        for sql in sqls:
+            assert not pattern.search(sql), sql
+        assert SQL_EV100_FUNCTION in media_stats_service._CREATE_SCOPE_SQL

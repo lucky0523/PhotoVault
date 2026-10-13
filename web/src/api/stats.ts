@@ -13,7 +13,7 @@ export interface StatBucket {
   count: number
   /** 百分数，保留 1 位小数（62.5 表示 62.5%） */
   share: number
-  /** 区间说明，只有 iso / focal_length / aperture / shutter / duration 有 */
+  /** 区间说明，只有 iso / focal_length / aperture / shutter / scene_ev / duration 有 */
   range?: string
   /** 只有 overview.categories / formats（含 children）有 */
   bytes?: number
@@ -37,6 +37,8 @@ export interface Distribution {
   total_bytes?: number
   /** weekday / hour：{ local, utc_converted }；focal_length：{ by_exif, by_derived } */
   meta?: Record<string, number>
+  /** 只有 photo.scene_ev 有：有效样本数、中位数 / 平均场景亮度 EV100（= ev − log2(ISO/100)，未取整；无样本时为 null） */
+  summary?: { samples: number; median: number | null; mean: number | null }
 }
 
 export interface StatsScope {

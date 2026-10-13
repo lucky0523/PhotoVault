@@ -14,7 +14,7 @@ import asyncio
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -70,6 +70,7 @@ class Distribution(BaseModel):
     total: int                     # = Σ buckets.count + (other or 0) + unknown
     total_bytes: Optional[int] = None  # overview.categories / formats only
     meta: Optional[dict[str, int]] = None
+    summary: Optional[dict[str, Union[int, float, None]]] = None  # photo.scene_ev only: samples / median / mean
 
 
 class StatsScope(BaseModel):
