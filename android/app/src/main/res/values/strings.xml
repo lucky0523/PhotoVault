@@ -34,7 +34,8 @@
     <!-- Dual endpoint (public / LAN) -->
     <string name="validation_address_required_any">Enter a public address or a LAN address.</string>
     <string name="login_public_address_hint">Public address</string>
-    <string name="login_lan_address_hint">LAN address (optional)</string>
+    <string name="login_lan_address_hint">LAN address</string>
+    <string name="login_address_note">Enter a public address, a LAN address, or both. You can also scan the server QR code from the web console.</string>
     <string name="login_lan_address_supporting">Connects directly to the NAS at home. An IP is recommended, e.g. 192.168.1.10:8000</string>
     <string name="validation_address_too_long">Address is too long (max 255 characters).</string>
     <string name="validation_address_bad_scheme">Only http:// or https:// is supported.</string>

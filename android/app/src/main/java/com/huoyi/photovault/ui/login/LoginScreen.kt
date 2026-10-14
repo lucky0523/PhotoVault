@@ -340,6 +340,15 @@ fun LoginScreen(
                                 )
                             }
 
+                            // Form-level note: the two address fields are peers (at least
+                            // one required), and the QR shortcut lives on the public field.
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = stringResource(R.string.login_address_note),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.8f)
+                            )
+
                             Spacer(modifier = Modifier.height(14.dp))
 
                             // One notice slot for both failure kinds: a failed login
@@ -419,13 +428,10 @@ fun LoginScreen(
                                         )
                                     }
                                 },
-                                supportingText = {
-                                    AddressSupportingText(
-                                        error = uiState.serverAddressError,
-                                        testResult = uiState.publicTestResult,
-                                        default = "可扫描 Web 端的服务器二维码自动填写"
-                                    )
-                                },
+                                supportingText = addressSupportingText(
+                                    error = uiState.serverAddressError,
+                                    testResult = uiState.publicTestResult
+                                ),
                                 keyboardOptions = KeyboardOptions(
                                     keyboardType = KeyboardType.Uri,
                                     imeAction = ImeAction.Next
@@ -438,7 +444,7 @@ fun LoginScreen(
 
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            // Optional LAN address: direct connection to the NAS at home.
+                            // LAN address: peer of the public address (at least one required).
                             OutlinedTextField(
                                 value = uiState.lanAddress,
                                 onValueChange = viewModel::onLanAddressChange,
@@ -457,13 +463,10 @@ fun LoginScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                 },
-                                supportingText = {
-                                    AddressSupportingText(
-                                        error = uiState.lanAddressError,
-                                        testResult = uiState.lanTestResult,
-                                        default = stringResource(R.string.login_lan_address_supporting)
-                                    )
-                                },
+                                supportingText = addressSupportingText(
+                                    error = uiState.lanAddressError,
+                                    testResult = uiState.lanTestResult
+                                ),
                                 keyboardOptions = KeyboardOptions(
                                     keyboardType = KeyboardType.Uri,
                                     imeAction = ImeAction.Next
@@ -828,23 +831,27 @@ private fun photoWallScrim(dark: Boolean): Brush = if (dark) {
 // ---------------------------------------------------------------------------
 
 /**
- * Supporting line under an address field. Priority: validation error, then this
- * field's own connection-test result, then the default hint.
+ * Supporting slot for an address field. Priority: validation error, then this
+ * field's own connection-test result. Returns null when there is nothing to show,
+ * so the field reserves no supporting-text space (the general hint sits under the
+ * section header instead).
  */
-@Composable
-private fun AddressSupportingText(
+private fun addressSupportingText(
     error: String?,
-    testResult: TestConnectionResult?,
-    default: String
-) {
-    val (text, color) = when {
-        error != null -> error to MaterialTheme.colorScheme.error
-        testResult is TestConnectionResult.Success ->
-            stringResource(R.string.connection_status_success) to PhotoVaultColors.SyncGreen
-        testResult is TestConnectionResult.Failure -> testResult.message to MaterialTheme.colorScheme.error
-        else -> default to Color.White
+    testResult: TestConnectionResult?
+): (@Composable () -> Unit)? {
+    if (error == null && testResult == null) return null
+    return {
+        when {
+            error != null -> Text(text = error, color = MaterialTheme.colorScheme.error)
+            testResult is TestConnectionResult.Success -> Text(
+                text = stringResource(R.string.connection_status_success),
+                color = PhotoVaultColors.SyncGreen
+            )
+            testResult is TestConnectionResult.Failure ->
+                Text(text = testResult.message, color = MaterialTheme.colorScheme.error)
+        }
     }
-    Text(text = text, color = color)
 }
 
 /** Label, high-contrast colours, and glyph for one [ConnectionStatusPill] state. */

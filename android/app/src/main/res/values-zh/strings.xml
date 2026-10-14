@@ -34,7 +34,8 @@
     <!-- 双地址（公网 / 局域网） -->
     <string name="validation_address_required_any">请至少填写公网地址或局域网地址</string>
     <string name="login_public_address_hint">公网地址</string>
-    <string name="login_lan_address_hint">局域网地址（可选）</string>
+    <string name="login_lan_address_hint">局域网地址</string>
+    <string name="login_address_note">公网地址和局域网地址至少填写一个，可扫描 Web 端的服务器二维码自动填写</string>
     <string name="login_lan_address_supporting">在家时直连 NAS，建议填写 IP，如 192.168.1.10:8000</string>
     <string name="validation_address_too_long">地址过长（最多 255 个字符）</string>
     <string name="validation_address_bad_scheme">仅支持 http:// 或 https://</string>
