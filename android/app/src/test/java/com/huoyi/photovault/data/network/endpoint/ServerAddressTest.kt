@@ -65,6 +65,26 @@ class ServerAddressTest {
         assertEquals(AddressError.BAD_PORT, err("http://[fd00::10]:99999"))
     }
 
+    // ---- PORT_REGEX regression (qr-dual-address design §3.3) ----
+
+    @Test
+    fun `port-less ipv6 with a single zero group is not read as a port`() {
+        assertEquals("http://[2001:db8::1]", ok("http://[2001:0db8::1]"))
+    }
+
+    @Test
+    fun `port-less teredo ipv6 passes`() {
+        assertEquals(
+            "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]",
+            ok("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]")
+        )
+    }
+
+    @Test
+    fun `ipv6 with out of range port is still BAD_PORT`() {
+        assertEquals(AddressError.BAD_PORT, err("http://[fd00::10]:99999"))
+    }
+
     @Test
     fun `path query and userinfo are rejected`() {
         assertEquals(AddressError.HAS_EXTRA, err("http://a/path"))

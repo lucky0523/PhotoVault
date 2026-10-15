@@ -154,12 +154,11 @@ fun LoginScreen(
         Unit
     }
 
-    // QR scanner: the web console shows a server QR code that encodes the full
-    // server URL (e.g. http://192.168.1.100:8000). Scanning it fills the field.
+    // QR scanner: the web console's server QR carries both addresses (server QR protocol
+    // v1, see ServerQrCode and protocol/README.md); legacy single-URL codes are still
+    // accepted. The result goes only through LoginViewModel.onQrScanned.
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.trim()?.takeIf { it.isNotEmpty() }?.let { scanned ->
-            viewModel.onServerAddressChange(scanned)
-        }
+        result.contents?.trim()?.takeIf { it.isNotEmpty() }?.let { viewModel.onQrScanned(it) }
     }
     val launchScanner = {
         scanLauncher.launch(
@@ -341,7 +340,8 @@ fun LoginScreen(
                             }
 
                             // Form-level note: the two address fields are peers (at least
-                            // one required), and the QR shortcut lives on the public field.
+                            // one required). The QR shortcut lives on the public field but
+                            // fills both fields at once (ServerQrCode, protocol/README.md).
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = stringResource(R.string.login_address_note),

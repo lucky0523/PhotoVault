@@ -7,6 +7,9 @@ import java.security.MessageDigest
 /** Reason a user-entered server address was rejected (design §3.1). Text mapping lives in the UI layer. */
 enum class AddressError { TOO_LONG, BAD_SCHEME, INVALID, BAD_PORT, HAS_EXTRA, SAME_AS_OTHER }
 
+/** Result of [ServerAddress.hostScope] (qr-dual-address design §3.4). */
+enum class HostScope { PUBLIC, LAN, LOOPBACK }
+
 /** Result of [ServerAddress.validate]. */
 sealed class ValidationResult {
     /** Valid input. [canonical] is `scheme://host[:port]` (no trailing `/`), or null when the input was blank (= clear). */
@@ -29,8 +32,13 @@ object ServerAddress {
     private const val FINGERPRINT_PREFIX = "photovault-instance:"
 
     // Rule 5: extract the explicit port before HttpUrl parsing so "http://a:70000"
-    // is reported as BAD_PORT instead of INVALID.
-    private val PORT_REGEX = Regex("^[A-Za-z][A-Za-z0-9+.-]*://(\\[[^\\]]+\\]|[^/:?#@]+):(\\d+)")
+    // is reported as BAD_PORT instead of INVALID. The second branch excludes '[' so a
+    // port-less IPv6 literal such as "http://[2001:0db8::1]" cannot backtrack into it
+    // and be misread as host "[2001" + port "0" (qr-dual-address design §3.3).
+    private val PORT_REGEX = Regex("^[A-Za-z][A-Za-z0-9+.-]*://(\\[[^\\]]+\\]|[^/:?#@\\[]+):(\\d+)")
+
+    // Whole-string match only (Regex.matches), never find().
+    private val IPV4_REGEX = Regex("""\d{1,3}(\.\d{1,3}){3}""")
 
     /**
      * Legacy normalisation, byte-for-byte identical to the five historical `normalize`
@@ -101,6 +109,55 @@ object ServerAddress {
         val host = if (url.host.contains(':')) "[${url.host}]" else url.host
         val port = if (url.port == HttpUrl.defaultPort(url.scheme)) "" else ":${url.port}"
         return "${url.scheme}://$host$port"
+    }
+
+    /**
+     * Host scope of a canonical address (qr-dual-address design §3.4); shares the
+     * `host_classification` vectors with the server's `host_scope` (服务器二维码协议 v1，
+     * 见 protocol/README.md 与 protocol/server-qr-v1.json). Pure: never touches DNS
+     * (no InetAddress). Unparseable input is [HostScope.PUBLIC].
+     */
+    fun hostScope(canonical: String): HostScope {
+        val host = canonical.toHttpUrlOrNull()?.host ?: return HostScope.PUBLIC
+        if (host.contains(':')) return ipv6Scope(host)
+        if (IPV4_REGEX.matches(host)) return ipv4Scope(host)
+        // Android accepts FQDN spelling ("nas.local."); drop one trailing dot first.
+        val name = host.removeSuffix(".")
+        return when {
+            name == "localhost" || name.endsWith(".localhost") -> HostScope.LOOPBACK
+            name.endsWith(".local") -> HostScope.LAN
+            else -> HostScope.PUBLIC
+        }
+    }
+
+    private fun ipv4Scope(host: String): HostScope {
+        val octets = host.split('.').map { it.toInt() }
+        if (octets.any { it > 255 }) return HostScope.PUBLIC
+        val a = octets[0]
+        val b = octets[1]
+        return when {
+            a == 0 || a == 127 -> HostScope.LOOPBACK
+            a == 10 -> HostScope.LAN
+            a == 172 && b in 16..31 -> HostScope.LAN
+            a == 192 && b == 168 -> HostScope.LAN
+            a == 169 && b == 254 -> HostScope.LAN
+            else -> HostScope.PUBLIC
+        }
+    }
+
+    /** OkHttp hosts are already canonical and never IPv4-mapped, so the first group decides. */
+    private fun ipv6Scope(host: String): HostScope {
+        if (host == "::1" || host == "::") return HostScope.LOOPBACK
+        val first = if (host.startsWith("::")) {
+            0
+        } else {
+            host.substringBefore(':').toIntOrNull(16) ?: return HostScope.PUBLIC
+        }
+        return when {
+            (first and 0xffc0) == 0xfe80 -> HostScope.LAN
+            (first and 0xfe00) == 0xfc00 -> HostScope.LAN
+            else -> HostScope.PUBLIC
+        }
     }
 
     /** First 32 lowercase hex chars of SHA-256("photovault-instance:" + instanceId); matches the server. */

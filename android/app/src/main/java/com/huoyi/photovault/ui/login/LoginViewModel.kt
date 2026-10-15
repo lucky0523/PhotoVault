@@ -27,8 +27,10 @@ import javax.inject.Inject
 
 /**
  * Login form state. [serverAddress] is the public address field (name kept from the
- * single-address era); [lanAddress] is the optional LAN field. Connection-test results
- * are tracked per field so each one can be shown under its own input.
+ * single-address era); [lanAddress] is the LAN field. The two are peers: at least one
+ * must be filled in, both may be. Scanning the server QR code overwrites both
+ * ([withQrScan]). Connection-test results are tracked per field so each one can be
+ * shown under its own input.
  */
 data class LoginUiState(
     val serverAddress: String = "",
@@ -110,6 +112,21 @@ class LoginViewModel @Inject constructor(
                 publicTestResult = null
             )
         }
+    }
+
+    /**
+     * 扫描服务器二维码的唯一入口（FR-4.7）。空白内容不处理。
+     * 服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json。
+     */
+    fun onQrScanned(raw: String) {
+        if (raw.isBlank()) return
+        val result = ServerQrCode.parse(raw)
+        if (result !is ServerQrParseResult.Success) {
+            // Result type and length only, never the content: it may be another app's
+            // code, e.g. a Wi-Fi config with a password.
+            Log.i(TAG, "Server QR not accepted: ${result::class.simpleName}, length=${raw.length}")
+        }
+        _uiState.update { it.withQrScan(result, context::getString) }
     }
 
     fun onLanAddressChange(value: String) {
