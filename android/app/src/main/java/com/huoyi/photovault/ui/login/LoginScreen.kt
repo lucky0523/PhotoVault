@@ -2,6 +2,7 @@ package com.huoyi.photovault.ui.login
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -78,6 +79,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusDirection
@@ -85,6 +87,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -191,22 +195,13 @@ fun LoginScreen(
         }
     }
 
-    // Pill/banner summary over every tested address: all succeeded → Success,
-    // otherwise the first failing field ("公网：…" before "局域网：…").
-    val publicTargetName = stringResource(R.string.login_target_public)
-    val lanTargetName = stringResource(R.string.login_target_lan)
-    val firstFailure = listOf(
-        publicTargetName to uiState.publicTestResult,
-        lanTargetName to uiState.lanTestResult
-    ).firstNotNullOfOrNull { (name, result) ->
-        (result as? TestConnectionResult.Failure)?.let { name to it.message }
-    }
+    // Pill summary over every tested address: one reachable address is enough to
+    // log in, so any success → Success; only all-failed → Failure. Per-address
+    // outcomes are shown by the pulsing tint on each field (testResultPulse).
+    val testResults = listOfNotNull(uiState.publicTestResult, uiState.lanTestResult)
     val testSummary: TestConnectionResult? = when {
-        firstFailure != null -> TestConnectionResult.Failure(
-            stringResource(R.string.login_test_failed_with_target, firstFailure.first, firstFailure.second)
-        )
-        uiState.publicTestResult != null || uiState.lanTestResult != null -> TestConnectionResult.Success
-        else -> null
+        testResults.any { it is TestConnectionResult.Success } -> TestConnectionResult.Success
+        else -> testResults.firstOrNull { it is TestConnectionResult.Failure }
     }
 
     val dark = isSystemInDarkTheme()
@@ -351,12 +346,10 @@ fun LoginScreen(
 
                             Spacer(modifier = Modifier.height(14.dp))
 
-                            // One notice slot for both failure kinds: a failed login
-                            // and a failed connection test are the same problem class
-                            // from the user's point of view, so they share one banner
-                            // instead of a banner plus a snackbar.
+                            // Banner is for login failures only. Connection-test results
+                            // are already shown by the status pill and under each address
+                            // field, so a test failure does not raise the banner.
                             val notice = uiState.errorMessage
-                                ?: (testSummary as? TestConnectionResult.Failure)?.message
                             // Retained so the text stays put while the banner animates out.
                             var noticeText by remember { mutableStateOf("") }
                             LaunchedEffect(notice) {
@@ -404,6 +397,7 @@ fun LoginScreen(
                                 placeholder = { Text(stringResource(R.string.login_public_address_hint)) },
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .testResultPulse(uiState.publicTestResult, RoundedCornerShape(16.dp))
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -428,10 +422,7 @@ fun LoginScreen(
                                         )
                                     }
                                 },
-                                supportingText = addressSupportingText(
-                                    error = uiState.serverAddressError,
-                                    testResult = uiState.publicTestResult
-                                ),
+                                supportingText = addressErrorText(uiState.serverAddressError),
                                 keyboardOptions = KeyboardOptions(
                                     keyboardType = KeyboardType.Uri,
                                     imeAction = ImeAction.Next
@@ -451,6 +442,7 @@ fun LoginScreen(
                                 placeholder = { Text(stringResource(R.string.login_lan_address_hint)) },
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .testResultPulse(uiState.lanTestResult, RoundedCornerShape(16.dp))
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -463,10 +455,7 @@ fun LoginScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                 },
-                                supportingText = addressSupportingText(
-                                    error = uiState.lanAddressError,
-                                    testResult = uiState.lanTestResult
-                                ),
+                                supportingText = addressErrorText(uiState.lanAddressError),
                                 keyboardOptions = KeyboardOptions(
                                     keyboardType = KeyboardType.Uri,
                                     imeAction = ImeAction.Next
@@ -831,26 +820,42 @@ private fun photoWallScrim(dark: Boolean): Brush = if (dark) {
 // ---------------------------------------------------------------------------
 
 /**
- * Supporting slot for an address field. Priority: validation error, then this
- * field's own connection-test result. Returns null when there is nothing to show,
- * so the field reserves no supporting-text space (the general hint sits under the
- * section header instead).
+ * Supporting slot for an address field: validation errors only. Returns null when
+ * there is no error, so the field reserves no supporting-text space. Connection-test
+ * outcomes are shown inside the field by [testResultPulse], not as a text line.
  */
-private fun addressSupportingText(
-    error: String?,
-    testResult: TestConnectionResult?
-): (@Composable () -> Unit)? {
-    if (error == null && testResult == null) return null
-    return {
-        when {
-            error != null -> Text(text = error, color = MaterialTheme.colorScheme.error)
-            testResult is TestConnectionResult.Success -> Text(
-                text = stringResource(R.string.connection_status_success),
-                color = PhotoVaultColors.SyncGreen
-            )
-            testResult is TestConnectionResult.Failure ->
-                Text(text = testResult.message, color = MaterialTheme.colorScheme.error)
-        }
+private fun addressErrorText(error: String?): (@Composable () -> Unit)? =
+    error?.let { message -> { Text(text = message, color = MaterialTheme.colorScheme.error) } }
+
+/**
+ * Breathing tint behind an address field for its connection-test result: green on
+ * success, red on failure. It lasts exactly as long as the result is set, so it
+ * stops when the 测试连接 pill resets (the screen clears results after 5 s).
+ *
+ * The field's container is translucent glass, so a tint drawn behind it shows
+ * through. The animated alpha is read only in the draw phase, so pulsing redraws
+ * the field without recomposing the form. No transition exists while idle.
+ */
+@Composable
+private fun Modifier.testResultPulse(result: TestConnectionResult?, shape: Shape): Modifier {
+    val tint = when (result) {
+        is TestConnectionResult.Success -> PhotoVaultColors.SyncGreen
+        is TestConnectionResult.Failure -> MaterialTheme.colorScheme.error
+        null -> return this
+    }
+    val pulse = rememberInfiniteTransition(label = "testResultPulse")
+    val alpha = pulse.animateFloat(
+        initialValue = 0.12f,
+        targetValue = 0.55f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "testResultPulseAlpha"
+    )
+    return this.drawBehind {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        drawOutline(outline, color = tint.copy(alpha = alpha.value))
     }
 }
 
@@ -877,7 +882,7 @@ private fun ConnectionStatusPill(
     val look = when {
         isTesting -> PillLook("测试中", scheme.primary, scheme.onPrimary, null)
         testResult is TestConnectionResult.Success -> PillLook(
-            "已连通",
+            stringResource(R.string.connection_status_success),
             PhotoVaultColors.SyncGreen,
             PhotoVaultColors.DeepVault,
             Icons.Rounded.CheckCircle

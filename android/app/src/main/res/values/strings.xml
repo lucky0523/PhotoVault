@@ -49,9 +49,6 @@
     <string name="validation_address_same_as_server">Same as the server address.</string>
     <string name="settings_lan_clear_requires_server">The LAN address cannot be cleared when no server address is set.</string>
     <string name="settings_lan_save_failed">Save failed. Try again.</string>
-    <string name="login_target_public">Public</string>
-    <string name="login_target_lan">LAN</string>
-    <string name="login_test_failed_with_target">%1$s: %2$s</string>
 
     <!-- Local backup validation -->
     <string name="refresh_complete">Refreshed</string>
