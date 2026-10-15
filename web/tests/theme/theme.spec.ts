@@ -330,7 +330,7 @@ test('captures login, main gallery, and statistics in real Chromium', async ({ p
   const unknown = await installApiMock(page)
 
   await page.goto('/login')
-  await expect(page.getByRole('heading', { name: 'PhotoVault' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '影集' })).toBeVisible()
   await page.screenshot({ path: `${screenshotDir}/login.png`, fullPage: true })
 
   await authenticate(page)

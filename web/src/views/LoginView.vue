@@ -3,7 +3,7 @@
     <el-card class="login-card">
       <template #header>
         <div class="login-header">
-          <h1>PhotoVault</h1>
+          <h1>影集</h1>
           <p>手机图片备份系统</p>
         </div>
       </template>

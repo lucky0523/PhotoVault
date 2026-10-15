@@ -32,7 +32,7 @@
     <el-card class="setup-card" :class="{ 'setup-card--wide': needsWorkDir }">
       <template #header>
         <div class="setup-header">
-          <h1>PhotoVault 初始化</h1>
+          <h1>影集初始化</h1>
           <p>{{ headerHint }}</p>
         </div>
       </template>

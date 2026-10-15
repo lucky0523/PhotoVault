@@ -2,8 +2,8 @@
   <el-container class="main-layout">
     <el-aside width="200px">
       <div class="logo">
-        <img src="/icon.png" alt="PhotoVault" class="logo-icon" />
-        <h2>PhotoVault</h2>
+        <img src="/icon.png" alt="影集" class="logo-icon" />
+        <h2>影集</h2>
       </div>
       <el-menu
         :default-active="activeMenu"

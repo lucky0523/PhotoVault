@@ -3,7 +3,7 @@
     <el-card class="register-card">
       <template #header>
         <div class="register-header">
-          <h1>PhotoVault</h1>
+          <h1>影集</h1>
           <p>创建新账户</p>
         </div>
       </template>
