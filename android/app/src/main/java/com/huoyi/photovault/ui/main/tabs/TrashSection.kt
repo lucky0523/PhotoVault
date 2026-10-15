@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -41,7 +42,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.huoyi.photovault.data.api.model.FileBrowseInfo
 import com.huoyi.photovault.data.api.model.TrashItemInfo
-import com.huoyi.photovault.ui.main.components.CloudStatusColors
+import com.huoyi.photovault.ui.theme.PhotoBadgeColors
+import com.huoyi.photovault.ui.theme.SemanticTone
 import com.huoyi.photovault.ui.theme.LiquidDialogButton
 import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
 import com.huoyi.photovault.ui.theme.LiquidGlassDialog
@@ -230,34 +232,43 @@ private fun TrashGridItem(
             contentScale = ContentScale.Crop
         )
 
-        // Remaining-time badge (bottom-start), aligned with FolderDetailScreen's
-        // BadgeLabel: a horizontal icon + text pill, text hidden when unknown.
-        val remaining = formatRemainingTime(item.expiresAt)
-        Box(
+        TrashCountdownBadge(
+            remaining = formatRemainingTime(item.expiresAt),
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(4.dp)
-                .background(CloudStatusColors.Trashed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center
+        )
+    }
+}
+
+@Composable
+internal fun TrashCountdownBadge(
+    remaining: String?,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .background(PhotoBadgeColors.container, RoundedCornerShape(4.dp))
+            .testTag("trash_countdown_badge")
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(12.dp)
+            Icon(
+                imageVector = Icons.Filled.Delete,
+                contentDescription = null,
+                tint = PhotoBadgeColors.foreground(SemanticTone.Warning),
+                modifier = Modifier.size(12.dp)
+            )
+            if (!remaining.isNullOrEmpty()) {
+                Text(
+                    text = remaining,
+                    color = PhotoBadgeColors.foreground(SemanticTone.Warning),
+                    fontSize = 9.sp
                 )
-                if (!remaining.isNullOrEmpty()) {
-                    Text(
-                        text = remaining,
-                        color = Color.White,
-                        fontSize = 9.sp
-                    )
-                }
             }
         }
     }

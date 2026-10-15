@@ -7,7 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.isSystemInDarkTheme
+import com.huoyi.photovault.ui.theme.LocalPhotoVaultDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -115,7 +115,7 @@ fun GlassScrollbar(
     // Track height in px, captured to map drag deltas to scroll positions.
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
 
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPhotoVaultDarkTheme.current
     val backdrop = LocalGlassBackdrop.current
     val surface = if (dark) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.55f)
 

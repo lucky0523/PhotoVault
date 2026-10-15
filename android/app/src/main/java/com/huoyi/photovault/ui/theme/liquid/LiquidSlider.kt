@@ -1,7 +1,9 @@
 package com.huoyi.photovault.ui.theme.liquid
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +25,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -31,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.util.lerp
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberBackdrop
@@ -72,8 +80,23 @@ fun LiquidSlider(
     val currentOnValueChange by rememberUpdatedState(onValueChange)
     val currentOnDragStateChange by rememberUpdatedState(onDragStateChange)
 
+    val focusInteractionSource = remember { MutableInteractionSource() }
+    val keyboardStep = (valueRange.endInclusive - valueRange.start) / 100f
     BoxWithConstraints(
-        modifier.fillMaxWidth(),
+        modifier
+            .fillMaxWidth()
+            .photoVaultFocusRing(Capsule(), focusInteractionSource)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val delta = when (event.key) {
+                    Key.DirectionLeft -> -keyboardStep
+                    Key.DirectionRight -> keyboardStep
+                    else -> return@onPreviewKeyEvent false
+                }
+                currentOnValueChange((currentValue() + delta).coerceIn(valueRange))
+                true
+            }
+            .focusable(interactionSource = focusInteractionSource),
         contentAlignment = Alignment.CenterStart
     ) {
         val trackWidth = constraints.maxWidth

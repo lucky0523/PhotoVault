@@ -59,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -77,7 +78,11 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import com.huoyi.photovault.ui.main.components.CloudStatusColors
+import com.huoyi.photovault.ui.theme.PhotoBadgeColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.semanticColorSet
+import com.huoyi.photovault.ui.theme.statusSoftFill
+import com.huoyi.photovault.ui.theme.LocalPhotoVaultDarkTheme
 import com.huoyi.photovault.ui.main.components.GlassScrollbar
 import com.huoyi.photovault.ui.main.tabs.MediaPagerPreview
 import com.huoyi.photovault.ui.main.tabs.PreviewMedia
@@ -92,15 +97,54 @@ import java.util.concurrent.TimeUnit
 /**
  * Photo status filters shown by the folder detail FAB.
  */
-private enum class PhotoFilter(val label: String, val color: Color) {
-    // Colors come from the shared CloudStatusColors palette (see StatusChip).
-    // 全部 has no dedicated status color, so it reuses the "未备份" blue as a
-    // neutral accent.
-    ALL("全部", CloudStatusColors.Pending),
-    NOT_BACKED_UP("未备份", CloudStatusColors.Pending),
-    BACKED_UP("已备份", CloudStatusColors.BackedUp),
-    TRASHED("回收站", CloudStatusColors.Trashed),
-    PURGED("已删除", CloudStatusColors.Purged)
+internal enum class PhotoFilterKind(val label: String, val tone: SemanticTone?) {
+    ALL("全部", null),
+    NOT_BACKED_UP("未备份", SemanticTone.Info),
+    BACKED_UP("已备份", SemanticTone.Success),
+    TRASHED("回收站", SemanticTone.Warning),
+    PURGED("已删除", SemanticTone.Danger)
+}
+
+@Composable
+internal fun PhotoFilterChip(
+    filter: PhotoFilterKind,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Liquid-glass pills. Unselected: a translucent light tint of the pill's own
+    // status color (instead of the shared pale-pink default glass) with the vivid
+    // status color as text. Selected: filled with that status color.
+    // 全部 uses the brand primary instead of a status color.
+    val dark = LocalPhotoVaultDarkTheme.current
+    val semantic = filter.tone?.let { semanticColorSet(it) }
+    val accent = semantic?.accent ?: MaterialTheme.colorScheme.primary
+    // Same soft look as StatusChip (see statusSoftFill).
+    val unselectedTint = statusSoftFill(accent, dark)
+    val selectedForeground = when {
+        semantic == null -> MaterialTheme.colorScheme.onPrimary
+        // Dark-mode accents are light pastels, so white text would vanish on them.
+        dark -> semantic.container
+        else -> Color.White
+    }
+    SurfaceLiquidButton(
+        onClick = onClick,
+        surfaceColor = if (selected) accent else unselectedTint,
+        // No shadow: prevents shadow "jumps" when the pills expand/collapse.
+        showShadow = false,
+        modifier = modifier
+            .height(40.dp)
+            .testTag("photo_filter_${filter.name.lowercase()}_${if (selected) "selected" else "unselected"}")
+    ) {
+        Text(
+            text = filter.label,
+            modifier = Modifier.padding(horizontal = 14.dp),
+            fontSize = 12.sp,
+            maxLines = 1,
+            color = if (selected) selectedForeground else accent,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+        )
+    }
 }
 
 /**
@@ -135,7 +179,7 @@ fun FolderDetailScreen(
     // photo URI. Used by the preview to animate the image back onto its
     // thumbnail when dismissed. A plain map: read on demand, no recomposition.
     val thumbnailBounds = remember { mutableMapOf<String, Rect>() }
-    var selectedFilter by remember { mutableStateOf(PhotoFilter.ALL) }
+    var selectedFilter by remember { mutableStateOf(PhotoFilterKind.ALL) }
     var filterExpanded by remember { mutableStateOf(false) }
 
     // The grid scrolls edge-to-edge beneath the transparent overlay top bar.
@@ -146,11 +190,11 @@ fun FolderDetailScreen(
 
     val filteredImages = remember(images, selectedFilter) {
         when (selectedFilter) {
-            PhotoFilter.ALL -> images
-            PhotoFilter.NOT_BACKED_UP -> images.filter { it.status == null }
-            PhotoFilter.BACKED_UP -> images.filter { it.isBackedUp }
-            PhotoFilter.TRASHED -> images.filter { it.isTrashed }
-            PhotoFilter.PURGED -> images.filter { it.isPurged }
+            PhotoFilterKind.ALL -> images
+            PhotoFilterKind.NOT_BACKED_UP -> images.filter { it.status == null }
+            PhotoFilterKind.BACKED_UP -> images.filter { it.isBackedUp }
+            PhotoFilterKind.TRASHED -> images.filter { it.isTrashed }
+            PhotoFilterKind.PURGED -> images.filter { it.isPurged }
         }
     }
 
@@ -211,37 +255,21 @@ fun FolderDetailScreen(
                         // collapsed only the active (non-ALL) filter stays
                         // visible so the current filter state is always shown.
                         Column(horizontalAlignment = Alignment.End) {
-                            PhotoFilter.entries.forEach { filter ->
+                            PhotoFilterKind.entries.forEach { filter ->
                                 val selected = filter == selectedFilter
                                 val chipVisible = filterExpanded ||
-                                    (selected && filter != PhotoFilter.ALL)
+                                    (selected && filter != PhotoFilterKind.ALL)
                                 AnimatedVisibility(
                                     visible = chipVisible,
                                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
                                     exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
                                 ) {
                                     Box(modifier = Modifier.padding(bottom = 8.dp)) {
-                                        SurfaceLiquidButton(
-                                            onClick = { selectedFilter = filter },
-                                            // Selected: tint the surface with the
-                                            // status color. Unselected: default glass.
-                                            surfaceColor = if (selected) filter.color else null,
-                                            // No shadow: prevents shadow "jumps"
-                                            // when the pills expand/collapse.
-                                            showShadow = false,
-                                            modifier = Modifier.height(40.dp)
-                                        ) {
-                                            Text(
-                                                text = filter.label,
-                                                modifier = Modifier.padding(horizontal = 14.dp),
-                                                fontSize = 12.sp,
-                                                maxLines = 1,
-                                                // Selected: white text over the color
-                                                // tint. Unselected: the status color.
-                                                color = if (selected) Color.White else filter.color,
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
-                                            )
-                                        }
+                                        PhotoFilterChip(
+                                            filter = filter,
+                                            selected = selected,
+                                            onClick = { selectedFilter = filter }
+                                        )
                                     }
                                 }
                             }
@@ -301,7 +329,7 @@ fun FolderDetailScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = if (selectedFilter == PhotoFilter.ALL) "暂无图片" else "该状态下暂无图片",
+                                text = if (selectedFilter == PhotoFilterKind.ALL) "暂无图片" else "该状态下暂无图片",
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 8.dp)
@@ -606,16 +634,16 @@ private fun LivePhotoIcon(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: FolderImage) {
+internal fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: FolderImage) {
     when {
         image.isBackedUp -> {
             BadgeIcon(
-                backgroundColor = CloudStatusColors.BackedUp
+                backgroundColor = PhotoBadgeColors.container
             ) {
                 Icon(
                     imageVector = Icons.Filled.Check,
                     contentDescription = "已备份",
-                    tint = Color.White,
+                    tint = PhotoBadgeColors.foreground(SemanticTone.Success),
                     modifier = Modifier.size(14.dp)
                 )
             }
@@ -623,25 +651,26 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
         image.isTrashed -> {
             val remaining = formatRemainingTime(image.status?.expiresAt)
             BadgeLabel(
-                backgroundColor = CloudStatusColors.Trashed,
+                backgroundColor = PhotoBadgeColors.container,
+                foregroundColor = PhotoBadgeColors.foreground(SemanticTone.Warning),
                 text = remaining
             ) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
                     contentDescription = "回收站中",
-                    tint = Color.White,
+                    tint = PhotoBadgeColors.foreground(SemanticTone.Warning),
                     modifier = Modifier.size(12.dp)
                 )
             }
         }
         image.isPurged -> {
             BadgeIcon(
-                backgroundColor = CloudStatusColors.Purged
+                backgroundColor = PhotoBadgeColors.container
             ) {
                 Icon(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "已删除",
-                    tint = Color.White,
+                    tint = PhotoBadgeColors.foreground(SemanticTone.Danger),
                     modifier = Modifier.size(14.dp)
                 )
             }
@@ -651,7 +680,7 @@ private fun androidx.compose.foundation.layout.BoxScope.StatusBadge(image: Folde
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.BadgeIcon(
+internal fun androidx.compose.foundation.layout.BoxScope.BadgeIcon(
     backgroundColor: Color,
     content: @Composable () -> Unit
 ) {
@@ -668,8 +697,9 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeIcon(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
+internal fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
     backgroundColor: Color,
+    foregroundColor: Color,
     text: String?,
     icon: @Composable () -> Unit
 ) {
@@ -677,7 +707,7 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
         modifier = Modifier
             .align(Alignment.BottomStart)
             .padding(4.dp)
-            .background(backgroundColor.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .background(backgroundColor, RoundedCornerShape(4.dp))
             .padding(horizontal = 4.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -689,7 +719,7 @@ private fun androidx.compose.foundation.layout.BoxScope.BadgeLabel(
             if (!text.isNullOrEmpty()) {
                 Text(
                     text = text,
-                    color = Color.White,
+                    color = foregroundColor,
                     fontSize = 9.sp
                 )
             }

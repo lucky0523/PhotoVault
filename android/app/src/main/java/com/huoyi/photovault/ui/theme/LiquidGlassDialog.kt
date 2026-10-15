@@ -1,9 +1,9 @@
 package com.huoyi.photovault.ui.theme
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -57,7 +58,7 @@ fun LiquidGlassDialog(
     dismissOnClickOutside: Boolean = true,
     buttons: @Composable RowScope.() -> Unit
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
+    val isLightTheme = !LocalPhotoVaultDarkTheme.current
     val contentColor = if (isLightTheme) Color.Black else Color.White
     val containerColor =
         if (isLightTheme) Color(0xFFFAFAFA).copy(0.9f)
@@ -178,26 +179,27 @@ fun RowScope.LiquidDialogButton(
     style: LiquidDialogButtonStyle = LiquidDialogButtonStyle.Neutral,
     modifier: Modifier = Modifier
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val contentColor = if (isLightTheme) Color.Black else Color.White
-    val accentColor = if (isLightTheme) Color(0xFF0088FF) else Color(0xFF0091FF)
-    val destructiveColor = if (isLightTheme) Color(0xFFE5484D) else Color(0xFFFF5A5F)
-    val neutralFill =
-        if (isLightTheme) Color(0xFFFAFAFA).copy(0.35f)
-        else Color(0xFFFFFFFF).copy(0.12f)
+    val isLightTheme = !LocalPhotoVaultDarkTheme.current
+    val accentColor = MaterialTheme.colorScheme.primary
+    val destructiveColor = MaterialTheme.colorScheme.error
+    val neutralFill = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isLightTheme) 0.88f else 0.76f)
 
     val (fill, labelColor) = when (style) {
-        LiquidDialogButtonStyle.Accent -> accentColor to Color.White
-        LiquidDialogButtonStyle.Destructive -> destructiveColor to Color.White
-        LiquidDialogButtonStyle.Neutral -> neutralFill to contentColor
+        LiquidDialogButtonStyle.Accent -> accentColor to MaterialTheme.colorScheme.onPrimary
+        LiquidDialogButtonStyle.Destructive -> destructiveColor to MaterialTheme.colorScheme.onError
+        LiquidDialogButtonStyle.Neutral -> neutralFill to MaterialTheme.colorScheme.onSurface
     }
 
+    val interactionSource = remember { MutableInteractionSource() }
+    val shape = Capsule()
     Row(
         modifier = modifier
             .weight(1f)
-            .clip(Capsule())
+            .photoVaultFocusRing(shape, interactionSource)
+            .clip(shape)
             .background(fill)
-            .clickable(onClick = onClick)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .focusable(interactionSource = interactionSource)
             .height(48.dp)
             .padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.Center,

@@ -4,7 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.shape.CornerBasedShape
@@ -12,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,6 +22,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
@@ -46,30 +49,20 @@ object Glass {
 }
 
 /**
- * Vertical gradient used as the app backdrop so translucent glass surfaces have
- * something colourful to sit on top of.
+ * App page backdrop: a warm vertical gradient in dark mode, and the plain white
+ * `colorScheme.background` in light mode.
  */
 @Composable
 fun appBackgroundBrush(): Brush {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPhotoVaultDarkTheme.current
     return if (dark) {
-        // Deep vault base with a brighter cyan-blue lift for glass refraction.
+        // Deep warm base with a brighter Yingji-red lift for glass refraction.
         Brush.verticalGradient(
-            listOf(
-                Color(0xFF16335A),
-                PhotoVaultColors.MistDark,
-                Color(0xFF08121F)
-            )
+            listOf(Color(0xFF48212A), Color(0xFF1A1113), Color(0xFF120A0C))
         )
     } else {
-        // Bright ice-blue surface, clean enough for photos and glass chrome.
-        Brush.verticalGradient(
-            listOf(
-                Color(0xFFFAFCFF),
-                PhotoVaultColors.Mist,
-                Color(0xFFEAF3FF)
-            )
-        )
+        // Plain white page, following the theme's background role.
+        SolidColor(MaterialTheme.colorScheme.background)
     }
 }
 
@@ -83,7 +76,7 @@ fun GlassCard(
     elevation: Dp = 4.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPhotoVaultDarkTheme.current
     // Keep the fill uniform (small alpha spread) so the card reads as one even
     // frosted pane rather than fading to opaque white at the bottom.
     val fill = if (dark) {
@@ -156,7 +149,7 @@ fun GlassBar(
         return
     }
 
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPhotoVaultDarkTheme.current
     // A light frosted wash keeps text/icons legible over the refracted backdrop.
     val surfaceTint = if (dark) {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.20f)
@@ -245,13 +238,14 @@ fun SurfaceLiquidButton(
     showShadow: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPhotoVaultDarkTheme.current
     val surface = surfaceColor ?: if (dark) {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
     } else {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f)
     }
     val shape: Shape = Capsule()
+    val interactionSource = remember { MutableInteractionSource() }
 
     val surfaceModifier = if (backdrop != null) {
         Modifier.drawBackdrop(
@@ -282,8 +276,10 @@ fun SurfaceLiquidButton(
 
     Box(
         modifier = modifier
+            .photoVaultFocusRing(shape, interactionSource)
             .then(surfaceModifier)
-            .clickable(role = Role.Button, onClick = onClick),
+            .clickable(interactionSource = interactionSource, role = Role.Button, onClick = onClick)
+            .focusable(interactionSource = interactionSource),
         contentAlignment = Alignment.Center,
         content = content
     )

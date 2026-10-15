@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,7 +67,8 @@ import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
 import com.huoyi.photovault.ui.theme.LiquidGlassDialog
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
 import com.huoyi.photovault.ui.theme.LocalGlassBackdrop
-import com.huoyi.photovault.ui.theme.PhotoVaultColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.huoyi.photovault.ui.theme.appBackgroundBrush
 import com.huoyi.photovault.ui.theme.liquid.LiquidBottomTab
 import com.huoyi.photovault.ui.theme.liquid.LiquidBottomTabs
@@ -369,13 +371,17 @@ private fun GlassHeader(connectionState: ConnectionState, heartbeatCountdown: In
  * Compact glass pill: colored dot + short status text.
  */
 @Composable
-private fun ConnectionPill(connectionState: ConnectionState, heartbeatCountdown: Int) {
+internal fun ConnectionPill(
+    connectionState: ConnectionState,
+    heartbeatCountdown: Int,
+    modifier: Modifier = Modifier
+) {
     val (dotColor, baseText) = when (connectionState) {
         is ConnectionState.Connected -> when (connectionState.type) {
-            ConnectionType.LAN -> PhotoVaultColors.SyncGreen to "局域网"
-            ConnectionType.WAN -> PhotoVaultColors.SyncGreen to "公网"
+            ConnectionType.LAN -> semanticColorSet(SemanticTone.Success).accent to "局域网"
+            ConnectionType.WAN -> semanticColorSet(SemanticTone.Success).accent to "公网"
         }
-        is ConnectionState.Connecting -> PhotoVaultColors.ArchiveAmber to "连接中"
+        is ConnectionState.Connecting -> semanticColorSet(SemanticTone.Warning).accent to "连接中"
         is ConnectionState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant to "未连接"
     }
     // Debug: append the countdown whenever the heartbeat/reconnect loop is
@@ -389,6 +395,7 @@ private fun ConnectionPill(connectionState: ConnectionState, heartbeatCountdown:
     val animatedDot by animateColorAsState(dotColor, label = "dot")
 
     GlassBar(
+        modifier = modifier.testTag("main_connection_pill"),
         shape = CircleShape
     ) {
         Row(

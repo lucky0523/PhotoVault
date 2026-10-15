@@ -1,7 +1,9 @@
 package com.huoyi.photovault.ui.main.tabs
 
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -44,7 +47,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,7 +72,9 @@ import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
 import com.huoyi.photovault.ui.theme.LiquidGlassDialog
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
 import com.huoyi.photovault.ui.theme.LocalGlassBackdrop
-import com.huoyi.photovault.ui.theme.PhotoVaultColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.huoyi.photovault.ui.theme.liquid.LiquidSlider
 import com.huoyi.photovault.ui.theme.liquid.LiquidToggle
 
@@ -379,57 +390,102 @@ private fun BackgroundRunGroup() {
     }
 
     SettingsGroupCard(title = "后台运行") {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (ignoringOptimizations) Modifier
-                    else Modifier.clickable {
-                        // Fall back to the generic list if the direct request dialog
-                        // isn't available on this ROM.
-                        if (!BatteryOptimizationHelper.requestIgnoreBatteryOptimizations(context)) {
-                            BatteryOptimizationHelper.openBatteryOptimizationSettings(context)
-                        }
-                    }
-                )
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "允许后台运行",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = if (ignoringOptimizations) {
-                        "已允许，后台可稳定扫描并备份新照片"
-                    } else {
-                        "受限，系统可能会推迟或停止后台备份，点击前往关闭电池优化"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    minLines = 2
-                )
+        BackgroundRunActionRow(
+            ignoringOptimizations = ignoringOptimizations,
+            onOpenSettings = {
+                // Fall back to the generic list if the direct request dialog
+                // isn't available on this ROM.
+                if (!BatteryOptimizationHelper.requestIgnoreBatteryOptimizations(context)) {
+                    BatteryOptimizationHelper.openBatteryOptimizationSettings(context)
+                }
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            if (ignoringOptimizations) {
-                Text(
-                    text = "已允许",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PhotoVaultColors.SyncGreen
-                )
-            } else {
-                Text(
-                    text = "去设置",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Icon(
-                    imageVector = Icons.Filled.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        )
+    }
+}
+
+@Composable
+internal fun BackgroundRunActionRow(
+    ignoringOptimizations: Boolean,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
+    val actionModifier = if (ignoringOptimizations) {
+        Modifier
+    } else {
+        Modifier
+            .photoVaultFocusRing(shape, interactionSource)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                    onOpenSettings()
+                    true
+                } else {
+                    false
+                }
             }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                role = Role.Button,
+                onClick = onOpenSettings
+            )
+            .focusable(interactionSource = interactionSource)
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(actionModifier)
+            .testTag("settings_background_run_action")
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "允许后台运行",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = if (ignoringOptimizations) {
+                    "已允许，后台可稳定扫描并备份新照片"
+                } else {
+                    "受限，系统可能会推迟或停止后台备份，点击前往关闭电池优化"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                minLines = 2
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        BatteryOptimizationStatusLabel(ignoringOptimizations)
+    }
+}
+
+@Composable
+internal fun BatteryOptimizationStatusLabel(
+    ignoringOptimizations: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (ignoringOptimizations) {
+        Text(
+            text = "已允许",
+            modifier = modifier.testTag("settings_battery_status_allowed"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = semanticColorSet(SemanticTone.Success).foreground
+        )
+    } else {
+        Row(modifier = modifier.testTag("settings_battery_status_action")) {
+            Text(
+                text = "去设置",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -486,10 +542,19 @@ private fun StorageStrategyFolderItem(
     folder: BackupFolder,
     onClick: () -> Unit
 ) {
+    val shape = RoundedCornerShape(8.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .photoVaultFocusRing(shape, interactionSource)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onClick
+            )
+            .focusable(interactionSource = interactionSource)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -608,16 +673,20 @@ private fun AccountInfoGroup(
  * - 灰色: 未连接
  */
 @Composable
-private fun ConnectionStatusItem(connectionState: ConnectionState) {
+internal fun ConnectionStatusItem(
+    connectionState: ConnectionState,
+    modifier: Modifier = Modifier
+) {
     val dotColor = when (connectionState) {
-        is ConnectionState.Connected -> PhotoVaultColors.SyncGreen
-        is ConnectionState.Connecting -> PhotoVaultColors.ArchiveAmber
+        is ConnectionState.Connected -> semanticColorSet(SemanticTone.Success).accent
+        is ConnectionState.Connecting -> semanticColorSet(SemanticTone.Warning).accent
         is ConnectionState.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .testTag("settings_connection_status")
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -653,20 +722,27 @@ private fun AccountInfoItem(
     value: String,
     onClick: (() -> Unit)? = null
 ) {
+    val shape = RoundedCornerShape(8.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
+    val interactionModifier = if (onClick != null) {
+        Modifier
+            .photoVaultFocusRing(shape, interactionSource)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                onClickLabel = "编辑局域网地址",
+                role = Role.Button,
+                onClick = onClick
+            )
+            .focusable(interactionSource = interactionSource)
+    } else {
+        Modifier
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        onClickLabel = "编辑局域网地址",
-                        role = Role.Button,
-                        onClick = onClick
-                    )
-                } else {
-                    Modifier
-                }
-            )
+            .then(interactionModifier)
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

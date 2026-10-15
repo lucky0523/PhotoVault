@@ -3,7 +3,9 @@ package com.huoyi.photovault.ui.theme.liquid
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.isSystemInDarkTheme
+import com.huoyi.photovault.ui.theme.LocalPhotoVaultDarkTheme
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -30,6 +32,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -38,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.util.lerp
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
@@ -75,7 +83,7 @@ fun LiquidBottomTabs(
     modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
+    val isLightTheme = !LocalPhotoVaultDarkTheme.current
     val accentColor = MaterialTheme.colorScheme.primary
     val containerColor = if (isLightTheme) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.46f)
@@ -84,9 +92,23 @@ fun LiquidBottomTabs(
     }
 
     val tabsBackdrop = rememberLayerBackdrop()
+    val focusInteractionSource = remember { MutableInteractionSource() }
 
     BoxWithConstraints(
-        modifier,
+        modifier
+            .photoVaultFocusRing(Capsule(), focusInteractionSource)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val selected = selectedTabIndex()
+                when (event.key) {
+                    Key.DirectionLeft -> onTabSelected((selected - 1).coerceAtLeast(0))
+                    Key.DirectionRight -> onTabSelected((selected + 1).coerceAtMost(tabsCount - 1))
+                    Key.Enter, Key.Spacebar -> onTabSelected(selected)
+                    else -> return@onPreviewKeyEvent false
+                }
+                true
+            }
+            .focusable(interactionSource = focusInteractionSource),
         contentAlignment = Alignment.CenterStart
     ) {
         val density = LocalDensity.current

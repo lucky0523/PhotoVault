@@ -8,8 +8,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
@@ -60,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,8 +73,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.huoyi.photovault.data.local.entity.BackupFolder
-import com.huoyi.photovault.ui.main.components.CloudStatusColors
-import com.huoyi.photovault.ui.theme.PhotoVaultColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.huoyi.photovault.ui.main.components.StatusChip
 import com.huoyi.photovault.ui.main.components.StoragePolicySheet
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
@@ -419,7 +425,8 @@ internal fun FolderRow(
     folder: BackupFolder,
     onClick: () -> Unit,
     onConfigurePolicy: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -435,19 +442,27 @@ internal fun FolderRow(
     val done = folder.totalImages > 0 && notBackedUp == 0
     val statusColor = when {
         folder.totalImages == 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-        done -> PhotoVaultColors.SyncGreen
+        done -> semanticColorSet(SemanticTone.Success).foreground
         handled > 0 -> MaterialTheme.colorScheme.primary
-        else -> PhotoVaultColors.ArchiveAmber
+        else -> semanticColorSet(SemanticTone.Warning).foreground
     }
 
+    val shape = RoundedCornerShape(10.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     Box {
         Column(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
+                .testTag("local_folder_row")
+                .photoVaultFocusRing(shape, interactionSource)
                 .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = indication,
                     onClick = onClick,
                     onLongClick = { showMenu = true }
                 )
+                .focusable(interactionSource = interactionSource)
                 .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -483,8 +498,8 @@ internal fun FolderRow(
                         )
                     }
                     Spacer(modifier = Modifier.height(6.dp))
-                    // Local files' cloud status chips: 已备份 (green) / 未备份 (blue) /
-                    // 回收站 (orange) / 已删除 (red). Reflects where each local file
+                    // Local files' cloud status chips: 已备份 (success) / 未备份 (info) /
+                    // 回收站 (warning) / 已删除 (danger). Reflects where each local file
                     // currently stands on the server. All four share one row; each chip
                     // takes an equal weight so they shrink uniformly instead of the
                     // last one getting squeezed / wrapped on narrow widths.
@@ -492,25 +507,25 @@ internal fun FolderRow(
                         StatusChip(
                             label = "已备份",
                             count = localCounts.backedUp,
-                            color = CloudStatusColors.BackedUp,
+                            tone = SemanticTone.Success,
                             modifier = Modifier.weight(1f)
                         )
                         StatusChip(
                             label = "未备份",
                             count = localCounts.pending,
-                            color = CloudStatusColors.Pending,
+                            tone = SemanticTone.Info,
                             modifier = Modifier.weight(1f)
                         )
                         StatusChip(
                             label = "回收站",
                             count = localCounts.trashed,
-                            color = CloudStatusColors.Trashed,
+                            tone = SemanticTone.Warning,
                             modifier = Modifier.weight(1f)
                         )
                         StatusChip(
                             label = "已删除",
                             count = localCounts.purged,
-                            color = CloudStatusColors.Purged,
+                            tone = SemanticTone.Danger,
                             modifier = Modifier.weight(1f)
                         )
                     }

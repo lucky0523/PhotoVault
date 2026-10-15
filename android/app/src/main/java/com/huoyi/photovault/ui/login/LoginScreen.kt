@@ -14,12 +14,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
+import com.huoyi.photovault.ui.theme.LocalPhotoVaultDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,6 +70,7 @@ import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -101,6 +104,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -117,7 +121,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.huoyi.photovault.R
 import com.huoyi.photovault.ui.theme.GlassBar
 import com.huoyi.photovault.ui.theme.LocalGlassBackdrop
-import com.huoyi.photovault.ui.theme.PhotoVaultColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -146,7 +152,32 @@ fun LoginScreen(
     onLoginSuccess: () -> Unit,
     viewModel: LoginViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    LoginScreenContent(onLoginSuccess, viewModel, null, null, true)
+}
+
+private val LocalLoginForegroundVisible = staticCompositionLocalOf { true }
+
+@Composable
+internal fun LoginScreenForRenderingTest(
+    renderingState: LoginUiState,
+    backgroundFixtureColor: Color?,
+    renderForeground: Boolean = true,
+    onLoginSuccess: () -> Unit = {}
+) {
+    LoginScreenContent(onLoginSuccess, null, renderingState, backgroundFixtureColor, renderForeground)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LoginScreenContent(
+    onLoginSuccess: () -> Unit,
+    viewModel: LoginViewModel?,
+    renderingState: LoginUiState?,
+    backgroundFixtureColor: Color?,
+    renderForeground: Boolean
+) {
+    val observedState = viewModel?.uiState?.collectAsState()
+    val uiState = renderingState ?: observedState?.value ?: LoginUiState()
     var passwordVisible by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -162,7 +193,7 @@ fun LoginScreen(
     // v1, see ServerQrCode and protocol/README.md); legacy single-URL codes are still
     // accepted. The result goes only through LoginViewModel.onQrScanned.
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.trim()?.takeIf { it.isNotEmpty() }?.let { viewModel.onQrScanned(it) }
+        result.contents?.trim()?.takeIf { it.isNotEmpty() }?.let { viewModel?.onQrScanned(it) }
     }
     val launchScanner = {
         scanLauncher.launch(
@@ -191,7 +222,7 @@ fun LoginScreen(
     LaunchedEffect(uiState.publicTestResult, uiState.lanTestResult) {
         if (uiState.publicTestResult != null || uiState.lanTestResult != null) {
             delay(5000)
-            viewModel.clearTestResult()
+            viewModel?.clearTestResult()
         }
     }
 
@@ -204,14 +235,7 @@ fun LoginScreen(
         else -> testResults.firstOrNull { it is TestConnectionResult.Failure }
     }
 
-    val dark = isSystemInDarkTheme()
-    val scrimBrush = remember(dark) { photoWallScrim(dark) }
-    val scrimTint = if (dark) {
-        PhotoVaultColors.VaultBlue.copy(alpha = 0.09f)
-    } else {
-        PhotoVaultColors.VaultBlue.copy(alpha = 0.06f)
-    }
-    val baseColor = if (dark) Color(0xFF070D18) else Color(0xFFEFF4FF)
+    val dark = LocalPhotoVaultDarkTheme.current
 
     // Backdrop captured for the glass form to sample. It holds the photo wall and
     // its scrim, never the form itself — sampling a layer that contains the glass
@@ -226,38 +250,31 @@ fun LoginScreen(
     var cardBottomPx by remember { mutableIntStateOf(0) }
     var rootHeightPx by remember { mutableIntStateOf(0) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .dismissKeyboardOnOutsideTap(
-                marker = editableTouchMarker,
-                imeVisible = imeVisible,
-                onDismiss = dismissKeyboard
-            )
-    ) {
+    CompositionLocalProvider(LocalLoginForegroundVisible provides renderForeground) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .layerBackdrop(bgBackdrop)
-                .background(baseColor)
-                .drawWithContent {
-                    drawContent()
-                    // Knock the photographs back so the form stays legible;
-                    // strongest at the top and bottom edges.
-                    drawRect(scrimBrush)
-                    drawRect(scrimTint)
-                }
+                .dismissKeyboardOnOutsideTap(
+                    marker = editableTouchMarker,
+                    imeVisible = imeVisible,
+                    onDismiss = dismissKeyboard
+                )
         ) {
-            ScrollingPhotoWall(modifier = Modifier.fillMaxSize())
-        }
+        LoginPhotoBackdrop(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(bgBackdrop),
+            fixtureColor = backgroundFixtureColor
+        )
 
         Text(
             text = stringResource(R.string.app_name),
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
-                .padding(start = 24.dp, top = 64.dp),
-            color = Color.White,
+                .padding(start = 24.dp, top = 64.dp)
+                .testTag("login_title"),
+            color = if (LocalLoginForegroundVisible.current) Color.White else Color.Transparent,
             fontSize = 40.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 2.sp,
@@ -323,13 +340,13 @@ fun LoginScreen(
                                     text = "连接你的服务器",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color.White
+                                    color = if (LocalLoginForegroundVisible.current) Color.White else Color.Transparent
                                 )
                                 Spacer(modifier = Modifier.weight(1f))
                                 ConnectionStatusPill(
                                     isTesting = uiState.isTesting,
                                     testResult = testSummary,
-                                    onTest = viewModel::testConnection,
+                                    onTest = { viewModel?.testConnection() },
                                     enabled = !uiState.isLoading && !uiState.isTesting
                                 )
                             }
@@ -393,11 +410,12 @@ fun LoginScreen(
                             // carries the QR shortcut as a trailing action.
                             OutlinedTextField(
                                 value = uiState.serverAddress,
-                                onValueChange = viewModel::onServerAddressChange,
+                                onValueChange = { viewModel?.onServerAddressChange(it) },
                                 placeholder = { Text(stringResource(R.string.login_public_address_hint)) },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testResultPulse(uiState.publicTestResult, RoundedCornerShape(16.dp))
+                                    .testTag("login_public_address")
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -407,7 +425,7 @@ fun LoginScreen(
                                     Icon(
                                         imageVector = Icons.Rounded.Dns,
                                         contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(20.dp).testTag("login_public_address_leading_icon")
                                     )
                                 },
                                 trailingIcon = {
@@ -418,7 +436,12 @@ fun LoginScreen(
                                         Icon(
                                             imageVector = Icons.Rounded.QrCodeScanner,
                                             contentDescription = "扫描服务器二维码",
-                                            tint = MaterialTheme.colorScheme.primary
+                                            modifier = Modifier.testTag("login_public_address_trailing_icon"),
+                                            tint = if (LocalLoginForegroundVisible.current) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                Color.Transparent
+                                            }
                                         )
                                     }
                                 },
@@ -438,11 +461,12 @@ fun LoginScreen(
                             // LAN address: peer of the public address (at least one required).
                             OutlinedTextField(
                                 value = uiState.lanAddress,
-                                onValueChange = viewModel::onLanAddressChange,
+                                onValueChange = { viewModel?.onLanAddressChange(it) },
                                 placeholder = { Text(stringResource(R.string.login_lan_address_hint)) },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testResultPulse(uiState.lanTestResult, RoundedCornerShape(16.dp))
+                                    .testTag("login_lan_address")
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -452,7 +476,7 @@ fun LoginScreen(
                                     Icon(
                                         imageVector = Icons.Rounded.Lan,
                                         contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(20.dp).testTag("login_lan_address_leading_icon")
                                     )
                                 },
                                 supportingText = addressErrorText(uiState.lanAddressError),
@@ -470,10 +494,11 @@ fun LoginScreen(
 
                             OutlinedTextField(
                                 value = uiState.username,
-                                onValueChange = viewModel::onUsernameChange,
+                                onValueChange = { viewModel?.onUsernameChange(it) },
                                 placeholder = { Text("用户名") },
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .testTag("login_username")
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -483,7 +508,7 @@ fun LoginScreen(
                                     Icon(
                                         imageVector = Icons.Rounded.Person,
                                         contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(20.dp).testTag("login_username_leading_icon")
                                     )
                                 },
                                 supportingText = uiState.usernameError?.let { error ->
@@ -500,10 +525,11 @@ fun LoginScreen(
 
                             OutlinedTextField(
                                 value = uiState.password,
-                                onValueChange = viewModel::onPasswordChange,
+                                onValueChange = { viewModel?.onPasswordChange(it) },
                                 placeholder = { Text("密码") },
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .testTag("login_password")
                                     .markEditableTouchTarget(editableTouchMarker),
                                 singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
@@ -513,7 +539,7 @@ fun LoginScreen(
                                     Icon(
                                         imageVector = Icons.Rounded.Lock,
                                         contentDescription = null,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(20.dp).testTag("login_password_leading_icon")
                                     )
                                 },
                                 supportingText = uiState.passwordError?.let { error ->
@@ -536,6 +562,12 @@ fun LoginScreen(
                                                 "隐藏密码"
                                             } else {
                                                 "显示密码"
+                                            },
+                                            modifier = Modifier.testTag("login_password_trailing_icon"),
+                                            tint = if (LocalLoginForegroundVisible.current) {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            } else {
+                                                Color.Transparent
                                             }
                                         )
                                     }
@@ -547,38 +579,46 @@ fun LoginScreen(
                                 keyboardActions = KeyboardActions(
                                     onDone = {
                                         focusManager.clearFocus()
-                                        viewModel.login()
+                                        viewModel?.login()
                                     }
                                 ),
                                 enabled = !uiState.isLoading
                             )
 
                             // Whole row toggles, so the label is part of the hit target.
+                            val rememberPasswordShape = RoundedCornerShape(14.dp)
+                            val rememberPasswordInteraction = remember { MutableInteractionSource() }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .photoVaultFocusRing(rememberPasswordShape, rememberPasswordInteraction)
+                                    .clip(rememberPasswordShape)
                                     .clickable(
                                         enabled = !uiState.isLoading,
                                         role = Role.Switch,
-                                        interactionSource = remember { MutableInteractionSource() },
+                                        interactionSource = rememberPasswordInteraction,
                                         indication = null
                                     ) {
-                                        viewModel.onRememberPasswordChange(!uiState.rememberPassword)
+                                        viewModel?.onRememberPasswordChange(!uiState.rememberPassword)
                                     }
+                                    .focusable(
+                                        enabled = !uiState.isLoading,
+                                        interactionSource = rememberPasswordInteraction
+                                    )
+                                    .testTag("login_remember_password")
                                     .padding(vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     text = "记住密码",
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.weight(1f).testTag("login_remember_password_label"),
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
-                                    color = Color.White
+                                    color = if (LocalLoginForegroundVisible.current) Color.White else Color.Transparent
                                 )
                                 Switch(
                                     checked = uiState.rememberPassword,
-                                    onCheckedChange = viewModel::onRememberPasswordChange,
+                                    onCheckedChange = { viewModel?.onRememberPasswordChange(it) },
                                     enabled = !uiState.isLoading,
                                     colors = SwitchDefaults.colors(
                                         checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
@@ -594,12 +634,13 @@ fun LoginScreen(
                                 loading = uiState.isLoading,
                                 enabled = !uiState.isLoading && !uiState.isTesting,
                                 dark = dark,
-                                onClick = viewModel::login
+                                onClick = { viewModel?.login() }
                             )
                         }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -674,6 +715,35 @@ private fun Modifier.dismissKeyboardOnOutsideTap(
 // ---------------------------------------------------------------------------
 // Scrolling photo wall
 // ---------------------------------------------------------------------------
+
+internal val LightLoginScrimAlphas = listOf(0.72f, 0.64f, 0.58f, 0.72f)
+internal val DarkLoginScrimAlphas = listOf(0.90f, 0.68f, 0.68f, 0.94f)
+
+/** Production login background, with injectable endpoint fixtures for pixel tests. */
+@Composable
+internal fun LoginPhotoBackdrop(
+    modifier: Modifier = Modifier,
+    fixtureColor: Color? = null
+) {
+    val dark = LocalPhotoVaultDarkTheme.current
+    val scrimBrush = remember(dark) { photoWallScrim(dark) }
+    val scrimTint = MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.09f else 0.06f)
+    val baseColor = if (dark) Color(0xFF120A0C) else Color(0xFFFFF3E6)
+    Box(
+        modifier = modifier
+            .background(fixtureColor ?: baseColor)
+            .drawWithContent {
+                drawContent()
+                drawRect(scrimBrush)
+                drawRect(scrimTint)
+            }
+            .testTag("login_photo_backdrop")
+    ) {
+        if (fixtureColor == null) {
+            ScrollingPhotoWall(modifier = Modifier.fillMaxSize())
+        }
+    }
+}
 
 /**
  * Twelve photographs in the public domain, by photographers who defined the
@@ -797,21 +867,19 @@ private fun ScrollingPhotoWall(modifier: Modifier = Modifier) {
  * the bottom, easing off through the middle so the pictures still come through
  * behind the glass.
  */
-private fun photoWallScrim(dark: Boolean): Brush = if (dark) {
+internal fun photoWallScrim(dark: Boolean): Brush = if (dark) {
     Brush.verticalGradient(
-        0.00f to Color(0xFF070D18).copy(alpha = 0.90f),
-        0.20f to Color(0xFF070D18).copy(alpha = 0.68f),
-        0.58f to Color(0xFF070D18).copy(alpha = 0.58f),
-        1.00f to Color(0xFF070D18).copy(alpha = 0.94f)
+        0.00f to Color(0xFF120A0C).copy(alpha = DarkLoginScrimAlphas[0]),
+        0.20f to Color(0xFF120A0C).copy(alpha = DarkLoginScrimAlphas[1]),
+        0.58f to Color(0xFF120A0C).copy(alpha = DarkLoginScrimAlphas[2]),
+        1.00f to Color(0xFF120A0C).copy(alpha = DarkLoginScrimAlphas[3])
     )
 } else {
-    // A restrained dark wash preserves the photographs' colour and contrast
-    // without making the light-theme form difficult to read.
     Brush.verticalGradient(
-        0.00f to Color.Black.copy(alpha = 0.52f),
-        0.20f to Color.Black.copy(alpha = 0.38f),
-        0.58f to Color.Black.copy(alpha = 0.32f),
-        1.00f to Color.Black.copy(alpha = 0.50f)
+        0.00f to Color.Black.copy(alpha = LightLoginScrimAlphas[0]),
+        0.20f to Color.Black.copy(alpha = LightLoginScrimAlphas[1]),
+        0.58f to Color.Black.copy(alpha = LightLoginScrimAlphas[2]),
+        1.00f to Color.Black.copy(alpha = LightLoginScrimAlphas[3])
     )
 }
 
@@ -839,8 +907,8 @@ private fun addressErrorText(error: String?): (@Composable () -> Unit)? =
 @Composable
 private fun Modifier.testResultPulse(result: TestConnectionResult?, shape: Shape): Modifier {
     val tint = when (result) {
-        is TestConnectionResult.Success -> PhotoVaultColors.SyncGreen
-        is TestConnectionResult.Failure -> MaterialTheme.colorScheme.error
+        is TestConnectionResult.Success -> semanticColorSet(SemanticTone.Success).accent
+        is TestConnectionResult.Failure -> semanticColorSet(SemanticTone.Danger).accent
         null -> return this
     }
     val pulse = rememberInfiniteTransition(label = "testResultPulse")
@@ -872,61 +940,75 @@ private class PillLook(
  * action and its result into one control keeps 登录 the only full-width button.
  */
 @Composable
-private fun ConnectionStatusPill(
+internal fun ConnectionStatusPill(
     isTesting: Boolean,
     testResult: TestConnectionResult?,
     onTest: () -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    modifier: Modifier = Modifier
 ) {
     val scheme = MaterialTheme.colorScheme
     val look = when {
         isTesting -> PillLook("测试中", scheme.primary, scheme.onPrimary, null)
-        testResult is TestConnectionResult.Success -> PillLook(
-            stringResource(R.string.connection_status_success),
-            PhotoVaultColors.SyncGreen,
-            PhotoVaultColors.DeepVault,
-            Icons.Rounded.CheckCircle
-        )
-        testResult is TestConnectionResult.Failure -> PillLook(
-            stringResource(R.string.connection_status_failed),
-            scheme.error,
-            PhotoVaultColors.DeepVault,
-            Icons.Rounded.ErrorOutline
-        )
+        testResult is TestConnectionResult.Success -> semanticColorSet(SemanticTone.Success).let {
+            PillLook(stringResource(R.string.connection_status_success), it.container, it.foreground, Icons.Rounded.CheckCircle)
+        }
+        testResult is TestConnectionResult.Failure -> semanticColorSet(SemanticTone.Danger).let {
+            PillLook(stringResource(R.string.connection_status_failed), it.container, it.foreground, Icons.Rounded.ErrorOutline)
+        }
         else -> PillLook("测试连接", scheme.primary, scheme.onPrimary, null)
     }
+    val stateTag = when {
+        isTesting -> "testing"
+        testResult is TestConnectionResult.Success -> "success"
+        testResult is TestConnectionResult.Failure -> "danger"
+        else -> "idle"
+    }
+    val shape = CircleShape
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
 
     Row(
-        modifier = Modifier
-            .shadow(elevation = 4.dp, shape = CircleShape, clip = false)
-            .clip(CircleShape)
+        modifier = modifier
+            .shadow(elevation = 4.dp, shape = shape, clip = false)
+            .photoVaultFocusRing(shape, interactionSource)
+            .clip(shape)
             .background(look.containerColor)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onTest)
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onTest
+            )
+            .focusable(enabled = enabled, interactionSource = interactionSource)
+            .testTag("login_connection_status")
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         val icon = look.icon
         if (isTesting) {
             CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier.size(12.dp).testTag("login_connection_status_${stateTag}_progress"),
                 strokeWidth = 1.5.dp,
-                color = look.contentColor
+                color = if (LocalLoginForegroundVisible.current) look.contentColor else Color.Transparent
             )
             Spacer(modifier = Modifier.width(6.dp))
         } else if (icon != null) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = look.contentColor
+                modifier = Modifier.size(14.dp).testTag("login_connection_status_${stateTag}_icon"),
+                tint = if (LocalLoginForegroundVisible.current) look.contentColor else Color.Transparent
             )
             Spacer(modifier = Modifier.width(5.dp))
         }
         Text(
             text = look.label,
+            modifier = Modifier.testTag("login_connection_status_${stateTag}_label"),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
-            color = look.contentColor,
+            color = if (LocalLoginForegroundVisible.current) look.contentColor else Color.Transparent,
             maxLines = 1
         )
     }
@@ -937,7 +1019,7 @@ private fun ConnectionStatusPill(
  * saturated object on screen.
  */
 @Composable
-private fun PrimaryActionButton(
+internal fun PrimaryActionButton(
     label: String,
     loading: Boolean,
     enabled: Boolean,
@@ -946,12 +1028,14 @@ private fun PrimaryActionButton(
 ) {
     val shape = RoundedCornerShape(18.dp)
     val gradient = if (dark) {
-        listOf(Color(0xFFA8C2FF), Color(0xFFC9B6FF))
+        listOf(Color(0xFFFFB2B7), Color(0xFFFF8792))
     } else {
-        listOf(PhotoVaultColors.VaultBlue, Color(0xFF6C5CFF))
+        listOf(Color(0xFFD92D4F), Color(0xFFB3123A))
     }
-    val contentColor = if (dark) Color(0xFF09245F) else Color.White
+    val contentColor = if (dark) Color(0xFF67001C) else Color.White
     val alpha = if (enabled) 1f else 0.45f
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
 
     Row(
         modifier = Modifier
@@ -964,9 +1048,18 @@ private fun PrimaryActionButton(
                 ambientColor = gradient.first().copy(alpha = 0.5f),
                 spotColor = gradient.first().copy(alpha = 0.5f)
             )
+            .photoVaultFocusRing(shape, interactionSource)
             .clip(shape)
             .background(Brush.horizontalGradient(gradient.map { it.copy(alpha = alpha) }))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onClick
+            )
+            .focusable(enabled = enabled, interactionSource = interactionSource)
+            .testTag("login_primary_action"),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -980,17 +1073,18 @@ private fun PrimaryActionButton(
         }
         Text(
             text = label,
+            modifier = Modifier.testTag("login_primary_action_label"),
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
-            color = contentColor
+            color = if (LocalLoginForegroundVisible.current) contentColor else Color.Transparent
         )
         if (!loading) {
             Spacer(modifier = Modifier.width(8.dp))
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
                 contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = contentColor
+                modifier = Modifier.size(18.dp).testTag("login_primary_action_icon"),
+                tint = if (LocalLoginForegroundVisible.current) contentColor else Color.Transparent
             )
         }
     }
@@ -1004,6 +1098,10 @@ private fun PrimaryActionButton(
 @Composable
 private fun glassFieldColors(dark: Boolean): TextFieldColors {
     val scheme = MaterialTheme.colorScheme
+    val foregroundVisible = LocalLoginForegroundVisible.current
+    val foreground = if (foregroundVisible) scheme.onSurface else Color.Transparent
+    val secondaryForeground = if (foregroundVisible) scheme.onSurfaceVariant else Color.Transparent
+    val primaryForeground = if (foregroundVisible) scheme.primary else Color.Transparent
     val well = if (dark) Color.White.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.42f)
     return OutlinedTextFieldDefaults.colors(
         focusedContainerColor = if (dark) {
@@ -1014,15 +1112,17 @@ private fun glassFieldColors(dark: Boolean): TextFieldColors {
         unfocusedContainerColor = well,
         disabledContainerColor = well.copy(alpha = well.alpha * 0.6f),
         errorContainerColor = well,
-        focusedBorderColor = scheme.primary,
+        focusedBorderColor = primaryForeground,
         unfocusedBorderColor = Color.Transparent,
         disabledBorderColor = Color.Transparent,
-        focusedLeadingIconColor = scheme.primary,
-        unfocusedLeadingIconColor = scheme.onSurfaceVariant,
-        cursorColor = scheme.primary,
-        focusedTextColor = scheme.onSurface,
-        unfocusedTextColor = scheme.onSurface,
-        focusedSupportingTextColor = scheme.onSurfaceVariant,
-        unfocusedSupportingTextColor = scheme.onSurfaceVariant
+        focusedLeadingIconColor = primaryForeground,
+        unfocusedLeadingIconColor = secondaryForeground,
+        focusedTrailingIconColor = secondaryForeground,
+        unfocusedTrailingIconColor = secondaryForeground,
+        cursorColor = primaryForeground,
+        focusedTextColor = foreground,
+        unfocusedTextColor = foreground,
+        focusedSupportingTextColor = secondaryForeground,
+        unfocusedSupportingTextColor = secondaryForeground
     )
 }

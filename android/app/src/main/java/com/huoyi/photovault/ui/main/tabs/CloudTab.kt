@@ -1,10 +1,13 @@
 package com.huoyi.photovault.ui.main.tabs
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.ui.semantics.contentDescription
@@ -59,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -70,7 +74,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.huoyi.photovault.data.api.model.DirectoryInfo
-import com.huoyi.photovault.ui.main.components.CloudStatusColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.huoyi.photovault.ui.main.components.StatusChip
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
 import com.huoyi.photovault.data.api.model.FileBrowseInfo
@@ -439,15 +445,26 @@ private val BREADCRUMB_BAR_HEIGHT = 40.dp
  * make it obviously an entry point rather than a regular folder.
  */
 @Composable
-private fun TrashEntryRow(
+internal fun TrashEntryRow(
     count: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val accent = CloudStatusColors.Trashed
+    val warning = semanticColorSet(SemanticTone.Warning)
+    val shape = RoundedCornerShape(10.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .testTag("cloud_trash_entry")
+            .photoVaultFocusRing(shape, interactionSource)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onClick
+            )
+            .focusable(interactionSource = interactionSource)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -455,14 +472,15 @@ private fun TrashEntryRow(
             modifier = Modifier
                 .size(36.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(accent.copy(alpha = 0.15f)),
+                .background(warning.container)
+                .testTag("cloud_trash_icon_container"),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Filled.Delete,
                 contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = accent
+                modifier = Modifier.size(20.dp).testTag("cloud_trash_icon"),
+                tint = warning.accent
             )
         }
 
@@ -534,6 +552,9 @@ internal fun BreadcrumbNavigation(
                 MaterialTheme.colorScheme.onSurfaceVariant
             }
 
+            val breadcrumbShape = RoundedCornerShape(6.dp)
+            val interactionSource = remember(breadcrumb.path) { MutableInteractionSource() }
+            val indication = LocalIndication.current
             // Root is rendered as a compact home glyph; deeper segments as
             // lightweight clickable text (no TextButton, so no 40dp min-height).
             if (index == 0) {
@@ -542,8 +563,13 @@ internal fun BreadcrumbNavigation(
                     contentDescription = "根目录",
                     tint = segmentColor,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { onBreadcrumbClick(breadcrumb) }
+                        .photoVaultFocusRing(breadcrumbShape, interactionSource)
+                        .clip(breadcrumbShape)
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = indication
+                        ) { onBreadcrumbClick(breadcrumb) }
+                        .focusable(interactionSource = interactionSource)
                         .padding(4.dp)
                         .size(18.dp)
                 )
@@ -556,8 +582,13 @@ internal fun BreadcrumbNavigation(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { onBreadcrumbClick(breadcrumb) }
+                        .photoVaultFocusRing(breadcrumbShape, interactionSource)
+                        .clip(breadcrumbShape)
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = indication
+                        ) { onBreadcrumbClick(breadcrumb) }
+                        .focusable(interactionSource = interactionSource)
                         .padding(horizontal = 6.dp, vertical = 4.dp)
                 )
             }
@@ -591,10 +622,19 @@ private fun CloudDirectoryRow(
     directory: DirectoryInfo,
     onClick: () -> Unit
 ) {
+    val shape = RoundedCornerShape(10.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .photoVaultFocusRing(shape, interactionSource)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onClick
+            )
+            .focusable(interactionSource = interactionSource)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -645,17 +685,17 @@ private fun CloudDirectoryRow(
                 StatusChip(
                     label = "已备份",
                     count = directory.backedUpCount,
-                    color = CloudStatusColors.BackedUp
+                    tone = SemanticTone.Success
                 )
                 StatusChip(
                     label = "回收站",
                     count = directory.trashedCount,
-                    color = CloudStatusColors.Trashed
+                    tone = SemanticTone.Warning
                 )
                 StatusChip(
                     label = "已删除",
                     count = directory.purgedCount,
-                    color = CloudStatusColors.Purged
+                    tone = SemanticTone.Danger
                 )
             }
         }
@@ -684,12 +724,22 @@ private fun FileItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val shape = RoundedCornerShape(10.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     // Plain list row (no card background), matching CloudDirectoryRow's
     // horizontal/vertical padding for a tighter, consistent rhythm.
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .photoVaultFocusRing(shape, interactionSource)
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = indication,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .focusable(interactionSource = interactionSource)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -779,34 +829,44 @@ private fun SelectionTrashButton(
             .height(56.dp)
             .semantics { contentDescription = "将选中的 $selectedCount 张图片移入回收站" }
     ) {
-        // Horizontal padding lives on the content (not the button modifier) so
-        // the glass surface itself spans the full pill width.
-        // Destructive action → red content (the app's "deleted" status color).
-        val destructiveColor = CloudStatusColors.Purged
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "$selectedCount",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+        CloudDestructiveActionContent(selectedCount, isWorking)
+    }
+}
+
+@Composable
+internal fun CloudDestructiveActionContent(
+    selectedCount: Int,
+    isWorking: Boolean,
+    modifier: Modifier = Modifier
+) {
+    // Horizontal padding lives on the content (not the button modifier) so
+    // the glass surface itself spans the full pill width.
+    val destructiveColor = semanticColorSet(SemanticTone.Danger).foreground
+    Row(
+        modifier = modifier
+            .padding(horizontal = 20.dp)
+            .testTag("cloud_destructive_action_content"),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "$selectedCount",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = destructiveColor
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        if (isWorking) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp,
                 color = destructiveColor
             )
-            Spacer(modifier = Modifier.width(10.dp))
-            if (isWorking) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = destructiveColor
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = null,
-                    tint = destructiveColor
-                )
-            }
+        } else {
+            Icon(
+                imageVector = Icons.Filled.Delete,
+                contentDescription = null,
+                tint = destructiveColor
+            )
         }
     }
 }

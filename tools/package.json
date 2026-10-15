@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": { "check:yingji-tones": "node generate-yingji-tones.mjs --check" },
+  "dependencies": { "@material/material-color-utilities": "0.3.0" }
+}

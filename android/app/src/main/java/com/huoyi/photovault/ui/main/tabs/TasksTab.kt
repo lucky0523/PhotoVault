@@ -5,9 +5,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,6 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,7 +77,9 @@ import com.huoyi.photovault.ui.theme.LiquidDialogButtonStyle
 import com.huoyi.photovault.ui.theme.LiquidGlassDialog
 import com.huoyi.photovault.ui.theme.liquid.LiquidProgressBar
 import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
-import com.huoyi.photovault.ui.theme.PhotoVaultColors
+import com.huoyi.photovault.ui.theme.SemanticTone
+import com.huoyi.photovault.ui.theme.photoVaultFocusRing
+import com.huoyi.photovault.ui.theme.semanticColorSet
 import com.huoyi.photovault.service.FileInfo
 import kotlin.math.roundToInt
 
@@ -385,26 +391,31 @@ private fun StartPauseButton(
  *   "将在 WiFi 连接后自动恢复") — backup auto-resumes once conditions are met.
  */
 @Composable
-private fun PauseReasonBanner(pauseReason: PauseReason) {
+internal fun PauseReasonBanner(
+    pauseReason: PauseReason,
+    modifier: Modifier = Modifier
+) {
     val isUserPause = pauseReason.isUserPause
     // User pause = neutral/grey; condition pause = amber warning.
     val accentColor = if (isUserPause) {
         MaterialTheme.colorScheme.onSurfaceVariant
     } else {
-        PhotoVaultColors.ArchiveAmber
+        semanticColorSet(SemanticTone.Warning).accent
     }
     val containerColor = if (isUserPause) {
         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     } else {
-        PhotoVaultColors.ArchiveAmber.copy(alpha = 0.15f)
+        semanticColorSet(SemanticTone.Warning).container
     }
-    val textColor = MaterialTheme.colorScheme.onSurface
+    val textColor = if (isUserPause) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        semanticColorSet(SemanticTone.Warning).foreground
+    }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor
-        ),
+        modifier = modifier.fillMaxWidth().testTag("tasks_pause_reason"),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
@@ -423,7 +434,7 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
                 },
                 contentDescription = null,
                 tint = accentColor,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(28.dp).testTag("tasks_pause_reason_icon")
             )
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -434,6 +445,7 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
                         R.string.backup_paused_reason_format,
                         stringResource(pauseReason.messageRes)
                     ),
+                    modifier = Modifier.testTag("tasks_pause_reason_title"),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     color = textColor
@@ -441,8 +453,9 @@ private fun PauseReasonBanner(pauseReason: PauseReason) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = stringResource(pauseReason.resumeHintRes),
+                    modifier = Modifier.testTag("tasks_pause_reason_hint"),
                     style = MaterialTheme.typography.bodySmall,
-                    color = textColor.copy(alpha = 0.7f)
+                    color = if (isUserPause) textColor.copy(alpha = 0.7f) else textColor
                 )
             }
         }
@@ -595,19 +608,28 @@ private fun QueuedFileItem(fileInfo: FileInfo) {
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PausedTaskItem(
+internal fun PausedTaskItem(
     task: PausedTaskUi,
     onResume: () -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
+    val shape = RoundedCornerShape(8.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .testTag("tasks_paused_item")
+            .photoVaultFocusRing(shape, interactionSource)
             .combinedClickable(
+                interactionSource = interactionSource,
+                indication = indication,
                 onClick = {},
                 onLongClick = onLongPress
-            ),
-        shape = RoundedCornerShape(8.dp),
+            )
+            .focusable(interactionSource = interactionSource),
+        shape = shape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
@@ -669,12 +691,15 @@ private fun PausedTaskItem(
  * retry that re-reads the persisted records; no records are modified.
  */
 @Composable
-private fun PausedTasksLoadErrorCard(onRetry: () -> Unit) {
+internal fun PausedTasksLoadErrorCard(
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().testTag("tasks_load_error"),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = PhotoVaultColors.ArchiveAmber.copy(alpha = 0.15f)
+            containerColor = semanticColorSet(SemanticTone.Warning).container
         )
     ) {
         Row(
@@ -686,15 +711,15 @@ private fun PausedTasksLoadErrorCard(onRetry: () -> Unit) {
             Icon(
                 imageVector = Icons.Filled.Error,
                 contentDescription = null,
-                tint = PhotoVaultColors.ArchiveAmber,
-                modifier = Modifier.size(24.dp)
+                tint = semanticColorSet(SemanticTone.Warning).accent,
+                modifier = Modifier.size(24.dp).testTag("tasks_load_error_icon")
             )
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = stringResource(R.string.error_paused_tasks_load),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
+                color = semanticColorSet(SemanticTone.Warning).foreground,
+                modifier = Modifier.weight(1f).testTag("tasks_load_error_message")
             )
             TextButton(onClick = onRetry) {
                 Icon(
@@ -912,16 +937,25 @@ private fun HistoryRecordItem(
 ) {
     var showDetails by remember { mutableStateOf(false) }
 
+    val enabled = record.status == BackupStatus.FAILED ||
+        (record.status == BackupStatus.SKIPPED && record.errorMessage != null)
+    val shape = RoundedCornerShape(8.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .photoVaultFocusRing(shape, interactionSource)
             .clickable(
-                enabled = record.status == BackupStatus.FAILED ||
-                    (record.status == BackupStatus.SKIPPED && record.errorMessage != null)
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = indication
             ) {
                 showDetails = !showDetails
-            },
-        shape = RoundedCornerShape(8.dp),
+            }
+            .focusable(enabled = enabled, interactionSource = interactionSource),
+        shape = shape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -1024,9 +1058,12 @@ private fun HistoryRecordItem(
  * Status icon for a history record.
  */
 @Composable
-private fun StatusIcon(status: BackupStatus) {
+internal fun StatusIcon(
+    status: BackupStatus,
+    modifier: Modifier = Modifier
+) {
     val (icon, tint) = when (status) {
-        BackupStatus.SUCCESS -> Icons.Filled.CheckCircle to PhotoVaultColors.SyncGreen
+        BackupStatus.SUCCESS -> Icons.Filled.CheckCircle to semanticColorSet(SemanticTone.Success).accent
         BackupStatus.FAILED -> Icons.Filled.Error to MaterialTheme.colorScheme.error
         BackupStatus.SKIPPED -> Icons.Filled.SkipNext to MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -1035,7 +1072,7 @@ private fun StatusIcon(status: BackupStatus) {
         imageVector = icon,
         contentDescription = null,
         tint = tint,
-        modifier = Modifier.size(24.dp)
+        modifier = modifier.size(24.dp).testTag("tasks_history_status_icon")
     )
 }
 
@@ -1043,15 +1080,19 @@ private fun StatusIcon(status: BackupStatus) {
  * Status label text for a history record.
  */
 @Composable
-private fun StatusLabel(status: BackupStatus) {
+internal fun StatusLabel(
+    status: BackupStatus,
+    modifier: Modifier = Modifier
+) {
     val (text, color) = when (status) {
-        BackupStatus.SUCCESS -> stringResource(R.string.backup_status_success) to PhotoVaultColors.SyncGreen
+        BackupStatus.SUCCESS -> stringResource(R.string.backup_status_success) to semanticColorSet(SemanticTone.Success).foreground
         BackupStatus.FAILED -> stringResource(R.string.backup_status_failed) to MaterialTheme.colorScheme.error
         BackupStatus.SKIPPED -> stringResource(R.string.backup_status_skipped) to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Text(
         text = text,
+        modifier = modifier.testTag("tasks_history_status_label"),
         style = MaterialTheme.typography.labelMedium,
         color = color,
         fontWeight = FontWeight.Medium
