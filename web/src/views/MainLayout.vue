@@ -35,7 +35,8 @@
           </span>
         </el-menu-item>
 
-        <!-- 设置：设备管理 / 用户管理 / 关于服务端。
+        <!-- 设置：设备管理 / 用户管理 / 客户端安装包管理（仅管理员）/
+             服务器地址（仅管理员）/ 关于服务端。
              el-sub-menu 的 index 只是分组标识，不参与路由；子项的 index 仍是
              真实路径，所以进入任一子页面时父级会自动展开并高亮。 -->
         <el-sub-menu index="settings">
@@ -54,6 +55,10 @@
           <el-menu-item v-if="authStore.isAdmin" index="/settings/client-versions">
             <el-icon><Cellphone /></el-icon>
             <span>客户端安装包管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="authStore.isAdmin" index="/settings/server-address">
+            <el-icon><Link /></el-icon>
+            <span>服务器地址</span>
           </el-menu-item>
           <el-menu-item index="/settings/about">
             <el-icon><InfoFilled /></el-icon>
@@ -154,13 +159,57 @@
       align-center
       @open="renderQrcode"
     >
+      <!-- 服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json。
+           二维码内容只来自 connect-qr 接口返回的 payload，Web 端不拼载荷。 -->
       <div class="qrcode-dialog-body">
-        <div class="qrcode-wrapper">
-          <img v-if="qrcodeDataUrl" :src="qrcodeDataUrl" alt="server qrcode" class="qrcode-img" />
-          <div v-else class="qrcode-loading">生成中...</div>
+        <template v-if="qrState === 'ready' && connectQr">
+          <div class="qrcode-wrapper">
+            <img v-if="qrcodeDataUrl" :src="qrcodeDataUrl" alt="服务器二维码" class="qrcode-img" />
+          </div>
+          <div class="server-addresses">
+            <p v-if="connectQr.public_address" class="server-url">
+              公网：{{ connectQr.public_address }}
+              <span v-if="sourceLabel(connectQr.public_source)" class="address-source">
+                {{ sourceLabel(connectQr.public_source) }}
+              </span>
+            </p>
+            <p v-if="connectQr.lan_address" class="server-url">
+              局域网：{{ connectQr.lan_address }}
+              <span v-if="sourceLabel(connectQr.lan_source)" class="address-source">
+                {{ sourceLabel(connectQr.lan_source) }}
+              </span>
+            </p>
+            <p v-if="!connectQr.public_address" class="qrcode-warning">
+              未配置公网地址，手机在外时无法连接
+              <el-link v-if="authStore.isAdmin" type="primary" @click="goToAddressSettings">
+                去设置
+              </el-link>
+            </p>
+          </div>
+          <p class="qrcode-hint">扫描二维码以连接到 PhotoVault 服务器</p>
+          <p class="qrcode-legacy-hint">旧版 App 无法识别此二维码，请先通过“下载手机 App”升级</p>
+        </template>
+        <el-empty
+          v-else-if="qrState === 'empty'"
+          :description="
+            authStore.isAdmin
+              ? '尚未配置服务器地址，也未检测到局域网地址'
+              : '尚未配置服务器地址，请联系管理员配置'
+          "
+          :image-size="80"
+        >
+          <el-button v-if="authStore.isAdmin" type="primary" link @click="goToAddressSettings">
+            前往设置服务器地址
+          </el-button>
+        </el-empty>
+        <el-empty
+          v-else-if="qrState === 'error'"
+          description="无法获取服务器地址，请稍后重试"
+          :image-size="80"
+        />
+        <div v-else class="qrcode-wrapper">
+          <div class="qrcode-loading">生成中...</div>
         </div>
-        <p class="server-url">{{ serverUrl }}</p>
-        <p class="qrcode-hint">扫描二维码以连接到 PhotoVault 服务器</p>
       </div>
     </el-dialog>
   </el-container>
@@ -168,10 +217,11 @@
 
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTrashStore } from '@/stores/trash'
-import { getServerInfo } from '@/api/server'
+import { getConnectQr, getServerInfo } from '@/api/server'
+import type { ConnectQrInfo, LanAddressSource, PublicAddressSource } from '@/api/server'
 import { getLatestAndroidClient } from '@/api/clientVersions'
 import type { ClientVersionInfo } from '@/api/clientVersions'
 import QRCode from 'qrcode'
@@ -189,6 +239,7 @@ const QrCodeIcon = () =>
   )
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 const trashStore = useTrashStore()
 
@@ -227,7 +278,10 @@ const visibleFnosMenuItems = computed(() =>
 
 const showQrcode = ref(false)
 const qrcodeDataUrl = ref('')
-const serverUrl = ref(window.location.origin)
+const qrState = ref<'loading' | 'ready' | 'empty' | 'error'>('loading')
+const connectQr = ref<ConnectQrInfo | null>(null)
+// 非响应式的请求序号：对话框反复开关时，过期请求的结果不能覆盖新状态。
+let qrRequestSeq = 0
 const showAppDownload = ref(false)
 const appDownloadLoading = ref(false)
 const appQrcodeDataUrl = ref('')
@@ -235,10 +289,13 @@ const appDownloadUrl = ref('')
 const appDownloadError = ref('')
 const latestClient = ref<ClientVersionInfo | null>(null)
 
+// isLocalHostname / resolveServerUrl 仅供「下载手机 App」对话框（renderAppDownload）
+// 使用；「服务器二维码」对话框的地址由服务端 connect-qr 接口决定，不走这里。
 function isLocalHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
 }
 
+// 仅供下载手机 App 对话框使用（见上）。
 async function resolveServerUrl(): Promise<string> {
   const hostname = window.location.hostname
   // If already accessing via a real IP/host, trust the current origin.
@@ -289,18 +346,47 @@ async function renderAppDownload() {
   }
 }
 
+// 服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json。
+// 载荷由服务端唯一的编码器生成，这里只把 payload 原样画成二维码；当前 origin 原样
+// 交给服务端，由它决定是否采用。失败时显示错误，不回退到旧的单地址格式。
 async function renderQrcode() {
+  const seq = ++qrRequestSeq
+  qrState.value = 'loading'
   qrcodeDataUrl.value = ''
-  serverUrl.value = await resolveServerUrl()
+  connectQr.value = null
   try {
-    qrcodeDataUrl.value = await QRCode.toDataURL(serverUrl.value, {
+    const info = await getConnectQr(window.location.origin)
+    if (seq !== qrRequestSeq) return
+    if (!info.payload) {
+      connectQr.value = info
+      qrState.value = 'empty'
+      return
+    }
+    const dataUrl = await QRCode.toDataURL(info.payload, {
       width: 240,
       margin: 2,
+      errorCorrectionLevel: 'M',
       color: { dark: '#000000', light: '#ffffff' },
     })
+    if (seq !== qrRequestSeq) return
+    connectQr.value = info
+    qrcodeDataUrl.value = dataUrl
+    qrState.value = 'ready'
   } catch {
-    qrcodeDataUrl.value = ''
+    if (seq !== qrRequestSeq) return
+    qrState.value = 'error'
   }
+}
+
+function sourceLabel(source: PublicAddressSource | LanAddressSource | null): string {
+  if (source === 'origin') return '（当前访问地址）'
+  if (source === 'detected') return '（自动检测）'
+  return ''
+}
+
+function goToAddressSettings() {
+  showQrcode.value = false
+  router.push({ name: 'ServerAddress' })
 }
 
 onMounted(() => {
@@ -490,5 +576,32 @@ function handleLogout() {
   margin: 0;
   font-size: 12px;
   color: #909399;
+}
+
+.server-addresses {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.address-source {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.qrcode-warning {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--el-color-warning);
+}
+
+.qrcode-legacy-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
 }
 </style>

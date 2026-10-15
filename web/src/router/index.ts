@@ -79,6 +79,12 @@ const mainChildren: RouteRecordRaw[] = [
     meta: { requiresAdmin: true },
   },
   {
+    path: 'settings/server-address',
+    name: 'ServerAddress',
+    component: () => import('@/views/ServerAddressView.vue'),
+    meta: { requiresAdmin: true },
+  },
+  {
     path: 'settings/about',
     name: 'AboutServer',
     component: () => import('@/views/AboutServerView.vue'),

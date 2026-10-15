@@ -72,3 +72,59 @@ export async function getServerAbout(): Promise<ServerAbout> {
   const response = await http.get('/server/about')
   return response.data
 }
+
+// --- 服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json ---
+
+export type PublicAddressSource = 'configured' | 'origin'
+export type LanAddressSource = 'configured' | 'origin' | 'detected'
+
+/**
+ * 服务器二维码内容。`payload` 由服务端唯一的编码器生成，Web 端只负责把它画成
+ * 二维码；两个地址都不存在时 payload 为 null。某个地址不存在时，地址与来源都是 null。
+ */
+export interface ConnectQrInfo {
+  version: number
+  payload: string | null
+  public_address: string | null
+  public_source: PublicAddressSource | null
+  lan_address: string | null
+  lan_source: LanAddressSource | null
+}
+
+/**
+ * 服务器地址设置（仅管理员）。前两项是配置值，"" 表示未配置；
+ * detected_lan_address 是服务端自动检测到的局域网地址，只用于提示。
+ */
+export interface ServerAddressSettings {
+  public_address: string
+  lan_address_override: string
+  detected_lan_address: string | null
+}
+
+/**
+ * Get the server QR code payload and the effective addresses.
+ * `origin` is passed through untouched; the server decides whether to use it.
+ */
+export async function getConnectQr(origin: string): Promise<ConnectQrInfo> {
+  const response = await http.get('/server/connect-qr', { params: { origin } })
+  return response.data
+}
+
+/** Get the configured server addresses (admin only). */
+export async function getServerAddressSettings(): Promise<ServerAddressSettings> {
+  const response = await http.get('/server/address-settings')
+  return response.data
+}
+
+/**
+ * Replace both configured server addresses (admin only). An empty string clears
+ * the value. Invalid input yields 422 with
+ * `detail = { code: 'invalid_address', message, fields: { <field>: { code, message } } }`.
+ */
+export async function updateServerAddressSettings(body: {
+  public_address: string
+  lan_address_override: string
+}): Promise<ServerAddressSettings> {
+  const response = await http.put('/server/address-settings', body)
+  return response.data
+}
