@@ -401,7 +401,7 @@ onMounted(() => {
 }
 
 .map-card .map-cover {
-  background: linear-gradient(135deg, var(--el-color-primary-light-3), var(--el-color-primary));
+  background: linear-gradient(135deg, var(--pv-brand-primary), var(--pv-brand-strong));
   color: #fff;
 }
 

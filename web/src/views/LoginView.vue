@@ -175,11 +175,16 @@ async function handleLogin() {
 }
 
 .register-link a {
-  color: #409eff;
+  color: var(--pv-brand-ink);
   text-decoration: none;
 }
 
 .register-link a:hover {
   text-decoration: underline;
+}
+
+.register-link a:focus-visible {
+  outline: 2px solid var(--pv-brand-strong);
+  outline-offset: 2px;
 }
 </style>

@@ -1,80 +1,356 @@
 /**
- * PhotoVault 主题色 —— 与 Android/iOS 端 PhotoVaultColors 保持一致的色彩语言。
+ * PhotoVault Web theme — Yingji red brand with independent semantic colors.
  *
- * 色彩语言：
- * - Vault Blue  #2F6BFF  主色：主操作、当前导航、可点击强调、链接
- * - Sync Green  #00D066  成功：已备份、设备连接、成功提示
- * - Archive Amber #FFA91F 警告：回收站、扫描中、待处理、文件夹
- * - Delete Rose #FF5C72  危险：删除、失败、不可逆风险
- * - Soft Slate  #58677E  中性：次要信息、禁用态
- *
- * 通过覆盖 Element Plus 的 CSS 变量，让所有 Element 控件（按钮、开关、
- * 标签、单选、复选、滑块、进度条等）统一使用品牌主题色。
- * light-3/5/7/8/9 为与白色混合的浅色梯度，dark-2 为与黑色混合的深色。
+ * Brand anchors follow the logo gradient (#F0464F → #B3123A). #FFC93C is a
+ * brand-asset accent only and is intentionally not exposed as an application token.
+ * Element Plus is imported before this file, so these variables and state selectors
+ * are the single Web brand-theme entry point.
  */
 :root {
-  /* ---------- 主色 Vault Blue ---------- */
-  --el-color-primary: #2f6bff;
-  --el-color-primary-light-3: #6a95ff;
-  --el-color-primary-light-5: #97b5ff;
-  --el-color-primary-light-7: #c3d5ff;
-  --el-color-primary-light-8: #dae5ff;
-  --el-color-primary-light-9: #edf2ff;
-  --el-color-primary-dark-2: #2556cc;
+  /* ---------- Yingji brand ---------- */
+  --el-color-primary: #D92D4F;
+  --el-color-primary-rgb: 217, 45, 79;
+  --el-color-primary-light-3: #E46C84;
+  --el-color-primary-light-5: #EC96A7;
+  --el-color-primary-light-7: #F4C0CA;
+  --el-color-primary-light-8: #F8D5DC;
+  --el-color-primary-light-9: #FCEAED;
+  --el-color-primary-dark-2: #B3123A;
 
-  /* ---------- 成功 Sync Green ---------- */
-  --el-color-success: #00d066;
-  --el-color-success-light-3: #4ddb8f;
-  --el-color-success-light-5: #80e8af;
-  --el-color-success-light-7: #b3f2cf;
-  --el-color-success-light-8: #ccf7df;
-  --el-color-success-light-9: #e6fbef;
-  --el-color-success-dark-2: #00a652;
+  /* ---------- Success ---------- */
+  --el-color-success: #00D066;
+  --el-color-success-light-3: #4DDB8F;
+  --el-color-success-light-5: #80E8AF;
+  --el-color-success-light-7: #B3F2CF;
+  --el-color-success-light-8: #CCF7DF;
+  --el-color-success-light-9: #E6FBEF;
+  --el-color-success-dark-2: #007A3D;
 
-  /* ---------- 警告 Archive Amber ---------- */
-  --el-color-warning: #ffa91f;
-  --el-color-warning-light-3: #ffc25c;
-  --el-color-warning-light-5: #ffd48c;
-  --el-color-warning-light-7: #ffe5ba;
-  --el-color-warning-light-8: #ffedd1;
-  --el-color-warning-light-9: #fff6e8;
-  --el-color-warning-dark-2: #cc8719;
+  /* ---------- Warning ---------- */
+  --el-color-warning: #FFA91F;
+  --el-color-warning-light-3: #FFC25C;
+  --el-color-warning-light-5: #FFD48C;
+  --el-color-warning-light-7: #FFE5BA;
+  --el-color-warning-light-8: #FFEDD1;
+  --el-color-warning-light-9: #FFF6E8;
+  --el-color-warning-dark-2: #A86200;
 
-  /* ---------- 危险 Delete Rose ---------- */
-  --el-color-danger: #ff5c72;
-  --el-color-danger-light-3: #ff8d9c;
-  --el-color-danger-light-5: #ffb3bd;
-  --el-color-danger-light-7: #ffd6dc;
-  --el-color-danger-light-8: #ffe6ea;
-  --el-color-danger-light-9: #fff2f4;
-  --el-color-danger-dark-2: #cc4a5b;
+  /* ---------- Danger / error ---------- */
+  --el-color-danger: #FF5C72;
+  --el-color-danger-light-3: #FF8D9C;
+  --el-color-danger-light-5: #FFB3BD;
+  --el-color-danger-light-7: #FFD6DC;
+  --el-color-danger-light-8: #FFE6EA;
+  --el-color-danger-light-9: #FFF2F4;
+  --el-color-danger-dark-2: #9F293B;
+  --el-color-error: #FF5C72;
+  --el-color-error-light-3: #FF8D9C;
+  --el-color-error-light-5: #FFB3BD;
+  --el-color-error-light-7: #FFD6DC;
+  --el-color-error-light-8: #FFE6EA;
+  --el-color-error-light-9: #FFF2F4;
+  --el-color-error-dark-2: #9F293B;
 
-  /* error 与 danger 同义，Element 部分组件读取 error */
-  --el-color-error: #ff5c72;
-  --el-color-error-light-3: #ff8d9c;
-  --el-color-error-light-5: #ffb3bd;
-  --el-color-error-light-7: #ffd6dc;
-  --el-color-error-light-8: #ffe6ea;
-  --el-color-error-light-9: #fff2f4;
-  --el-color-error-dark-2: #cc4a5b;
-
-  /* ---------- 中性 Soft Slate ---------- */
-  --el-color-info: #58677e;
-  --el-color-info-light-3: #8c96a8;
-  --el-color-info-light-5: #aeb6c3;
-  --el-color-info-light-7: #cfd3da;
-  --el-color-info-light-8: #dfe2e6;
-  --el-color-info-light-9: #eff0f2;
+  /* ---------- Neutral / information ---------- */
+  --el-color-info: #58677E;
+  --el-color-info-light-3: #8C96A8;
+  --el-color-info-light-5: #AEB6C3;
+  --el-color-info-light-7: #CFD3DA;
+  --el-color-info-light-8: #DFE2E6;
+  --el-color-info-light-9: #EFF0F2;
   --el-color-info-dark-2: #465265;
 
-  /* ---------- 链接跟随主色 ---------- */
-  --el-link-hover-text-color: var(--el-color-primary-light-3);
+  --el-link-hover-text-color: #B3123A;
 
-  /* ---------- PhotoVault 品牌语义变量（供自定义样式引用） ---------- */
-  --pv-vault-blue: #2f6bff;
-  --pv-sync-green: #00d066;
-  --pv-archive-amber: #ffa91f;
-  --pv-delete-rose: #ff5c72;
-  --pv-soft-slate: #58677e;
-  --pv-mist: #f7faff;
+  /* ---------- PhotoVault semantic tokens ---------- */
+  --pv-brand-primary: #D92D4F;
+  --pv-brand-logo-bright: #F0464F;
+  --pv-brand-strong: #B3123A;
+  --pv-brand-ink: #B3123A;
+  --pv-brand-container: #FCEAED;
+  --pv-brand-surface: #FFF8F7;
+  --pv-brand-warm-bg: #FFF3E6;
+  --pv-success-ink: #00391C;
+  --pv-success-active: #007A3D;
+  --pv-warning-ink: #422B00;
+  --pv-warning-active: #A86200;
+  --pv-danger-ink: #5B101B;
+  --pv-danger-active: #9F293B;
+  --pv-sync-green: #00D066;
+  --pv-archive-amber: #FFA91F;
+  --pv-delete-rose: #FF5C72;
+  --pv-soft-slate: #58677E;
+}
+
+/* Element Plus 2.14 solid button state matrix. */
+.el-button.el-button--primary {
+  --el-button-text-color: #FFFFFF;
+  --el-button-bg-color: #D92D4F;
+  --el-button-border-color: #D92D4F;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-hover-bg-color: #B3123A;
+  --el-button-hover-border-color: #B3123A;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #B3123A;
+  --el-button-active-border-color: #B3123A;
+  --el-button-active-color: #B3123A;
+  --el-button-outline-color: #B3123A;
+  --el-button-disabled-text-color: #65001F;
+  --el-button-disabled-bg-color: #EC96A7;
+  --el-button-disabled-border-color: #EC96A7;
+}
+
+.el-button.el-button--success {
+  --el-button-text-color: #00391C;
+  --el-button-bg-color: #00D066;
+  --el-button-border-color: #00D066;
+  --el-button-hover-text-color: #00391C;
+  --el-button-hover-bg-color: #4DDB8F;
+  --el-button-hover-border-color: #4DDB8F;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #007A3D;
+  --el-button-active-border-color: #007A3D;
+  --el-button-active-color: #007A3D;
+  --el-button-outline-color: #007A3D;
+  --el-button-disabled-text-color: #00391C;
+  --el-button-disabled-bg-color: #80E8AF;
+  --el-button-disabled-border-color: #80E8AF;
+}
+
+.el-button.el-button--warning {
+  --el-button-text-color: #422B00;
+  --el-button-bg-color: #FFA91F;
+  --el-button-border-color: #FFA91F;
+  --el-button-hover-text-color: #422B00;
+  --el-button-hover-bg-color: #FFC25C;
+  --el-button-hover-border-color: #FFC25C;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #A86200;
+  --el-button-active-border-color: #A86200;
+  --el-button-active-color: #A86200;
+  --el-button-outline-color: #A86200;
+  --el-button-disabled-text-color: #422B00;
+  --el-button-disabled-bg-color: #FFD48C;
+  --el-button-disabled-border-color: #FFD48C;
+}
+
+.el-button.el-button--danger {
+  --el-button-text-color: #5B101B;
+  --el-button-bg-color: #FF5C72;
+  --el-button-border-color: #FF5C72;
+  --el-button-hover-text-color: #5B101B;
+  --el-button-hover-bg-color: #FF8D9C;
+  --el-button-hover-border-color: #FF8D9C;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #9F293B;
+  --el-button-active-border-color: #9F293B;
+  --el-button-active-color: #9F293B;
+  --el-button-outline-color: #9F293B;
+  --el-button-disabled-text-color: #5B101B;
+  --el-button-disabled-bg-color: #FFB3BD;
+  --el-button-disabled-border-color: #FFB3BD;
+}
+
+/* Element Plus 2.14 plain button state matrix. */
+.el-button.el-button--primary.is-plain {
+  --el-button-text-color: #B3123A;
+  --el-button-bg-color: #FCEAED;
+  --el-button-border-color: #D92D4F;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-hover-bg-color: #D92D4F;
+  --el-button-hover-border-color: #D92D4F;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #B3123A;
+  --el-button-active-border-color: #B3123A;
+  --el-button-outline-color: #B3123A;
+  --el-button-disabled-text-color: #65001F;
+  --el-button-disabled-bg-color: #EC96A7;
+  --el-button-disabled-border-color: #EC96A7;
+}
+
+.el-button.el-button--success.is-plain {
+  --el-button-text-color: #00391C;
+  --el-button-bg-color: #E6FBEF;
+  --el-button-border-color: #007A3D;
+  --el-button-hover-text-color: #00391C;
+  --el-button-hover-bg-color: #CCF7DF;
+  --el-button-hover-border-color: #007A3D;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #007A3D;
+  --el-button-active-border-color: #007A3D;
+  --el-button-outline-color: #007A3D;
+  --el-button-disabled-text-color: #00391C;
+  --el-button-disabled-bg-color: #80E8AF;
+  --el-button-disabled-border-color: #80E8AF;
+}
+
+.el-button.el-button--warning.is-plain {
+  --el-button-text-color: #422B00;
+  --el-button-bg-color: #FFF6E8;
+  --el-button-border-color: #A86200;
+  --el-button-hover-text-color: #422B00;
+  --el-button-hover-bg-color: #FFEDD1;
+  --el-button-hover-border-color: #A86200;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #A86200;
+  --el-button-active-border-color: #A86200;
+  --el-button-outline-color: #A86200;
+  --el-button-disabled-text-color: #422B00;
+  --el-button-disabled-bg-color: #FFD48C;
+  --el-button-disabled-border-color: #FFD48C;
+}
+
+.el-button.el-button--danger.is-plain {
+  --el-button-text-color: #5B101B;
+  --el-button-bg-color: #FFF2F4;
+  --el-button-border-color: #9F293B;
+  --el-button-hover-text-color: #5B101B;
+  --el-button-hover-bg-color: #FFE6EA;
+  --el-button-hover-border-color: #9F293B;
+  --el-button-active-text-color: #FFFFFF;
+  --el-button-active-bg-color: #9F293B;
+  --el-button-active-border-color: #9F293B;
+  --el-button-outline-color: #9F293B;
+  --el-button-disabled-text-color: #5B101B;
+  --el-button-disabled-bg-color: #FFB3BD;
+  --el-button-disabled-border-color: #FFB3BD;
+}
+
+.el-button.el-button--primary.is-plain.is-disabled,
+.el-button.el-button--primary.is-plain.is-disabled:hover,
+.el-button.el-button--primary.is-plain.is-disabled:focus,
+.el-button.el-button--primary.is-plain.is-disabled:active {
+  --el-button-disabled-text-color: #65001F;
+  --el-button-disabled-bg-color: #EC96A7;
+  --el-button-disabled-border-color: #EC96A7;
+  color: #65001F;
+  background-color: #EC96A7;
+  border-color: #EC96A7;
+}
+
+.el-button.el-button--success.is-plain.is-disabled,
+.el-button.el-button--success.is-plain.is-disabled:hover,
+.el-button.el-button--success.is-plain.is-disabled:focus,
+.el-button.el-button--success.is-plain.is-disabled:active {
+  --el-button-disabled-text-color: #00391C;
+  --el-button-disabled-bg-color: #80E8AF;
+  --el-button-disabled-border-color: #80E8AF;
+  color: #00391C;
+  background-color: #80E8AF;
+  border-color: #80E8AF;
+}
+
+.el-button.el-button--warning.is-plain.is-disabled,
+.el-button.el-button--warning.is-plain.is-disabled:hover,
+.el-button.el-button--warning.is-plain.is-disabled:focus,
+.el-button.el-button--warning.is-plain.is-disabled:active {
+  --el-button-disabled-text-color: #422B00;
+  --el-button-disabled-bg-color: #FFD48C;
+  --el-button-disabled-border-color: #FFD48C;
+  color: #422B00;
+  background-color: #FFD48C;
+  border-color: #FFD48C;
+}
+
+.el-button.el-button--danger.is-plain.is-disabled,
+.el-button.el-button--danger.is-plain.is-disabled:hover,
+.el-button.el-button--danger.is-plain.is-disabled:focus,
+.el-button.el-button--danger.is-plain.is-disabled:active {
+  --el-button-disabled-text-color: #5B101B;
+  --el-button-disabled-bg-color: #FFB3BD;
+  --el-button-disabled-border-color: #FFB3BD;
+  color: #5B101B;
+  background-color: #FFB3BD;
+  border-color: #FFB3BD;
+}
+
+/* Link/text buttons use accessible semantic ink instead of bright fills. */
+.el-button.el-button--primary.is-link,
+.el-button.el-button--primary.is-text {
+  --el-button-text-color: #B3123A;
+  --el-button-hover-text-color: #B3123A;
+  --el-button-hover-link-text-color: #B3123A;
+  --el-button-active-color: #B3123A;
+  --el-button-outline-color: #B3123A;
+  --el-button-disabled-text-color: #58677E;
+}
+
+.el-button.el-button--success.is-link,
+.el-button.el-button--success.is-text {
+  --el-button-text-color: #00391C;
+  --el-button-hover-text-color: #00391C;
+  --el-button-hover-link-text-color: #00391C;
+  --el-button-active-color: #007A3D;
+  --el-button-outline-color: #007A3D;
+  --el-button-disabled-text-color: #58677E;
+}
+
+.el-button.el-button--warning.is-link,
+.el-button.el-button--warning.is-text {
+  --el-button-text-color: #422B00;
+  --el-button-hover-text-color: #422B00;
+  --el-button-hover-link-text-color: #422B00;
+  --el-button-active-color: #A86200;
+  --el-button-outline-color: #A86200;
+  --el-button-disabled-text-color: #58677E;
+}
+
+.el-button.el-button--danger.is-link,
+.el-button.el-button--danger.is-text {
+  --el-button-text-color: #5B101B;
+  --el-button-hover-text-color: #5B101B;
+  --el-button-hover-link-text-color: #5B101B;
+  --el-button-active-color: #9F293B;
+  --el-button-outline-color: #9F293B;
+  --el-button-disabled-text-color: #58677E;
+}
+
+.el-link.el-link--primary {
+  --el-link-text-color: #B3123A;
+  --el-link-hover-text-color: #B3123A;
+  --el-link-disabled-text-color: #58677E;
+  --pv-link-active-color: #B3123A;
+  --pv-link-focus-color: #B3123A;
+}
+
+.el-link.el-link--success {
+  --el-link-text-color: #00391C;
+  --el-link-hover-text-color: #00391C;
+  --el-link-disabled-text-color: #58677E;
+  --pv-link-active-color: #007A3D;
+  --pv-link-focus-color: #007A3D;
+}
+
+.el-link.el-link--warning {
+  --el-link-text-color: #422B00;
+  --el-link-hover-text-color: #422B00;
+  --el-link-disabled-text-color: #58677E;
+  --pv-link-active-color: #A86200;
+  --pv-link-focus-color: #A86200;
+}
+
+.el-link.el-link--danger {
+  --el-link-text-color: #5B101B;
+  --el-link-hover-text-color: #5B101B;
+  --el-link-disabled-text-color: #58677E;
+  --pv-link-active-color: #9F293B;
+  --pv-link-focus-color: #9F293B;
+}
+
+.el-link:not(.is-disabled):active {
+  color: var(--pv-link-active-color);
+}
+
+.el-button.el-button.is-link.is-disabled,
+.el-button.el-button.is-text.is-disabled,
+.el-link.el-link.is-disabled {
+  --el-button-disabled-text-color: #58677E;
+  --el-link-disabled-text-color: #58677E;
+  color: #58677E;
+}
+
+.el-button:focus-visible,
+.el-link:focus-visible {
+  outline: 2px solid var(--el-button-outline-color, var(--pv-link-focus-color));
+  outline-offset: 2px;
 }

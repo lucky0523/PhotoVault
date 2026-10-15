@@ -182,12 +182,17 @@ async function handleRegister() {
 }
 
 .login-link a {
-  color: #409eff;
+  color: var(--pv-brand-ink);
   text-decoration: none;
 }
 
 .login-link a:hover {
   text-decoration: underline;
+}
+
+.login-link a:focus-visible {
+  outline: 2px solid var(--pv-brand-strong);
+  outline-offset: 2px;
 }
 
 /* Allow long password validation messages to wrap and display fully */

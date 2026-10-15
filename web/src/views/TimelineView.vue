@@ -713,8 +713,8 @@ onBeforeUnmount(() => {
 }
 
 .year-item.active {
-  background: var(--el-color-primary-light-9);
-  color: var(--el-color-primary);
+  background: var(--pv-brand-container);
+  color: var(--pv-brand-ink);
 }
 
 .expand-icon {
@@ -761,8 +761,8 @@ onBeforeUnmount(() => {
 }
 
 .month-item.active {
-  background: var(--el-color-primary-light-9);
-  color: var(--el-color-primary);
+  background: var(--pv-brand-container);
+  color: var(--pv-brand-ink);
 }
 
 .month-label {
@@ -808,7 +808,7 @@ onBeforeUnmount(() => {
   width: 140px;
 }
 
-/* Bright-blue selected tags inside the filter dropdowns */
+/* Brand-red selected tags inside the filter dropdowns */
 .filter-select :deep(.el-tag) {
   background-color: var(--el-color-primary);
   border-color: var(--el-color-primary);
@@ -861,8 +861,8 @@ onBeforeUnmount(() => {
   padding: 2px 10px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
+  color: var(--pv-brand-ink);
+  background: var(--pv-brand-container);
   border: 1px solid var(--el-color-primary-light-5);
   border-radius: 12px;
 }
