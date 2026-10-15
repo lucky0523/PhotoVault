@@ -42,15 +42,21 @@ disturbing the others, and a deployment that sets all four never depends on
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+
+# Stdlib-only module that never imports app.* (see its docstring), so this
+# top-level import cannot form a cycle.
+from app.core.server_address import validate_address, validate_address_pair
 
 # Accepted SQLite URL prefixes for ``database_url``. The setting doubles as a
 # plain filesystem path, so these are stripped before the value is handed to
@@ -935,3 +941,101 @@ def set_analysis_flags(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
     return flags
+
+
+# ---------------------------------------------------------------------------
+# Runtime server-address settings (persisted, read on every request)
+# ---------------------------------------------------------------------------
+#
+# 服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json。
+# Unlike the analysis flags these are *not* cached on the settings singleton:
+# scripts/server-run.sh runs several workers, and a change saved through one of
+# them must be visible to all of them immediately. The file is tiny and only
+# read when the QR dialog or the settings page is opened. There is no Settings
+# field, config.yaml key or PHOTOVAULT_* variable for these values.
+
+SERVER_ADDRESS_FILE_NAME = ".server_address.json"
+
+
+def server_address_settings_path(storage_root: str) -> Path:
+    """Path to the JSON file persisting the configured server addresses."""
+    return Path(storage_root) / SERVER_ADDRESS_FILE_NAME
+
+
+def get_server_address_settings() -> dict[str, str]:
+    """返回 {"public_address": str, "lan_address_override": str}，"" 表示未配置。
+
+    Re-reads the file on every call and never raises: unreadable files and
+    invalid values degrade to "" (with a WARNING), so a hand-edited broken file
+    can always be overwritten from the settings page. Valid values are returned
+    in canonical form; the file itself is not rewritten.
+    """
+    # config.py 没有模块级 logger，沿用文件内现有写法 logging.getLogger("photovault.config")
+    logger = logging.getLogger("photovault.config")
+    path = server_address_settings_path(get_settings().storage_root)
+    empty = {"public_address": "", "lan_address_override": ""}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return empty
+    except (OSError, ValueError):  # ValueError 覆盖 json.JSONDecodeError 与 UnicodeDecodeError（如 GBK 手工编辑）
+        logger.warning("Could not read %s; ignoring server address settings", path, exc_info=True)
+        return empty
+    if not isinstance(raw, dict):
+        logger.warning("%s is not a JSON object; ignoring server address settings", path)
+        return empty
+
+    values: dict[str, str | None] = {}
+    for key in ("public_address", "lan_address_override"):
+        value = raw.get(key)
+        if value is not None and not isinstance(value, str):
+            logger.warning("%s: %s is not a string; ignoring it", path, key)
+            value = None
+        values[key] = value
+
+    pub, lan = validate_address_pair(values["public_address"], values["lan_address_override"])
+    if pub.error is not None and pub.error.value == "SAME_AS_OTHER":
+        logger.warning(
+            "%s: lan_address_override is the same as public_address; ignoring it", path
+        )
+        kept = validate_address(values["public_address"]).canonical or ""
+        return {"public_address": kept, "lan_address_override": ""}
+
+    result: dict[str, str] = {}
+    for key, check in (("public_address", pub), ("lan_address_override", lan)):
+        if check.error is not None:
+            logger.warning(
+                "%s: %s is not a valid server address (%s); ignoring it",
+                path, key, check.error.value,
+            )
+        result[key] = check.canonical or ""
+    return result
+
+
+def set_server_address_settings(*, public_address: str, lan_address_override: str) -> dict[str, str]:
+    """参数必须是已经过 validate_address_pair 校验的规范值（或 ""）。
+
+    写入失败时抛 OSError，原文件保持不变，不残留临时文件。Each write goes
+    through its own ``mkstemp`` file in the same directory, then ``fsync`` and
+    ``os.replace``, so concurrent writers (multiple workers) never interleave
+    and readers always see one complete version.
+    """
+    data = {"public_address": public_address, "lan_address_override": lan_address_override}
+    path = server_address_settings_path(get_settings().storage_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 每次写入用唯一的临时文件名：多个 worker（server-run.sh 使用 --workers 4）
+    # 并发 PUT 时不会共享同一个 tmp 文件，也就不会在同一个 inode 上交错写入。
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".server_address.", suffix=".tmp")
+    try:
+        # 与 .analysis_flags.json / .workdir 一致；内容不含机密，便于手工查看和编辑
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return data

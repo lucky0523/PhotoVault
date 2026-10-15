@@ -1,28 +1,50 @@
 """Server info API endpoints.
 
 Endpoints:
-- GET /api/v1/server/info   (LAN IP + port for QR code generation)
-- GET /api/v1/server/about  (version / runtime / storage info for 设置 → 关于服务端)
+- GET /api/v1/server/info              (LAN IP + port; kept unchanged for older web builds)
+- GET /api/v1/server/about             (version / runtime / storage info for 设置 → 关于服务端)
+- GET /api/v1/server/connect-qr        (服务器二维码 v1 payload + effective addresses; any logged-in user)
+- GET /api/v1/server/address-settings  (configured public / LAN addresses; admin only)
+- PUT /api/v1/server/address-settings  (save them to {storage_root}/.server_address.json; admin only)
+
+服务器二维码协议 v1，见 protocol/README.md 与 protocol/server-qr-v1.json。
+The payload is built only by ``app.core.server_address.encode_connect_payload``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import platform
 import socket
 import sys
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import fastapi
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app import __version__
-from app.core.config import get_settings
+from app.core.config import (
+    get_server_address_settings,
+    get_settings,
+    server_address_settings_path,
+    set_server_address_settings,
+)
 from app.core.network import detect_lan_ips
 from app.core.runtime import get_started_at, get_uptime_seconds
+from app.core.server_address import (
+    ADDRESS_ERROR_MESSAGES,
+    PAYLOAD_VERSION,
+    AddressError,
+    detected_lan_address,
+    encode_connect_payload,
+    resolve_effective_addresses,
+    same_as_other_message,
+    validate_address_pair,
+)
 from app.models.auth import UserInfo
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 
 logger = logging.getLogger("photovault.api.server")
 
@@ -113,6 +135,45 @@ class ServerAboutResponse(BaseModel):
     config: Optional[ConfigInfo] = None
 
 
+class ConnectQrResponse(BaseModel):
+    """What the 服务器二维码 dialog renders.
+
+    ``payload`` is the exact string to encode into the QR code (``None`` when
+    neither address is available). The addresses and their sources are shown
+    as text next to it. Exactly these six fields — no paths, tokens or ids.
+    """
+
+    version: int
+    payload: Optional[str]
+    public_address: Optional[str]
+    public_source: Optional[Literal["configured", "origin"]]
+    lan_address: Optional[str]
+    lan_source: Optional[Literal["configured", "origin", "detected"]]
+
+
+class ServerAddressSettingsResponse(BaseModel):
+    """Configured (not effective) addresses; "" means not configured.
+
+    ``detected_lan_address`` is the auto-detected fallback, shown only as a
+    placeholder / hint on the settings page.
+    """
+
+    public_address: str
+    lan_address_override: str
+    detected_lan_address: Optional[str]
+
+
+class ServerAddressSettingsUpdate(BaseModel):
+    """Full replacement: both keys are required, ``null`` / blank clears a value.
+
+    No ``max_length`` on purpose, so an over-long value gets the field-level
+    TOO_LONG message instead of a generic validation error.
+    """
+
+    public_address: Optional[str]
+    lan_address_override: Optional[str]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -196,3 +257,109 @@ async def get_server_about(
         storage=storage,
         config=config,
     )
+
+
+@router.get("/server/connect-qr", response_model=ConnectQrResponse)
+async def get_connect_qr(
+    origin: Optional[str] = None,
+    current_user: UserInfo = Depends(get_current_user),
+) -> ConnectQrResponse:
+    """Return the 服务器二维码 v1 payload and the effective addresses.
+
+    ``origin`` is the browser's ``window.location.origin``. It is untrusted and
+    has no length limit here: anything that is not an explicit, valid
+    ``http(s)://`` address is ignored rather than rejected.
+    """
+    settings = get_settings()
+    configured = get_server_address_settings()
+    # detect_lan_ips may run subprocesses (up to 2 s each); keep it off the loop.
+    detected = await asyncio.to_thread(detect_lan_ips)
+    effective = resolve_effective_addresses(
+        configured_public=configured["public_address"],
+        configured_lan=configured["lan_address_override"],
+        origin=origin,
+        detected_lan_ips=detected,
+        server_port=settings.server_port,
+    )
+    return ConnectQrResponse(
+        version=PAYLOAD_VERSION,
+        payload=encode_connect_payload(effective.public_address, effective.lan_address),
+        public_address=effective.public_address,
+        public_source=effective.public_source,
+        lan_address=effective.lan_address,
+        lan_source=effective.lan_source,
+    )
+
+
+async def _address_settings_response(saved: dict[str, str]) -> ServerAddressSettingsResponse:
+    detected = await asyncio.to_thread(detect_lan_ips)
+    return ServerAddressSettingsResponse(
+        public_address=saved["public_address"],
+        lan_address_override=saved["lan_address_override"],
+        detected_lan_address=detected_lan_address(detected, get_settings().server_port),
+    )
+
+
+@router.get("/server/address-settings", response_model=ServerAddressSettingsResponse)
+async def get_address_settings(
+    current_user: UserInfo = Depends(require_admin),
+) -> ServerAddressSettingsResponse:
+    """Return the configured server addresses for the 设置 → 服务器地址 page."""
+    return await _address_settings_response(get_server_address_settings())
+
+
+@router.put("/server/address-settings", response_model=ServerAddressSettingsResponse)
+async def update_address_settings(
+    body: ServerAddressSettingsUpdate,
+    current_user: UserInfo = Depends(require_admin),
+) -> ServerAddressSettingsResponse:
+    """Validate and save both server addresses (full replacement).
+
+    Any invalid field → 422 ``{"code": "invalid_address", "message", "fields"}``
+    and nothing is written. Values are stored in canonical form.
+    """
+    pub_check, lan_check = validate_address_pair(body.public_address, body.lan_address_override)
+
+    fields: dict[str, dict[str, str]] = {}
+    for field, check in (("public_address", pub_check), ("lan_address_override", lan_check)):
+        if check.error is None:
+            continue
+        if check.error is AddressError.SAME_AS_OTHER:
+            message = same_as_other_message(field)
+        else:
+            message = ADDRESS_ERROR_MESSAGES[check.error]
+        fields[field] = {"code": check.error.value, "message": message}
+    if fields:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_address",
+                "message": next(iter(fields.values()))["message"],
+                "fields": fields,
+            },
+        )
+
+    pub = pub_check.canonical
+    lan = lan_check.canonical
+    try:
+        # fsync can stall on a NAS spinning disk; keep it off the event loop.
+        saved = await asyncio.to_thread(
+            set_server_address_settings,
+            public_address=pub or "",
+            lan_address_override=lan or "",
+        )
+    except OSError:
+        logger.error(
+            "Could not write %s",
+            server_address_settings_path(get_settings().storage_root),
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="保存服务器地址失败")
+
+    logger.info(
+        "Server addresses updated by %s: public_address=%s lan_address_override=%s",
+        current_user.username,
+        pub or "(none)",
+        lan or "(none)",
+    )
+    return await _address_settings_response(saved)
