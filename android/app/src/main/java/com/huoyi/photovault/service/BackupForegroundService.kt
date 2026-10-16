@@ -619,7 +619,8 @@ class BackupForegroundService : Service() {
                 totalFiles = backupQueue.size()
                 com.huoyi.photovault.util.FileLogger.log(
                     "Service",
-                    "backup loop start; queue=$totalFiles isManualRun=$isManualRun"
+                    "backup loop start; queue=$totalFiles isManualRun=$isManualRun " +
+                        "lanPerm=${com.huoyi.photovault.util.LocalNetworkPermission.isGranted(applicationContext)}"
                 )
 
                 // Files already re-queued once after a mid-file LAN→public switch

@@ -146,4 +146,10 @@
     <string name="notification_backup_checking_files">正在检查文件…</string>
     <string name="notification_channel_scan">扫描照片</string>
     <string name="notification_scan_in_progress">正在扫描新照片…</string>
+    <!-- Local network permission (Android 17+) -->
+    <string name="local_network_permission_title">需要局域网访问权限</string>
+    <string name="local_network_permission_denied">影集需要局域网访问权限才能连接家中局域网里的服务器（如 192.168.1.10:8000）。未授权时，局域网连接和局域网备份都会失败。点击“重试”重新授权。</string>
+    <string name="local_network_permission_denied_settings">影集的局域网访问权限已关闭，无法连接家中局域网里的服务器。请打开设置，在“权限 &gt; 附近的设备”中允许。</string>
+    <string name="action_open_settings">去设置</string>
+    <string name="action_later">稍后</string>
 </resources>

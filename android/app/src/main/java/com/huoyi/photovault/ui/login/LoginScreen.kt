@@ -119,6 +119,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.huoyi.photovault.R
+import com.huoyi.photovault.ui.common.rememberLocalNetworkPermissionRequester
 import com.huoyi.photovault.ui.theme.GlassBar
 import com.huoyi.photovault.ui.theme.LocalGlassBackdrop
 import com.huoyi.photovault.ui.theme.SemanticTone
@@ -206,6 +207,10 @@ private fun LoginScreenContent(
             }
         )
     }
+    // Android 17 blocks LAN connections until ACCESS_LOCAL_NETWORK is granted. Ask on the
+    // user's first connect attempt (login / test connection); the action continues either
+    // way, because the public address works without it.
+    val localNetworkPermission = rememberLocalNetworkPermissionRequester()
 
     var navigationDispatched by remember { mutableStateOf(false) }
     // Both auto-login and interactive login converge on one navigation effect.
@@ -346,7 +351,7 @@ private fun LoginScreenContent(
                                 ConnectionStatusPill(
                                     isTesting = uiState.isTesting,
                                     testResult = testSummary,
-                                    onTest = { viewModel?.testConnection() },
+                                    onTest = { localNetworkPermission.request { viewModel?.testConnection() } },
                                     enabled = !uiState.isLoading && !uiState.isTesting
                                 )
                             }
@@ -579,7 +584,7 @@ private fun LoginScreenContent(
                                 keyboardActions = KeyboardActions(
                                     onDone = {
                                         focusManager.clearFocus()
-                                        viewModel?.login()
+                                        localNetworkPermission.request { viewModel?.login() }
                                     }
                                 ),
                                 enabled = !uiState.isLoading
@@ -634,7 +639,7 @@ private fun LoginScreenContent(
                                 loading = uiState.isLoading,
                                 enabled = !uiState.isLoading && !uiState.isTesting,
                                 dark = dark,
-                                onClick = { viewModel?.login() }
+                                onClick = { localNetworkPermission.request { viewModel?.login() } }
                             )
                         }
                     }

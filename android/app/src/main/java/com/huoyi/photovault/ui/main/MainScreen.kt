@@ -57,6 +57,7 @@ import androidx.navigation.compose.rememberNavController
 import com.huoyi.photovault.R
 import com.huoyi.photovault.data.network.ConnectionState
 import com.huoyi.photovault.data.network.ConnectionType
+import com.huoyi.photovault.ui.common.rememberLocalNetworkPermissionRequester
 import com.huoyi.photovault.ui.main.tabs.CloudTab
 import com.huoyi.photovault.ui.main.tabs.LocalTab
 import com.huoyi.photovault.ui.main.tabs.SettingsTab
@@ -145,9 +146,21 @@ fun MainScreen(
         }
     }
 
+    // Android 17 local network permission: needed to reach the server on the LAN.
+    // After a grant, revive a Disconnected session right away instead of waiting
+    // for the next heartbeat.
+    val localNetworkPermission = rememberLocalNetworkPermissionRequester(onGranted = {
+        if (viewModel.connectionState.value is ConnectionState.Disconnected) {
+            viewModel.retryConnection()
+        }
+    })
+
     // Request media-read and Android 13+ notification runtime permissions in
     // one launcher, avoiding overlapping system dialogs. Notification denial is
     // non-blocking and only degrades out-of-app progress visibility.
+    // The local network permission is asked first and this request is chained
+    // in its callback, so system dialogs still never overlap. This also prompts
+    // already-logged-in users (auto-login lands here) after an upgrade.
     val notificationDeniedMessage = stringResource(R.string.notification_permission_denied)
     val mediaPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
@@ -185,7 +198,7 @@ fun MainScreen(
                 add(android.Manifest.permission.ACCESS_MEDIA_LOCATION)
             }
         }.toTypedArray()
-        mediaPermissionLauncher.launch(permissions)
+        localNetworkPermission.request { mediaPermissionLauncher.launch(permissions) }
     }
 
     val backgroundBrush = appBackgroundBrush()

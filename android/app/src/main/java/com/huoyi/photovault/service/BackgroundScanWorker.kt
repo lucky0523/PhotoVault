@@ -368,7 +368,8 @@ class BackgroundScanWorker @AssistedInject constructor(
             "Scan",
             "doWork ENTER manual=${inputData.getBoolean(KEY_MANUAL_BACKUP, false)} " +
                 "test=$isTestRun resume=${inputData.getBoolean(KEY_RESUME_PAUSED, false)} " +
-                "fg=${AppForegroundState.isForeground}"
+                "fg=${AppForegroundState.isForeground} " +
+                "lanPerm=${com.huoyi.photovault.util.LocalNetworkPermission.isGranted(applicationContext)}"
         )
 
         // Dedicated expedited run (enqueued by resumePausedBackup) whose only job
