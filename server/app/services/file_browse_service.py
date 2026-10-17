@@ -236,38 +236,102 @@ class FileBrowseService:
             File descriptor of the lock file, or None if failed.
         """
         lock_path = self._get_lock_path(username, file_hash)
-        try:
-            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self._lock_files[file_hash] = fd
-            logger.debug("Acquired lock for file hash %s", file_hash)
-            return fd
-        except OSError:
-            logger.debug("Failed to acquire lock for file hash %s", file_hash)
-            return None
+        # Two attempts: the holder we raced with may have unlinked the path
+        # (``_release_lock``) after we opened it, leaving us locking a deleted
+        # inode. Only a lock on the inode currently at ``lock_path`` counts.
+        for _attempt in range(2):
+            try:
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            except OSError:
+                logger.debug("Failed to open lock file for file hash %s", file_hash)
+                return None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                logger.debug("Failed to acquire lock for file hash %s", file_hash)
+                return None
+            try:
+                held = os.fstat(fd)
+                current = os.stat(lock_path)
+                same_inode = (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+            except OSError:  # FileNotFoundError: unlinked after we opened it
+                same_inode = False
+            if same_inode:
+                self._lock_files[file_hash] = fd
+                logger.debug("Acquired lock for file hash %s", file_hash)
+                return fd
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+            logger.debug("Locked a stale lock-file inode for %s; retrying", file_hash)
+        logger.debug("Failed to acquire lock for file hash %s (stale inode)", file_hash)
+        return None
 
     def _release_lock(self, username: str, file_hash: str) -> None:
         """Release a file lock and delete the lock file.
+
+        The path is unlinked while the lock is still held, then unlocked and
+        closed. Together with the inode check in ``_acquire_lock`` this makes
+        sure the inode at the path is only ever locked by one holder.
 
         Args:
             username: Current user's username.
             file_hash: The file's hash.
         """
-        fd = self._lock_files.get(file_hash)
-        if fd is not None:
+        fd = self._lock_files.pop(file_hash, None)
+        if fd is None:
+            return
+        lock_path = self._get_lock_path(username, file_hash)
+        try:
+            os.unlink(lock_path)
+            logger.debug("Deleted lock file for %s", file_hash)
+        except OSError:
+            logger.debug("Lock file already deleted: %s", lock_path)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            logger.warning("Failed to release lock for file hash %s", file_hash)
+        finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
-                # Delete the lock file
-                lock_path = self._get_lock_path(username, file_hash)
-                try:
-                    os.unlink(lock_path)
-                    logger.debug("Released and deleted lock file for %s", file_hash)
-                except OSError:
-                    logger.debug("Lock file already deleted: %s", lock_path)
             except OSError:
-                logger.warning("Failed to release lock for file hash %s", file_hash)
-            del self._lock_files[file_hash]
+                logger.warning("Failed to close lock fd for file hash %s", file_hash)
+
+    def acquire_file_lock(self, username: str, file_hash: str) -> bool:
+        """Public wrapper of ``_acquire_lock`` (non-blocking).
+
+        Same lock file as ``delete_file`` / ``purge_file``:
+        ``{media_root}/{username}/.locks/{file_hash}.lock``.
+        """
+        return self._acquire_lock(username, file_hash) is not None
+
+    def release_file_lock(self, username: str, file_hash: str) -> None:
+        """Public wrapper of ``_release_lock``; no-op if not held."""
+        self._release_lock(username, file_hash)
+
+    async def _still_active_with(
+        self, user_id: int, file_id: int, file_hash: str, file_path: str
+    ) -> bool:
+        """Re-read a record after locking its hash.
+
+        The hash was read before the lock was taken; an in-place replacement
+        may have changed it meanwhile, in which case the lock we hold protects
+        nothing and the file must not be moved.
+        """
+        cursor = await self._db.execute(
+            """SELECT file_hash, file_path FROM file_records
+               WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND purged_at IS NULL""",
+            (file_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return (
+            row is not None
+            and row["file_hash"] == file_hash
+            and row["file_path"] == file_path
+        )
 
     def _get_trash_path(self, username: str, device_name: str) -> str:
         """Get the trash directory path for a user and device.
@@ -1105,6 +1169,15 @@ class FileBrowseService:
             return False, "File is currently being processed"
 
         try:
+            if not await self._still_active_with(
+                user_id, file_id, file_info.file_hash, file_info.file_path
+            ):
+                logger.info(
+                    "File %d changed before it could be moved to trash; not moving it",
+                    file_id,
+                )
+                return False, "File is currently being processed"
+
             new_path = self._move_to_trash(username, file_info.device_name, file_info.file_path)
 
             batch_id = str(uuid.uuid4())
@@ -1172,9 +1245,21 @@ class FileBrowseService:
                 lock_acquired = self._acquire_lock(username, file_hash)
                 if lock_acquired:
                     try:
-                        new_path = self._move_to_trash(username, row["device_name"], row["file_path"])
-                        if new_path:
-                            path_updates.append((new_path, row["id"]))
+                        # Changed since the directory was read: treat like a
+                        # busy lock (marked deleted, file left in place).
+                        if await self._still_active_with(
+                            user_id, row["id"], file_hash, row["file_path"]
+                        ):
+                            new_path = self._move_to_trash(
+                                username, row["device_name"], row["file_path"]
+                            )
+                            if new_path:
+                                path_updates.append((new_path, row["id"]))
+                        else:
+                            logger.info(
+                                "File %d changed while deleting directory; not moving it",
+                                row["id"],
+                            )
                     finally:
                         self._release_lock(username, file_hash)
 

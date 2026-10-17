@@ -438,6 +438,57 @@ class TestMergeChunks:
             await chunk_manager.merge_chunks(session_id)
 
     @pytest.mark.asyncio
+    async def test_each_merge_yields_a_new_inode(self, chunk_manager):
+        """Two merges of one session: different paths, both complete, the first untouched."""
+        file_data = make_file_data(3 * 1024 * 1024)
+        session_id = await chunk_manager.create_session(
+            user_id=1,
+            file_hash=compute_sha256(file_data),
+            file_name="IMG_0001.JPG",
+            file_size=len(file_data),
+            target_path="/data/t",
+            device_name="d",
+            original_path="/p",
+        )
+        chunk_size = ChunkManager.CHUNK_SIZE
+        for i in range(math.ceil(len(file_data) / chunk_size)):
+            chunk = file_data[i * chunk_size:(i + 1) * chunk_size]
+            await chunk_manager.store_chunk(session_id, i, chunk, compute_md5(chunk))
+
+        first = await chunk_manager.merge_chunks(session_id)
+        first_stat = os.stat(first)
+        second = await chunk_manager.merge_chunks(session_id)
+
+        assert first != second
+        assert Path(first).suffix == ".JPG" and Path(second).suffix == ".JPG"
+        assert Path(first).read_bytes() == file_data
+        assert Path(second).read_bytes() == file_data
+        after = os.stat(first)
+        assert (after.st_dev, after.st_ino) == (first_stat.st_dev, first_stat.st_ino)
+        assert os.stat(second).st_ino != first_stat.st_ino
+        assert not list(Path(first).parent.glob("*.part"))
+
+    @pytest.mark.asyncio
+    async def test_failed_merge_leaves_no_part_file(self, chunk_manager):
+        session_id = await chunk_manager.create_session(
+            user_id=1,
+            file_hash="abc",
+            file_name="clip.mp4",
+            file_size=4 * 1024 * 1024,  # 2 chunks
+            target_path="/data/t",
+            device_name="d",
+            original_path="/p",
+        )
+        data = b"x" * (2 * 1024 * 1024)
+        await chunk_manager.store_chunk(session_id, 0, data, compute_md5(data))
+
+        with pytest.raises(FileNotFoundError):
+            await chunk_manager.merge_chunks(session_id)
+
+        chunk_dir = chunk_manager._session_chunk_dir(session_id)
+        assert not list(chunk_dir.glob("merged-*"))
+
+    @pytest.mark.asyncio
     async def test_merge_session_not_found(self, chunk_manager):
         """merge_chunks raises SessionNotFoundError for invalid session."""
         with pytest.raises(SessionNotFoundError):

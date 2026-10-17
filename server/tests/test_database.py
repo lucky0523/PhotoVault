@@ -416,6 +416,80 @@ class TestIdempotency:
             assert row[0] == "testuser"
 
 
+_VERSION_INDEXES = {
+    "idx_file_versions_record",
+    "idx_file_versions_expires",
+    "idx_file_version_journal_path",
+    "idx_file_version_journal_record",
+    "idx_file_records_reference_to",
+}
+
+
+class TestFileVersionTables:
+    """file_versions / file_version_journal tables, indexes and durability."""
+
+    async def _names(self, db_path: str, kind: str) -> set[str]:
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type = ?", (kind,)
+            )
+            return {row[0] for row in await cursor.fetchall()}
+
+    async def test_tables_and_indexes_created(self, db_path):
+        await init_db(db_path)
+        tables = await self._names(db_path, "table")
+        assert {"file_versions", "file_version_journal"} <= tables
+        assert _VERSION_INDEXES <= await self._names(db_path, "index")
+
+    async def test_file_versions_columns(self, db_path):
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("PRAGMA table_info(file_versions)")
+            cols = {row[1]: row for row in await cursor.fetchall()}
+            cursor = await db.execute("PRAGMA foreign_key_list(file_version_journal)")
+            journal_fks = await cursor.fetchall()
+        assert set(cols) == {
+            "id", "file_record_id", "user_id", "file_hash", "file_size",
+            "stored_path", "replaced_at", "expires_at",
+        }
+        assert journal_fks == []  # journal deliberately has no foreign keys
+
+    async def test_init_on_legacy_database_is_idempotent(self, db_path):
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "INSERT INTO users (username, password_hash) VALUES ('legacy', 'h')"
+            )
+            await db.execute(
+                """INSERT INTO file_records
+                   (user_id, file_hash, file_path, original_path, device_name, file_size, file_name)
+                   VALUES (1, 'abc', '/p/x.jpg', 'content://1', 'Phone', 1, 'x.jpg')"""
+            )
+            # Simulate a database created before file versioning existed.
+            await db.execute("DROP INDEX idx_file_records_reference_to")
+            await db.execute("DROP TABLE file_versions")
+            await db.execute("DROP TABLE file_version_journal")
+            await db.commit()
+
+        await init_db(db_path)
+        await init_db(db_path)
+
+        assert {"file_versions", "file_version_journal"} <= await self._names(db_path, "table")
+        assert _VERSION_INDEXES <= await self._names(db_path, "index")
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM file_records")
+            assert (await cursor.fetchone())[0] == 1
+
+    async def test_create_connection_uses_synchronous_full(self, db_path):
+        await init_db(db_path)
+        db = await _create_connection(db_path)
+        try:
+            cursor = await db.execute("PRAGMA synchronous;")
+            assert (await cursor.fetchone())[0] == 2
+        finally:
+            await db.close()
+
+
 class TestWalMode:
     """Test that WAL mode is enabled."""
 

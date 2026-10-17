@@ -213,6 +213,49 @@ CREATE TABLE IF NOT EXISTS client_versions (
 );
 """
 
+# Previous contents of a file_records row replaced in place (same device, same
+# path, new bytes). Only VersionService reads or writes this table; dedup,
+# statistics and browsing never see it. No ON DELETE CASCADE on purpose: the
+# only physical-delete paths remove versions explicitly first.
+_CREATE_FILE_VERSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS file_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_record_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    file_hash TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    stored_path TEXT NOT NULL UNIQUE,
+    replaced_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (file_record_id) REFERENCES file_records(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
+# Write-ahead journal of in-place replacements, used for crash recovery.
+# Deliberately without foreign keys: recovery must handle any state, including
+# a record that no longer exists.
+_CREATE_FILE_VERSION_JOURNAL_TABLE = """
+CREATE TABLE IF NOT EXISTS file_version_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    op TEXT NOT NULL,
+    state TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    file_record_id INTEGER NOT NULL,
+    old_hash TEXT NOT NULL,
+    new_hash TEXT NOT NULL,
+    final_path TEXT NOT NULL,
+    version_path TEXT NOT NULL,
+    rollback_path TEXT NOT NULL,
+    staging_path TEXT NOT NULL,
+    cleanup_path TEXT,
+    replaced_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    claimed_at TIMESTAMP
+);
+"""
+
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_file_hash ON file_records(user_id, file_hash);",
     "CREATE INDEX IF NOT EXISTS idx_upload_session_user ON upload_sessions(user_id, file_hash);",
@@ -223,6 +266,11 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);",
     "CREATE INDEX IF NOT EXISTS idx_client_versions_latest ON client_versions(platform, package_name, version_code DESC);",
     "CREATE INDEX IF NOT EXISTS idx_file_records_user_path ON file_records(user_id, file_path);",
+    "CREATE INDEX IF NOT EXISTS idx_file_versions_record ON file_versions(file_record_id);",
+    "CREATE INDEX IF NOT EXISTS idx_file_versions_expires ON file_versions(expires_at);",
+    "CREATE INDEX IF NOT EXISTS idx_file_version_journal_path ON file_version_journal(final_path);",
+    "CREATE INDEX IF NOT EXISTS idx_file_version_journal_record ON file_version_journal(file_record_id);",
+    "CREATE INDEX IF NOT EXISTS idx_file_records_reference_to ON file_records(reference_to);",
 ]
 
 # Media statistics metadata columns on file_records, in schema order. Written
@@ -275,6 +323,8 @@ async def init_db(db_path: str) -> None:
         await db.execute(_CREATE_FACE_CLUSTERS_TABLE)
         await db.execute(_CREATE_FACES_TABLE)
         await db.execute(_CREATE_CLIENT_VERSIONS_TABLE)
+        await db.execute(_CREATE_FILE_VERSIONS_TABLE)
+        await db.execute(_CREATE_FILE_VERSION_JOURNAL_TABLE)
 
         # Idempotent column migration for existing databases (before indexes)
         cursor = await db.execute("PRAGMA table_info(file_records)")
@@ -401,11 +451,15 @@ async def _create_connection(db_url: str) -> aiosqlite.Connection:
 
     Each connection has:
     - ``PRAGMA foreign_keys=ON``
+    - ``PRAGMA synchronous=FULL`` (SQLite's default, set explicitly: every
+      COMMIT must be durable in WAL mode so the version journal survives a
+      power loss, see ``app.services.version_service``)
     - ``row_factory`` set to ``aiosqlite.Row`` for dict-like access
     """
     db_path = _extract_db_path(db_url)
     db = await aiosqlite.connect(db_path)
     await db.execute("PRAGMA foreign_keys=ON;")
+    await db.execute("PRAGMA synchronous=FULL;")
     db.row_factory = aiosqlite.Row
     return db
 

@@ -531,3 +531,134 @@ async def test_list_directory_latest_file_time(service_with_data):
     pixel_dir = listing.directories[0]
     assert pixel_dir.name == "Pixel9Pro"
     assert pixel_dir.latest_file_time is not None
+
+
+# ---------------------------------------------------------------------------
+# fcntl lock hardening and post-lock re-read (file versioning, design 5.3 step 2)
+# ---------------------------------------------------------------------------
+
+
+def _open_fd_count() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+def test_failed_flock_does_not_leak_fds(temp_storage):
+    holder = FileBrowseService(None, temp_storage)
+    other = FileBrowseService(None, temp_storage)
+    assert holder.acquire_file_lock("alice", "h1")
+    before = _open_fd_count()
+    for _ in range(20):
+        assert other.acquire_file_lock("alice", "h1") is False
+    assert _open_fd_count() == before
+    holder.release_file_lock("alice", "h1")
+    assert other.acquire_file_lock("alice", "h1")
+    other.release_file_lock("alice", "h1")
+
+
+def test_lock_on_stale_inode_is_retried(temp_storage, monkeypatch):
+    import fcntl as fcntl_module
+
+    service = FileBrowseService(None, temp_storage)
+    lock_path = service._get_lock_path("alice", "h1")
+    Path(lock_path).touch()
+    real_flock = fcntl_module.flock
+    calls = {"ex": 0}
+
+    def flaky_flock(fd, op):
+        if op & fcntl_module.LOCK_EX and calls["ex"] == 0:
+            # Another holder released (unlinked) the path after we opened it.
+            os.unlink(lock_path)
+            Path(lock_path).touch()
+        if op & fcntl_module.LOCK_EX:
+            calls["ex"] += 1
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(fcntl_module, "flock", flaky_flock)
+    fd = service._acquire_lock("alice", "h1")
+    assert fd is not None
+    assert calls["ex"] == 2
+    assert os.fstat(fd).st_ino == os.stat(lock_path).st_ino
+    monkeypatch.setattr(fcntl_module, "flock", real_flock)
+    service.release_file_lock("alice", "h1")
+
+
+def test_release_unlinks_before_unlocking(temp_storage, monkeypatch):
+    import fcntl as fcntl_module
+
+    service = FileBrowseService(None, temp_storage)
+    assert service.acquire_file_lock("alice", "h1")
+    events: list[str] = []
+    real_unlink, real_flock, real_close = os.unlink, fcntl_module.flock, os.close
+
+    def rec_unlink(path, *a, **k):
+        events.append("unlink")
+        return real_unlink(path, *a, **k)
+
+    def rec_flock(fd, op):
+        if op == fcntl_module.LOCK_UN:
+            events.append("unlock")
+        return real_flock(fd, op)
+
+    def rec_close(fd):
+        events.append("close")
+        return real_close(fd)
+
+    monkeypatch.setattr(os, "unlink", rec_unlink)
+    monkeypatch.setattr(fcntl_module, "flock", rec_flock)
+    monkeypatch.setattr(os, "close", rec_close)
+    service.release_file_lock("alice", "h1")
+    monkeypatch.undo()
+    assert events == ["unlink", "unlock", "close"]
+    assert not os.path.exists(service._get_lock_path("alice", "h1"))
+
+
+@pytest.mark.asyncio
+async def test_delete_file_rereads_hash_after_locking(service_with_data, monkeypatch):
+    service, db, storage_root = service_with_data
+    cursor = await db.execute("SELECT file_path FROM file_records WHERE id = 1")
+    original_path = (await cursor.fetchone())["file_path"]
+    real_get_username = service._get_username
+
+    async def replaced_meanwhile(user_id):
+        # An in-place replacement commits between reading the hash and locking.
+        await db.execute("UPDATE file_records SET file_hash = 'hash_new' WHERE id = 1")
+        await db.commit()
+        return await real_get_username(user_id)
+
+    monkeypatch.setattr(service, "_get_username", replaced_meanwhile)
+    ok, message = await service.delete_file(user_id=1, file_id=1)
+
+    assert (ok, message) == (False, "File is currently being processed")
+    cursor = await db.execute("SELECT deleted_at, file_path FROM file_records WHERE id = 1")
+    row = await cursor.fetchone()
+    assert row["deleted_at"] is None
+    assert row["file_path"] == original_path
+    assert os.path.exists(original_path)
+    # The lock was released.
+    assert FileBrowseService(db, storage_root).acquire_file_lock("alice", "hash_a1")
+
+
+@pytest.mark.asyncio
+async def test_delete_directory_skips_moving_a_changed_file(service_with_data, monkeypatch):
+    service, db, storage_root = service_with_data
+    cursor = await db.execute("SELECT file_path FROM file_records WHERE id IN (1, 2) ORDER BY id")
+    path1, path2 = [r["file_path"] for r in await cursor.fetchall()]
+    real_still_active = service._still_active_with
+
+    async def still_active(user_id, file_id, file_hash, file_path):
+        if file_id == 1:
+            # Another worker replaced record 1 after the directory was read.
+            await db.execute("UPDATE file_records SET file_hash = 'hash_new' WHERE id = 1")
+            await db.commit()
+        return await real_still_active(user_id, file_id, file_hash, file_path)
+
+    monkeypatch.setattr(service, "_still_active_with", still_active)
+    count, _ = await service.delete_directory(user_id=1, path="Pixel9Pro/DCIM/Camera")
+
+    assert count == 3
+    cursor = await db.execute("SELECT id, deleted_at, file_path FROM file_records WHERE id IN (1, 2) ORDER BY id")
+    rows = await cursor.fetchall()
+    assert all(r["deleted_at"] is not None for r in rows)
+    assert rows[0]["file_path"] == path1 and os.path.exists(path1)  # not moved
+    assert rows[1]["file_path"] != path2 and "/.trash/" in rows[1]["file_path"]
+    assert not os.path.exists(path2)

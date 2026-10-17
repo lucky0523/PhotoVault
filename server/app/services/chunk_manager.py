@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import shutil
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -263,8 +264,14 @@ class ChunkManager:
     ) -> str:
         """Merge all chunks in order into a complete file.
 
-        Reads chunks sequentially (0, 1, 2, ...) and writes them to a single
-        output file at {media_root}/.chunks/{session_id}/merged_{file_name}.
+        Reads chunks sequentially (0, 1, 2, ...) and writes them to a new file
+        at {media_root}/.chunks/{session_id}/merged-{uuid12}{suffix}, where
+        ``suffix`` is the extension of the session's file name. Every call
+        writes its own ``.part`` file and renames it into place when complete,
+        so each call yields a fresh inode: a concurrent second merge of the
+        same session can never truncate a file an earlier call already handed
+        out (e.g. hard-linked into the photo tree). A failed merge removes its
+        ``.part`` before re-raising.
 
         Args:
             session_id: The upload session ID.
@@ -285,18 +292,27 @@ class ChunkManager:
         chunk_dir = self._session_chunk_dir(session_id)
         total_chunks = session["total_chunks"]
         file_name = session["file_name"]
-        merged_path = chunk_dir / f"merged_{file_name}"
+        # Only the extension is kept (media detection depends on it); the full
+        # name could push the path past NAME_MAX.
+        suffix = Path(file_name).suffix
+        merged_path = chunk_dir / f"merged-{uuid.uuid4().hex[:12]}{suffix}"
+        part_path = merged_path.with_name(merged_path.name + ".part")
 
         def _merge() -> None:
-            with open(merged_path, "wb") as out_file:
-                for i in range(total_chunks):
-                    chunk_path = chunk_dir / self._chunk_filename(i)
-                    if not chunk_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing chunk {i} for session {session_id}"
-                        )
-                    with open(chunk_path, "rb") as chunk_file:
-                        shutil.copyfileobj(chunk_file, out_file)
+            try:
+                with open(part_path, "wb") as out_file:
+                    for i in range(total_chunks):
+                        chunk_path = chunk_dir / self._chunk_filename(i)
+                        if not chunk_path.exists():
+                            raise FileNotFoundError(
+                                f"Missing chunk {i} for session {session_id}"
+                            )
+                        with open(chunk_path, "rb") as chunk_file:
+                            shutil.copyfileobj(chunk_file, out_file)
+                os.replace(part_path, merged_path)
+            except BaseException:
+                part_path.unlink(missing_ok=True)
+                raise
 
         await asyncio.to_thread(_merge)
         return str(merged_path)
