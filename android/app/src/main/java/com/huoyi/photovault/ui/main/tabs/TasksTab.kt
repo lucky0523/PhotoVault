@@ -1,7 +1,11 @@
 package com.huoyi.photovault.ui.main.tabs
 
 import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -10,47 +14,62 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BatteryAlert
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PauseCircle
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.rounded.BatteryAlert
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.DataUsage
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.FilterListOff
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.HourglassEmpty
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,11 +81,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.huoyi.photovault.R
@@ -80,6 +108,7 @@ import com.huoyi.photovault.ui.theme.LocalBottomBarPadding
 import com.huoyi.photovault.ui.theme.SemanticTone
 import com.huoyi.photovault.ui.theme.photoVaultFocusRing
 import com.huoyi.photovault.ui.theme.semanticColorSet
+import com.huoyi.photovault.ui.theme.statusSoftFill
 import com.huoyi.photovault.service.FileInfo
 import kotlin.math.roundToInt
 
@@ -87,9 +116,9 @@ import kotlin.math.roundToInt
  * 备份任务 Tab - 显示当前正在进行的备份任务、排队中的任务以及历史备份记录。
  *
  * 包含：
- * - 分段控制器（当前任务 / 历史记录）
- * - 当前任务视图：进度条 + 速度 + 剩余时间 + 排队列表 + 暂停原因提示
- * - 历史记录视图：按日期分组，状态筛选（全部/成功/失败），失败记录可点击重试
+ * - 胶囊分段控制器（当前任务 / 历史记录）
+ * - 当前任务视图：进度卡片 + 速度 + 剩余时间 + 排队列表 + 暂停原因提示
+ * - 历史记录视图：按日期分组的卡片，状态筛选（带数量），失败记录可展开重试
  */
 @Composable
 fun TasksTab(
@@ -109,7 +138,6 @@ fun TasksTab(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Segmented control (TabRow)
         SegmentedControl(
             selectedSegment = uiState.selectedSegment,
             onSegmentSelected = { viewModel.selectSegment(it) }
@@ -135,31 +163,298 @@ fun TasksTab(
 }
 
 /**
- * Segmented control using TabRow for switching between current tasks and history.
+ * Capsule segmented control: a faint brand-tinted track with a primary-filled
+ * thumb that slides under the selected segment. Matches the pill language of
+ * the floating bottom bar and the filter pills (no grey TabRow container).
  */
 @Composable
 private fun SegmentedControl(
     selectedSegment: TasksSegment,
     onSegmentSelected: (TasksSegment) -> Unit
 ) {
-    PrimaryTabRow(
-        selectedTabIndex = selectedSegment.ordinal,
+    val segments = listOf(
+        TasksSegment.CURRENT_TASKS to "当前任务",
+        TasksSegment.HISTORY to "历史记录"
+    )
+    val primary = MaterialTheme.colorScheme.primary
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurface
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .height(44.dp)
+            // background(shape) instead of clip so segment focus halos aren't cut off.
+            .background(statusSoftFill(primary), CircleShape)
+            .padding(4.dp)
     ) {
-        Tab(
-            selected = selectedSegment == TasksSegment.CURRENT_TASKS,
-            onClick = { onSegmentSelected(TasksSegment.CURRENT_TASKS) },
-            text = { Text("当前任务") }
+        val thumbWidth = maxWidth / segments.size
+        val thumbOffset by animateDpAsState(
+            targetValue = thumbWidth * selectedSegment.ordinal,
+            label = "tasksSegmentThumb"
         )
-        Tab(
-            selected = selectedSegment == TasksSegment.HISTORY,
-            onClick = { onSegmentSelected(TasksSegment.HISTORY) },
-            text = { Text("历史记录") }
+        Box(
+            modifier = Modifier
+                .offset(x = thumbOffset)
+                .width(thumbWidth)
+                .fillMaxHeight()
+                .background(primary, CircleShape)
         )
+
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .selectableGroup()
+        ) {
+            segments.forEach { (segment, label) ->
+                val selected = segment == selectedSegment
+                val textColor by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    label = "tasksSegmentText"
+                )
+                val interactionSource = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .photoVaultFocusRing(CircleShape, interactionSource)
+                        .clip(CircleShape)
+                        .selectable(
+                            selected = selected,
+                            interactionSource = interactionSource,
+                            indication = LocalIndication.current,
+                            role = Role.Tab,
+                            onClick = { onSegmentSelected(segment) }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = textColor,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Shared building blocks
+// ============================================================
+
+/**
+ * Position of a row inside a grouped (one rounded card per section) list.
+ * Decides which corners of the row are rounded.
+ */
+internal enum class GroupPosition { Single, First, Middle, Last }
+
+/** Pure mapping from a row's index within a group of [count] rows to its [GroupPosition]. */
+internal fun groupPosition(index: Int, count: Int): GroupPosition = when {
+    count <= 1 -> GroupPosition.Single
+    index == 0 -> GroupPosition.First
+    index == count - 1 -> GroupPosition.Last
+    else -> GroupPosition.Middle
+}
+
+/** Title of the history empty state for a non-ALL [filter]; null for ALL (keeps "暂无备份记录"). */
+@StringRes
+internal fun historyFilteredEmptyTitleRes(filter: HistoryFilter): Int? = when (filter) {
+    HistoryFilter.ALL -> null
+    HistoryFilter.SUCCESS -> R.string.tasks_history_empty_success
+    HistoryFilter.FAILED -> R.string.tasks_history_empty_failed
+    HistoryFilter.SKIPPED -> R.string.tasks_history_empty_skipped
+}
+
+private fun GroupPosition.shape(radius: Dp = 16.dp): RoundedCornerShape = when (this) {
+    GroupPosition.Single -> RoundedCornerShape(radius)
+    GroupPosition.First -> RoundedCornerShape(topStart = radius, topEnd = radius)
+    GroupPosition.Middle -> RoundedCornerShape(0.dp)
+    GroupPosition.Last -> RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
+}
+
+/** Start inset of row dividers: aligns with the text column (14dp + 40dp icon + 14dp). */
+private val RowTextInset = 68.dp
+
+/**
+ * One row of a grouped section card. Paints the shared group background clipped
+ * to the row's [position] shape and an inset divider above non-first rows.
+ *
+ * The focus ring is applied before the clip so its outer halo stays visible;
+ * [interactionModifier] (clickable/focusable) is applied after the clip so the
+ * ripple follows the rounded shape.
+ */
+@Composable
+private fun GroupedRow(
+    position: GroupPosition,
+    modifier: Modifier = Modifier,
+    focusInteractionSource: InteractionSource? = null,
+    interactionModifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val shape = position.shape()
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (focusInteractionSource != null) {
+                    Modifier.photoVaultFocusRing(shape, focusInteractionSource)
+                } else {
+                    Modifier
+                }
+            )
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .then(interactionModifier)
+    ) {
+        if (position == GroupPosition.Middle || position == GroupPosition.Last) {
+            HorizontalDivider(
+                modifier = Modifier.padding(start = RowTextInset),
+                thickness = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+        }
+        content()
+    }
+}
+
+/** Section title on the left with an optional muted count/caption on the right. */
+@Composable
+private fun SectionHeader(
+    title: String,
+    trailing: String?,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, end = 4.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (trailing != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 40dp rounded leading container holding a tinted icon. */
+@Composable
+private fun LeadingIconBox(
+    icon: ImageVector,
+    tint: Color,
+    container: Color,
+    modifier: Modifier = Modifier,
+    iconModifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(container),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = iconModifier.size(22.dp)
+        )
+    }
+}
+
+/** Small capsule badge (status label / 等待中). */
+@Composable
+private fun Badge(
+    text: String,
+    container: Color,
+    foreground: Color,
+    modifier: Modifier = Modifier
+) {
+    Text(
+        text = text,
+        modifier = modifier
+            .background(container, CircleShape)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = foreground,
+        maxLines = 1
+    )
+}
+
+/** Shared empty state: brand-tinted circle with an icon, a title and a hint. */
+@Composable
+private fun TasksEmptyState(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    Column(
+        modifier = modifier.padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .background(statusSoftFill(primary), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = primary,
+                modifier = Modifier.size(36.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/** Spinner centered in the area above the floating bottom bar. */
+@Composable
+private fun CenteredLoading() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(bottom = LocalBottomBarPadding.current),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator()
     }
 }
 
@@ -185,12 +480,7 @@ private fun CurrentTasksView(
     // Show a spinner until the first load completes (queue restored + refreshed),
     // so the queue/empty/pause content doesn't flash in from the empty default.
     if (uiState.isCurrentTasksLoading) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            CircularProgressIndicator()
-        }
+        CenteredLoading()
         return
     }
 
@@ -199,10 +489,9 @@ private fun CurrentTasksView(
         contentPadding = PaddingValues(
             start = 16.dp,
             end = 16.dp,
-            top = 16.dp,
+            top = 8.dp,
             bottom = 16.dp + LocalBottomBarPadding.current
-        ),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        )
     ) {
         // Manual start/pause control (R-24.1/24.4). A user pause is surfaced as a
         // status line on this button (no separate banner) — see statusText.
@@ -227,26 +516,29 @@ private fun CurrentTasksView(
             // R-26.4: reading the paused list failed — offer a retry entry
             // without touching any persisted record.
             item {
-                PausedTasksLoadErrorCard(onRetry = onRetryLoadPausedTasks)
+                PausedTasksLoadErrorCard(
+                    onRetry = onRetryLoadPausedTasks,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
             }
         } else if (uiState.pausedTasks.isNotEmpty()) {
             item {
-                Text(
-                    text = "已暂停（自动备份已关闭）",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(top = 8.dp)
+                SectionHeader(
+                    title = "已暂停（自动备份已关闭）",
+                    trailing = uiState.pausedTasks.size.toString(),
+                    modifier = Modifier.padding(top = 20.dp)
                 )
             }
 
-            items(
+            itemsIndexed(
                 items = uiState.pausedTasks,
-                key = { it.fileUri }
-            ) { task ->
+                key = { _, task -> task.fileUri }
+            ) { index, task ->
                 PausedTaskItem(
                     task = task,
                     onResume = { onResumePausedTask(task.fileUri) },
-                    onLongPress = { longPressedFileUri = task.fileUri }
+                    onLongPress = { longPressedFileUri = task.fileUri },
+                    position = groupPosition(index, uiState.pausedTasks.size)
                 )
             }
         }
@@ -255,14 +547,20 @@ private fun CurrentTasksView(
         // pause no longer gets its own banner; it is shown on the 开始/暂停 button.
         if (uiState.isPaused && uiState.pauseReason != null && !uiState.pauseReason.isUserPause) {
             item {
-                PauseReasonBanner(pauseReason = uiState.pauseReason)
+                PauseReasonBanner(
+                    pauseReason = uiState.pauseReason,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
             }
         }
 
         // Current upload progress
         if (uiState.isUploading) {
             item {
-                CurrentUploadCard(upload = uiState.currentUpload)
+                CurrentUploadCard(
+                    upload = uiState.currentUpload,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
             }
         }
 
@@ -271,27 +569,35 @@ private fun CurrentTasksView(
             uiState.pausedTasks.isEmpty() && !uiState.pausedTasksLoadError
         ) {
             item {
-                EmptyCurrentTasksState()
+                TasksEmptyState(
+                    icon = Icons.Rounded.CloudDone,
+                    title = "没有正在进行的备份任务",
+                    subtitle = "新的图片将自动加入备份队列",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 64.dp)
+                )
             }
         }
 
-        // Queue header
+        // Queue section
         if (uiState.queuedFiles.isNotEmpty()) {
             item {
-                Text(
-                    text = "排队中 (${uiState.queueSize})",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(top = 8.dp)
+                SectionHeader(
+                    title = "排队中",
+                    trailing = uiState.queueSize.toString(),
+                    modifier = Modifier.padding(top = 20.dp)
                 )
             }
 
-            // Queued file list
-            items(
+            itemsIndexed(
                 items = uiState.queuedFiles,
-                key = { it.uri }
-            ) { fileInfo ->
-                QueuedFileItem(fileInfo = fileInfo)
+                key = { _, fileInfo -> fileInfo.uri }
+            ) { index, fileInfo ->
+                QueuedFileItem(
+                    fileInfo = fileInfo,
+                    position = groupPosition(index, uiState.queuedFiles.size)
+                )
             }
         }
     }
@@ -353,10 +659,10 @@ private fun StartPauseButton(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp),
-        shape = RoundedCornerShape(12.dp)
+        shape = CircleShape
     ) {
         Icon(
-            imageVector = if (showingPause) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            imageVector = if (showingPause) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
             contentDescription = null,
             modifier = Modifier.size(20.dp)
         )
@@ -376,7 +682,7 @@ private fun StartPauseButton(
                 )
             }
         } else {
-            Text(label)
+            Text(label, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -416,7 +722,7 @@ internal fun PauseReasonBanner(
     Card(
         modifier = modifier.fillMaxWidth().testTag("tasks_pause_reason"),
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Row(
             modifier = Modifier
@@ -426,11 +732,11 @@ internal fun PauseReasonBanner(
         ) {
             Icon(
                 imageVector = when (pauseReason) {
-                    is PauseReason.UserPaused -> Icons.Filled.Pause
-                    is PauseReason.LowBattery -> Icons.Filled.BatteryAlert
-                    is PauseReason.NoWifi -> Icons.Filled.WifiOff
-                    is PauseReason.Waiting -> Icons.Filled.HourglassEmpty
-                    is PauseReason.LowBatteryAndNoWifi -> Icons.Filled.Pause
+                    is PauseReason.UserPaused -> Icons.Rounded.Pause
+                    is PauseReason.LowBattery -> Icons.Rounded.BatteryAlert
+                    is PauseReason.NoWifi -> Icons.Rounded.WifiOff
+                    is PauseReason.Waiting -> Icons.Rounded.HourglassEmpty
+                    is PauseReason.LowBatteryAndNoWifi -> Icons.Rounded.Pause
                 },
                 contentDescription = null,
                 tint = accentColor,
@@ -466,10 +772,14 @@ internal fun PauseReasonBanner(
  * Card showing the current file upload progress with speed and remaining time.
  */
 @Composable
-private fun CurrentUploadCard(upload: CurrentUploadState) {
+private fun CurrentUploadCard(
+    upload: CurrentUploadState,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         // The default Card container falls back to an auto-generated (purplish)
         // surfaceContainer tone because this theme doesn't define those tokens.
         // Pin it to the clean `surface` color, which is what this card's text and
@@ -484,27 +794,47 @@ private fun CurrentUploadCard(upload: CurrentUploadState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(16.dp)
         ) {
-            // File name + live percentage
+            // Icon · file name + caption · live percentage
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = upload.fileName.ifEmpty { "准备上传…" },
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(statusSoftFill(primary), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CloudUpload,
+                        contentDescription = null,
+                        tint = primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = upload.fileName.ifEmpty { "准备上传…" },
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = stringResource(R.string.tasks_uploading_caption),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "${(upload.progress * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = primary
                 )
             }
 
@@ -513,10 +843,11 @@ private fun CurrentUploadCard(upload: CurrentUploadState) {
             // Progress bar — LiquidSlider track look, without the draggable thumb.
             LiquidProgressBar(
                 progress = upload.progress,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                trackHeight = 8.dp
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Speed · transferred / total · remaining time
             Row(
@@ -524,22 +855,19 @@ private fun CurrentUploadCard(upload: CurrentUploadState) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
+                UploadMetaItem(
+                    icon = Icons.Rounded.Speed,
                     text = formatSpeed(upload.speedBytesPerSec),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = primary
                 )
-
-                Text(
+                UploadMetaItem(
+                    icon = Icons.Rounded.DataUsage,
                     text = "${formatSize(upload.uploadedBytes)} / ${formatSize(upload.totalBytes)}",
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                Text(
+                UploadMetaItem(
+                    icon = Icons.Rounded.Schedule,
                     text = formatRemainingTime(upload.remainingSeconds),
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -547,37 +875,55 @@ private fun CurrentUploadCard(upload: CurrentUploadState) {
     }
 }
 
+/** Small icon + text pair used in the upload card's meta row. */
+@Composable
+private fun UploadMetaItem(icon: ImageVector, text: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = color,
+            maxLines = 1
+        )
+    }
+}
+
 /**
- * A single queued file item in the waiting list.
+ * A single queued file row in the waiting list.
  */
 @Composable
-private fun QueuedFileItem(fileInfo: FileInfo) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
+private fun QueuedFileItem(
+    fileInfo: FileInfo,
+    position: GroupPosition
+) {
+    GroupedRow(position = position) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Filled.HourglassEmpty,
-                contentDescription = null,
+            LeadingIconBox(
+                icon = Icons.Rounded.HourglassEmpty,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
+                container = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
             )
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = fileInfo.fileName,
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -588,22 +934,24 @@ private fun QueuedFileItem(fileInfo: FileInfo) {
                 )
             }
 
-            Text(
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Badge(
                 text = "等待中",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                container = MaterialTheme.colorScheme.surfaceVariant,
+                foreground = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
 }
 
 /**
- * A single AUTO_OFF paused-task card (需求 26/27/28).
+ * A single AUTO_OFF paused-task row (需求 26/27/28).
  *
  * Shows the file name, upload progress percentage and the "已暂停 · 自动备份已关闭"
  * status line, with a "继续" button that manually resumes the upload (R-27.1).
- * Long-pressing the card (≥500ms via [combinedClickable]) opens the clear
- * options dialog (R-28.1). A plain tap does nothing so the card is not
+ * Long-pressing the row (≥500ms via [combinedClickable]) opens the clear
+ * options dialog (R-28.1). A plain tap does nothing so the row is not
  * accidentally activated.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -612,47 +960,43 @@ internal fun PausedTaskItem(
     task: PausedTaskUi,
     onResume: () -> Unit,
     onLongPress: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    position: GroupPosition = GroupPosition.Single
 ) {
-    val shape = RoundedCornerShape(8.dp)
     val interactionSource = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("tasks_paused_item")
-            .photoVaultFocusRing(shape, interactionSource)
+    GroupedRow(
+        position = position,
+        modifier = modifier.testTag("tasks_paused_item"),
+        focusInteractionSource = interactionSource,
+        interactionModifier = Modifier
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = indication,
                 onClick = {},
                 onLongClick = onLongPress
             )
-            .focusable(interactionSource = interactionSource),
-        shape = shape,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+            .focusable(interactionSource = interactionSource)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Filled.PauseCircle,
-                contentDescription = null,
+            LeadingIconBox(
+                icon = Icons.Rounded.Pause,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
+                container = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
             )
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = task.fileName,
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -669,13 +1013,19 @@ internal fun PausedTaskItem(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                LiquidProgressBar(
+                    progress = task.progressPercent / 100f,
+                    trackHeight = 4.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
 
             TextButton(onClick = onResume) {
                 Icon(
-                    imageVector = Icons.Filled.PlayArrow,
+                    imageVector = Icons.Rounded.PlayArrow,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
@@ -697,7 +1047,7 @@ internal fun PausedTasksLoadErrorCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth().testTag("tasks_load_error"),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = semanticColorSet(SemanticTone.Warning).container
         )
@@ -709,7 +1059,7 @@ internal fun PausedTasksLoadErrorCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = Icons.Filled.Error,
+                imageVector = Icons.Rounded.ErrorOutline,
                 contentDescription = null,
                 tint = semanticColorSet(SemanticTone.Warning).accent,
                 modifier = Modifier.size(24.dp).testTag("tasks_load_error_icon")
@@ -723,47 +1073,13 @@ internal fun PausedTasksLoadErrorCard(
             )
             TextButton(onClick = onRetry) {
                 Icon(
-                    imageVector = Icons.Filled.Refresh,
+                    imageVector = Icons.Rounded.Refresh,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(stringResource(R.string.action_retry))
             }
-        }
-    }
-}
-
-/**
- * Empty state when there are no current tasks.
- */
-@Composable
-private fun EmptyCurrentTasksState() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 64.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(48.dp)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = "没有正在进行的备份任务",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "新的图片将自动加入备份队列",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-            )
         }
     }
 }
@@ -785,41 +1101,38 @@ private fun HistoryView(
     var showClearDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Filter chips
+        // Filter pills (with counts) + inline clear-history action
         HistoryFilterBar(
             selectedFilter = uiState.historyFilter,
-            onFilterChanged = onFilterChanged
+            counts = uiState.historyCounts,
+            onFilterChanged = onFilterChanged,
+            onClearHistory = { showClearDialog = true }
         )
 
-        // Clear-history action (only when there are records)
-        if (!uiState.isHistoryLoading && uiState.historyGroups.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = { showClearDialog = true }) {
-                    Icon(
-                        imageVector = Icons.Filled.DeleteSweep,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("清空历史记录")
-                }
-            }
-        }
-
         if (uiState.isHistoryLoading) {
+            CenteredLoading()
+        } else if (uiState.historyGroups.isEmpty()) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = LocalBottomBarPadding.current),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator()
+                val filteredTitleRes = historyFilteredEmptyTitleRes(uiState.historyFilter)
+                if (filteredTitleRes == null) {
+                    TasksEmptyState(
+                        icon = Icons.Rounded.History,
+                        title = "暂无备份记录",
+                        subtitle = stringResource(R.string.tasks_history_empty_hint)
+                    )
+                } else {
+                    TasksEmptyState(
+                        icon = Icons.Rounded.FilterListOff,
+                        title = stringResource(filteredTitleRes),
+                        subtitle = stringResource(R.string.tasks_history_empty_filtered)
+                    )
+                }
             }
-        } else if (uiState.historyGroups.isEmpty()) {
-            EmptyHistoryState()
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -827,23 +1140,31 @@ private fun HistoryView(
                     start = 16.dp,
                     end = 16.dp,
                     top = 8.dp,
-                    bottom = 8.dp + LocalBottomBarPadding.current
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    bottom = 16.dp + LocalBottomBarPadding.current
+                )
             ) {
-                uiState.historyGroups.forEach { group ->
-                    // Date header
+                uiState.historyGroups.forEachIndexed { groupIndex, group ->
+                    // Date header with per-day count
                     item(key = "header_${group.date}") {
-                        HistoryDateHeader(date = group.date)
+                        SectionHeader(
+                            title = group.date,
+                            trailing = pluralStringResource(
+                                R.plurals.tasks_history_day_count,
+                                group.records.size,
+                                group.records.size
+                            ),
+                            modifier = Modifier.padding(top = if (groupIndex == 0) 4.dp else 20.dp)
+                        )
                     }
 
-                    // Records under this date
-                    items(
+                    // Records under this date, drawn as one grouped card
+                    itemsIndexed(
                         items = group.records,
-                        key = { it.id }
-                    ) { record ->
+                        key = { _, record -> record.id }
+                    ) { index, record ->
                         HistoryRecordItem(
                             record = record,
+                            position = groupPosition(index, group.records.size),
                             onRetry = onRetry
                         )
                     }
@@ -875,78 +1196,210 @@ private fun HistoryView(
     }
 }
 
+/** Shape shared by the history filter tiles and the clear-history tile. */
+private val FilterTileShape = RoundedCornerShape(16.dp)
+
 /**
- * Filter bar with chips for filtering history by status.
+ * Header row of the history view: four equal-width status tiles (label over
+ * count) and a trailing clear-history tile. Everything fits in one row
+ * without horizontal scrolling, so no tile is ever clipped off-screen.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HistoryFilterBar(
     selectedFilter: HistoryFilter,
-    onFilterChanged: (HistoryFilter) -> Unit
+    counts: HistoryCounts,
+    onFilterChanged: (HistoryFilter) -> Unit,
+    onClearHistory: () -> Unit
 ) {
+    val success = semanticColorSet(SemanticTone.Success).accent
+    val danger = semanticColorSet(SemanticTone.Danger).accent
+    val neutral = MaterialTheme.colorScheme.onSurfaceVariant
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(IntrinsicSize.Min)
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        FilterChip(
-            selected = selectedFilter == HistoryFilter.ALL,
-            onClick = { onFilterChanged(HistoryFilter.ALL) },
-            label = { Text("全部") }
-        )
-        FilterChip(
-            selected = selectedFilter == HistoryFilter.SUCCESS,
-            onClick = { onFilterChanged(HistoryFilter.SUCCESS) },
-            label = { Text("成功") }
-        )
-        FilterChip(
-            selected = selectedFilter == HistoryFilter.FAILED,
-            onClick = { onFilterChanged(HistoryFilter.FAILED) },
-            label = { Text(stringResource(R.string.backup_status_failed)) }
-        )
-        FilterChip(
-            selected = selectedFilter == HistoryFilter.SKIPPED,
-            onClick = { onFilterChanged(HistoryFilter.SKIPPED) },
-            label = { Text("跳过") }
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            HistoryFilterPill(
+                label = "全部",
+                count = counts.all,
+                dotColor = null,
+                selected = selectedFilter == HistoryFilter.ALL,
+                onClick = { onFilterChanged(HistoryFilter.ALL) },
+                modifier = Modifier.weight(1f)
+            )
+            HistoryFilterPill(
+                label = "成功",
+                count = counts.success,
+                dotColor = success,
+                selected = selectedFilter == HistoryFilter.SUCCESS,
+                onClick = { onFilterChanged(HistoryFilter.SUCCESS) },
+                modifier = Modifier.weight(1f)
+            )
+            HistoryFilterPill(
+                label = stringResource(R.string.backup_status_failed),
+                count = counts.failed,
+                dotColor = danger,
+                selected = selectedFilter == HistoryFilter.FAILED,
+                onClick = { onFilterChanged(HistoryFilter.FAILED) },
+                modifier = Modifier.weight(1f)
+            )
+            HistoryFilterPill(
+                label = "跳过",
+                count = counts.skipped,
+                dotColor = neutral,
+                selected = selectedFilter == HistoryFilter.SKIPPED,
+                onClick = { onFilterChanged(HistoryFilter.SKIPPED) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        // Clears ALL records (not just the filtered ones), so it is enabled
+        // whenever any history exists. Dimmed instead of hidden so the row
+        // doesn't jump.
+        val clearEnabled = counts.all > 0
+        IconButton(
+            onClick = onClearHistory,
+            enabled = clearEnabled,
+            shape = FilterTileShape,
+            modifier = Modifier
+                .width(48.dp)
+                .fillMaxHeight()
+                .alpha(if (clearEnabled) 1f else 0.38f)
+                .testTag("tasks_history_clear"),
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = statusSoftFill(danger),
+                contentColor = danger,
+                disabledContainerColor = statusSoftFill(danger),
+                disabledContentColor = danger
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.DeleteSweep,
+                contentDescription = "清空历史记录",
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Brand-accent filter tile: status label (with a small status dot) over its
+ * record count. Selected = primary fill; unselected = faint primary tint.
+ * The four tiles stay equal-width in one non-scrolling row. At large font
+ * scales the status dot is dropped to give the label its width back, and the
+ * label/count ellipsize ("…") rather than being clipped mid-glyph.
+ */
+@Composable
+private fun HistoryFilterPill(
+    label: String,
+    count: Int,
+    dotColor: Color?,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val container = if (selected) primary else statusSoftFill(primary)
+    val contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    val interactionSource = remember { MutableInteractionSource() }
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .heightIn(min = 52.dp)
+            .photoVaultFocusRing(FilterTileShape, interactionSource)
+            .clip(FilterTileShape)
+            .background(container)
+            .selectable(
+                selected = selected,
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // The dot is decorative (selection is conveyed by the fill); drop it at
+        // large font scales so the label keeps the tile's full width.
+        val showDot = LocalDensity.current.fontScale < 1.3f
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (dotColor != null && showDot) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(if (selected) contentColor else dotColor, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+                text = label,
+                modifier = Modifier.weight(1f, fill = false),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = contentColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelMedium,
+            color = contentColor.copy(alpha = 0.75f),
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
 /**
- * Date group header in the history list.
- */
-@Composable
-private fun HistoryDateHeader(date: String) {
-    Text(
-        text = date,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(vertical = 8.dp)
-    )
-}
-
-/**
- * A single history record item showing file info, status, and retry option for failures.
+ * A single history row: status icon, file info, status badge, and (for
+ * failed/skipped records) the reason. Failed rows expand to offer a retry.
  */
 @Composable
 private fun HistoryRecordItem(
     record: BackupHistoryRecord,
+    position: GroupPosition,
     onRetry: (BackupHistoryRecord) -> Unit
 ) {
     var showDetails by remember { mutableStateOf(false) }
 
     val enabled = record.status == BackupStatus.FAILED ||
         (record.status == BackupStatus.SKIPPED && record.errorMessage != null)
-    val shape = RoundedCornerShape(8.dp)
     val interactionSource = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .photoVaultFocusRing(shape, interactionSource)
+    val reason = if (record.status != BackupStatus.SUCCESS && record.errorMessage != null) {
+        stringResource(
+            if (record.status == BackupStatus.SKIPPED) {
+                R.string.backup_skip_reason_format
+            } else {
+                R.string.backup_failure_reason_format
+            },
+            record.errorMessage
+        )
+    } else {
+        null
+    }
+
+    GroupedRow(
+        position = position,
+        focusInteractionSource = interactionSource,
+        interactionModifier = Modifier
             .clickable(
                 enabled = enabled,
                 interactionSource = interactionSource,
@@ -954,175 +1407,166 @@ private fun HistoryRecordItem(
             ) {
                 showDetails = !showDetails
             }
-            .focusable(enabled = enabled, interactionSource = interactionSource),
-        shape = shape,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            .focusable(enabled = enabled, interactionSource = interactionSource)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            StatusIcon(status = record.status)
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .animateContentSize()
             ) {
-                // Status icon
-                StatusIcon(status = record.status)
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                // File info
-                Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = record.fileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${formatSize(record.fileSize)} · ${formatTime(record.completedAt)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (reason != null) {
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = record.fileName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
+                        text = reason,
+                        style = MaterialTheme.typography.bodySmall,
+                        // Danger foreground (not the vivid accent) keeps small
+                        // text legible on the light group background.
+                        color = if (record.status == BackupStatus.SKIPPED) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            semanticColorSet(SemanticTone.Danger).foreground
+                        },
+                        maxLines = if (showDetails) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = formatSize(record.fileSize),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = formatTime(record.completedAt),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
-
-                // Status label
-                StatusLabel(status = record.status)
             }
 
-            // Expandable details for failed and skipped records
-            AnimatedVisibility(
-                visible = showDetails && (record.status == BackupStatus.FAILED || record.status == BackupStatus.SKIPPED),
-                enter = expandVertically(),
-                exit = shrinkVertically()
-            ) {
-                Column(
-                    modifier = Modifier.padding(top = 8.dp)
-                ) {
-                    if (record.errorMessage != null) {
-                        Text(
-                            text = stringResource(
-                                if (record.status == BackupStatus.SKIPPED) {
-                                    R.string.backup_skip_reason_format
-                                } else {
-                                    R.string.backup_failure_reason_format
-                                },
-                                record.errorMessage
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (record.status == BackupStatus.SKIPPED)
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            else
-                                MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
+            Spacer(modifier = Modifier.width(8.dp))
 
-                    if (record.status == BackupStatus.FAILED) {
-                        Button(
-                            onClick = { onRetry(record) },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.action_retry))
-                        }
-                    }
-                }
+            StatusLabel(status = record.status)
+        }
+
+        // Expanded: retry action for failed records
+        AnimatedVisibility(
+            visible = showDetails && record.status == BackupStatus.FAILED,
+            enter = expandVertically(),
+            exit = shrinkVertically()
+        ) {
+            FilledTonalButton(
+                onClick = { onRetry(record) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = RowTextInset, end = 14.dp, bottom = 12.dp),
+                shape = CircleShape,
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = statusSoftFill(MaterialTheme.colorScheme.primary),
+                    contentColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(stringResource(R.string.action_retry))
             }
         }
     }
 }
 
 /**
- * Status icon for a history record.
+ * Status icon for a history record: a tinted rounded container holding the
+ * status glyph (success = green check, failed = red error, skipped = neutral).
  */
 @Composable
 internal fun StatusIcon(
     status: BackupStatus,
     modifier: Modifier = Modifier
 ) {
-    val (icon, tint) = when (status) {
-        BackupStatus.SUCCESS -> Icons.Filled.CheckCircle to semanticColorSet(SemanticTone.Success).accent
-        BackupStatus.FAILED -> Icons.Filled.Error to MaterialTheme.colorScheme.error
-        BackupStatus.SKIPPED -> Icons.Filled.SkipNext to MaterialTheme.colorScheme.onSurfaceVariant
+    when (status) {
+        BackupStatus.SUCCESS -> {
+            val colors = semanticColorSet(SemanticTone.Success)
+            LeadingIconBox(
+                icon = Icons.Rounded.Check,
+                tint = colors.accent,
+                container = colors.container,
+                modifier = modifier,
+                iconModifier = Modifier.testTag("tasks_history_status_icon")
+            )
+        }
+        BackupStatus.FAILED -> {
+            val colors = semanticColorSet(SemanticTone.Danger)
+            LeadingIconBox(
+                icon = Icons.Rounded.ErrorOutline,
+                tint = colors.accent,
+                container = colors.container,
+                modifier = modifier,
+                iconModifier = Modifier.testTag("tasks_history_status_icon")
+            )
+        }
+        BackupStatus.SKIPPED -> LeadingIconBox(
+            icon = Icons.Rounded.SkipNext,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            container = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            modifier = modifier,
+            iconModifier = Modifier.testTag("tasks_history_status_icon")
+        )
     }
-
-    Icon(
-        imageVector = icon,
-        contentDescription = null,
-        tint = tint,
-        modifier = modifier.size(24.dp).testTag("tasks_history_status_icon")
-    )
 }
 
 /**
- * Status label text for a history record.
+ * Status badge for a history record: a small capsule in the status container
+ * color with the status foreground text.
  */
 @Composable
 internal fun StatusLabel(
     status: BackupStatus,
     modifier: Modifier = Modifier
 ) {
-    val (text, color) = when (status) {
-        BackupStatus.SUCCESS -> stringResource(R.string.backup_status_success) to semanticColorSet(SemanticTone.Success).foreground
-        BackupStatus.FAILED -> stringResource(R.string.backup_status_failed) to MaterialTheme.colorScheme.error
-        BackupStatus.SKIPPED -> stringResource(R.string.backup_status_skipped) to MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Text(
-        text = text,
-        modifier = modifier.testTag("tasks_history_status_label"),
-        style = MaterialTheme.typography.labelMedium,
-        color = color,
-        fontWeight = FontWeight.Medium
-    )
-}
-
-/**
- * Empty state for history when no records exist.
- */
-@Composable
-private fun EmptyHistoryState() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Filled.HourglassEmpty,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(48.dp)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = "暂无备份记录",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    val text: String
+    val container: Color
+    val foreground: Color
+    when (status) {
+        BackupStatus.SUCCESS -> {
+            val colors = semanticColorSet(SemanticTone.Success)
+            text = stringResource(R.string.backup_status_success)
+            container = colors.container
+            foreground = colors.foreground
+        }
+        BackupStatus.FAILED -> {
+            val colors = semanticColorSet(SemanticTone.Danger)
+            text = stringResource(R.string.backup_status_failed)
+            container = colors.container
+            foreground = colors.foreground
+        }
+        BackupStatus.SKIPPED -> {
+            text = stringResource(R.string.backup_status_skipped)
+            container = MaterialTheme.colorScheme.surfaceVariant
+            foreground = MaterialTheme.colorScheme.onSurfaceVariant
         }
     }
+
+    Badge(
+        text = text,
+        container = container,
+        foreground = foreground,
+        modifier = modifier.testTag("tasks_history_status_label")
+    )
 }
 
 // ============================================================

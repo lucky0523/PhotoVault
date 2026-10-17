@@ -3,6 +3,7 @@ package com.huoyi.photovault.ui.main.tabs
 import android.net.Uri
 import com.huoyi.photovault.data.local.SettingsPreferences
 import com.huoyi.photovault.data.local.dao.BackupHistoryDao
+import com.huoyi.photovault.data.local.dao.BackupStatusCount
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
 import com.huoyi.photovault.data.local.entity.BackupHistoryRecord
 import com.huoyi.photovault.data.local.entity.BackupStatus
@@ -448,5 +449,6 @@ class TasksTabViewModelStateTransitionTest {
         override suspend fun deleteAll() {}
         override suspend fun deleteOlderThan(olderThan: Long) {}
         override suspend fun getCountByStatus(status: BackupStatus): Int = 0
+        override fun observeStatusCounts(): Flow<List<BackupStatusCount>> = flowOf(emptyList())
     }
 }

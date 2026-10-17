@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.huoyi.photovault.R
 import com.huoyi.photovault.data.local.dao.BackupHistoryDao
+import com.huoyi.photovault.data.local.dao.BackupStatusCount
 import com.huoyi.photovault.data.local.dao.UploadRecordDao
 import com.huoyi.photovault.data.local.entity.BackupHistoryRecord
 import com.huoyi.photovault.data.local.entity.BackupStatus
@@ -20,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -109,6 +111,17 @@ data class HistoryDateGroup(
 )
 
 /**
+ * Per-status record counts across the whole backup history (independent of the
+ * active [HistoryFilter]). Purely derived UI state for the filter-pill badges.
+ */
+data class HistoryCounts(
+    val all: Int = 0,
+    val success: Int = 0,
+    val failed: Int = 0,
+    val skipped: Int = 0
+)
+
+/**
  * UI model for a single AUTO_OFF paused task shown on the 备份任务 Tab.
  *
  * These represent In_Flight_File(s) whose [UploadRecord] was marked `AUTO_OFF`
@@ -173,7 +186,9 @@ data class TasksTabUiState(
     // History
     val historyFilter: HistoryFilter = HistoryFilter.ALL,
     val historyGroups: List<HistoryDateGroup> = emptyList(),
-    val isHistoryLoading: Boolean = false
+    val isHistoryLoading: Boolean = false,
+    /** Unfiltered per-status totals, shown as counts on the filter pills. */
+    val historyCounts: HistoryCounts = HistoryCounts()
 ) {
     /**
      * Label/semantics for the manual "开始/暂停" button (R-24.1):
@@ -234,6 +249,21 @@ class TasksTabViewModel @Inject constructor(
             val uploaded = (uploadedChunkIndex + 1).coerceIn(0, totalChunks)
             return (uploaded * 100 / totalChunks).coerceIn(0, 100)
         }
+
+        /**
+         * Builds the filter-pill [HistoryCounts] from SQL per-status rows
+         * ([BackupHistoryDao.observeStatusCounts]). Missing statuses count as 0;
+         * `all` is the sum. Pure function so it can be unit-tested.
+         */
+        fun historyCountsOf(rows: List<BackupStatusCount>): HistoryCounts {
+            val byStatus = rows.associate { it.status to it.count }
+            return HistoryCounts(
+                all = rows.sumOf { it.count },
+                success = byStatus[BackupStatus.SUCCESS] ?: 0,
+                failed = byStatus[BackupStatus.FAILED] ?: 0,
+                skipped = byStatus[BackupStatus.SKIPPED] ?: 0
+            )
+        }
     }
 
     private val _uiState = MutableStateFlow(TasksTabUiState())
@@ -246,6 +276,22 @@ class TasksTabViewModel @Inject constructor(
         startPollingCurrentTasks()
         observeUploadProgress()
         loadHistory()
+        observeHistoryCounts()
+    }
+
+    /**
+     * Keeps [TasksTabUiState.historyCounts] in sync with the full (unfiltered)
+     * history table. Read-only: the counts are computed in SQL by
+     * [BackupHistoryDao.observeStatusCounts] (no records are loaded), and Room
+     * re-emits after insert/clear/retry so the pill counts stay live.
+     */
+    private fun observeHistoryCounts() {
+        viewModelScope.launch {
+            backupHistoryDao.observeStatusCounts().collect { rows ->
+                val counts = historyCountsOf(rows)
+                _uiState.update { it.copy(historyCounts = counts) }
+            }
+        }
     }
 
     /**

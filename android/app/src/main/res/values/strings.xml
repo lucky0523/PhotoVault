@@ -92,6 +92,16 @@
     <string name="backup_status_success">Success</string>
     <string name="backup_status_failed">Failed</string>
     <string name="backup_status_skipped">Skipped</string>
+    <plurals name="tasks_history_day_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <string name="tasks_history_empty_hint">Completed backups will appear here</string>
+    <string name="tasks_history_empty_filtered">No records match this filter</string>
+    <string name="tasks_history_empty_success">No successful records</string>
+    <string name="tasks_history_empty_failed">No failed records</string>
+    <string name="tasks_history_empty_skipped">No skipped records</string>
+    <string name="tasks_uploading_caption">Uploading</string>
 
     <!-- Task errors and pause reasons -->
     <string name="error_paused_tasks_load">Unable to load paused tasks.</string>

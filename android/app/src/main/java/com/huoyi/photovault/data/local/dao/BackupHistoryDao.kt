@@ -1,5 +1,6 @@
 package com.huoyi.photovault.data.local.dao
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
@@ -71,4 +72,17 @@ interface BackupHistoryDao {
      */
     @Query("SELECT COUNT(*) FROM backup_history WHERE status = :status")
     suspend fun getCountByStatus(status: BackupStatus): Int
+
+    /**
+     * Live per-status record counts, computed in SQL (no rows materialised).
+     * Statuses with no records are absent from the result.
+     */
+    @Query("SELECT status, COUNT(*) AS count FROM backup_history GROUP BY status")
+    fun observeStatusCounts(): Flow<List<BackupStatusCount>>
 }
+
+/** One row of [BackupHistoryDao.observeStatusCounts]: number of history records with [status]. */
+data class BackupStatusCount(
+    @ColumnInfo(name = "status") val status: BackupStatus,
+    @ColumnInfo(name = "count") val count: Int
+)

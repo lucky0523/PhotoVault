@@ -92,6 +92,15 @@
     <string name="backup_status_success">成功</string>
     <string name="backup_status_failed">失败</string>
     <string name="backup_status_skipped">跳过</string>
+    <plurals name="tasks_history_day_count">
+        <item quantity="other">%1$d 项</item>
+    </plurals>
+    <string name="tasks_history_empty_hint">完成的备份会显示在这里</string>
+    <string name="tasks_history_empty_filtered">没有符合筛选条件的记录</string>
+    <string name="tasks_history_empty_success">暂无成功记录</string>
+    <string name="tasks_history_empty_failed">暂无失败记录</string>
+    <string name="tasks_history_empty_skipped">暂无跳过记录</string>
+    <string name="tasks_uploading_caption">正在上传</string>
 
     <!-- 任务错误和暂停原因 -->
     <string name="error_paused_tasks_load">已暂停任务读取失败。</string>
