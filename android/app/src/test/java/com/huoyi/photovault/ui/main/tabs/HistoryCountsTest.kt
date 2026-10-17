@@ -118,7 +118,7 @@ class HistoryCountsTest {
         override suspend fun getById(id: Long): BackupHistoryRecord? = records.find { it.id == id }
         override suspend fun updateStatus(id: Long, status: BackupStatus, errorMessage: String?, completedAt: Long) {}
         override suspend fun deleteById(id: Long) {}
-        override suspend fun deleteAll() {}
+        override suspend fun deleteAll(): Int = 0
         override suspend fun deleteOlderThan(olderThan: Long) {}
         override suspend fun getCountByStatus(status: BackupStatus): Int =
             records.count { it.status == status }
