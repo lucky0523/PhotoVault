@@ -259,17 +259,23 @@ class StatusSyncManager @Inject constructor(
     /**
      * Marks a local file as active after a successful upload or manual re-upload.
      * If no PhotoStatus row exists yet, one is created.
+     *
+     * Records the content just backed up: [fileHash] replaces the stored hash
+     * (status sync matches by hash, so a re-uploaded modified file must carry its
+     * new hash), and [fileSize] — the MediaStore SIZE the scan compares against —
+     * replaces the stored size unless it is null, in which case the old value is kept.
      */
-    suspend fun markActive(fileUri: String, fileHash: String) {
+    suspend fun markActive(fileUri: String, fileHash: String, fileSize: Long? = null) {
         val existing = photoStatusDao.getByFileUri(fileUri)
         if (existing != null) {
-            photoStatusDao.markActive(fileUri)
+            photoStatusDao.markActiveWithContent(fileUri, fileHash, fileSize)
         } else {
             photoStatusDao.upsert(
                 PhotoStatus(
                     fileUri = fileUri,
                     fileHash = fileHash,
-                    status = PhotoStatusValue.ACTIVE
+                    status = PhotoStatusValue.ACTIVE,
+                    fileSize = fileSize
                 )
             )
         }

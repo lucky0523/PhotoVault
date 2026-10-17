@@ -191,6 +191,53 @@ class StatusSyncManagerReconcileTest {
         assertEquals(PhotoStatusValue.ACTIVE, dao.get("uri://b")!!.status)
     }
 
+    // --- markActive(fileUri, fileHash, fileSize) ------------------------------
+
+    @Test
+    fun markActive_existingRow_updatesHashAndSize() = runTest {
+        val dao = FakePhotoStatusDao(
+            mutableListOf(PhotoStatus(fileUri = "uri://a", fileHash = "H2", status = PhotoStatusValue.ACTIVE, fileSize = 10L))
+        )
+        val mgr = manager(statusSyncItems = emptyList(), dao = dao) { successCheck(true, PhotoStatusValue.ACTIVE) }
+
+        mgr.markActive("uri://a", "H1", 20L)
+
+        val row = dao.get("uri://a")!!
+        assertEquals(PhotoStatusValue.ACTIVE, row.status)
+        assertEquals("H1", row.fileHash)
+        assertEquals(20L, row.fileSize)
+    }
+
+    @Test
+    fun markActive_nullSize_keepsStoredSize() = runTest {
+        val dao = FakePhotoStatusDao(
+            mutableListOf(trashedRecord("uri://a", "H2").copy(fileSize = 10L))
+        )
+        val mgr = manager(statusSyncItems = emptyList(), dao = dao) { successCheck(true, PhotoStatusValue.ACTIVE) }
+
+        mgr.markActive("uri://a", "H1", null)
+
+        val row = dao.get("uri://a")!!
+        assertEquals(PhotoStatusValue.ACTIVE, row.status)
+        assertEquals("H1", row.fileHash)
+        assertEquals(10L, row.fileSize)
+        assertNull(row.deletedAt)
+        assertNull(row.expiresAt)
+    }
+
+    @Test
+    fun markActive_noRow_insertsWithSize() = runTest {
+        val dao = FakePhotoStatusDao(mutableListOf())
+        val mgr = manager(statusSyncItems = emptyList(), dao = dao) { successCheck(true, PhotoStatusValue.ACTIVE) }
+
+        mgr.markActive("uri://new", "H1", 30L)
+
+        val row = dao.get("uri://new")!!
+        assertEquals(PhotoStatusValue.ACTIVE, row.status)
+        assertEquals("H1", row.fileHash)
+        assertEquals(30L, row.fileSize)
+    }
+
     // --- helpers -----------------------------------------------------------
 
     private fun successCheck(isDuplicate: Boolean, status: String) =
@@ -254,6 +301,32 @@ class StatusSyncManagerReconcileTest {
                         updatedAt = updatedAt
                     )
                 } else it
+            }
+        }
+
+        override suspend fun markActiveWithContent(
+            fileUri: String,
+            fileHash: String,
+            fileSize: Long?,
+            updatedAt: Long
+        ) {
+            store.replaceAll {
+                if (it.fileUri == fileUri) {
+                    it.copy(
+                        status = PhotoStatusValue.ACTIVE,
+                        deletedAt = null,
+                        expiresAt = null,
+                        fileHash = fileHash,
+                        fileSize = fileSize ?: it.fileSize,
+                        updatedAt = updatedAt
+                    )
+                } else it
+            }
+        }
+
+        override suspend fun backfillFileSize(fileUri: String, fileSize: Long) {
+            store.replaceAll {
+                if (it.fileUri == fileUri && it.fileSize == null) it.copy(fileSize = fileSize) else it
             }
         }
 

@@ -150,6 +150,16 @@ object DatabaseModule {
         }
     }
 
+    // Record the MediaStore SIZE of each backed-up file so the scan can spot
+    // files modified in place (e.g. extra data appended to a JPEG) and re-upload
+    // them. Nullable with no default to match the PhotoStatus entity; existing
+    // rows get NULL and are back-filled by the next scan without re-uploading.
+    internal val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE photo_status ADD COLUMN file_size INTEGER")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -161,7 +171,7 @@ object DatabaseModule {
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
-                MIGRATION_9_10
+                MIGRATION_9_10, MIGRATION_10_11
             )
             .build()
     }

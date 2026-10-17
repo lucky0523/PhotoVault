@@ -255,7 +255,10 @@ class ChunkUploader @Inject constructor(
             is SessionResolution.Success -> resolution.sessionInfo
             is SessionResolution.Duplicate -> {
                 uploadRecordDao.deleteByFileUri(upload.uri)
-                statusSyncManager.markActive(upload.uri, fileHash)
+                // Record the enqueue-time MediaStore SIZE (fileInfo, not the
+                // snapshot-sized `upload`): the scan compares against MediaStore
+                // SIZE, so using the same source avoids repeated re-uploads.
+                statusSyncManager.markActive(upload.uri, fileHash, fileInfo.fileSize.takeIf { it > 0 })
                 onProgress(
                     UploadProgress(
                         fileName = upload.fileName,
@@ -342,8 +345,9 @@ class ChunkUploader @Inject constructor(
             // Clean up local record on success
             uploadRecordDao.deleteByFileUri(upload.uri)
             // Mark file as active in local photo_status (also handles reactivation
-            // after manual re-upload of a previously trashed/purged file)
-            statusSyncManager.markActive(upload.uri, fileHash)
+            // after manual re-upload of a previously trashed/purged file). Store the
+            // enqueue-time MediaStore SIZE from fileInfo, not upload.fileSize.
+            statusSyncManager.markActive(upload.uri, fileHash, fileInfo.fileSize.takeIf { it > 0 })
             onProgress(
                 UploadProgress(
                     fileName = upload.fileName,
@@ -403,7 +407,7 @@ class ChunkUploader @Inject constructor(
                 body.isDuplicate && status == PhotoStatusValue.ACTIVE -> {
                     // File is already active on the server — record locally and
                     // clear an obsolete interrupted-upload record before skipping.
-                    statusSyncManager.markActive(fileInfo.uri, fileHash)
+                    statusSyncManager.markActive(fileInfo.uri, fileHash, fileInfo.fileSize.takeIf { it > 0 })
                     uploadRecordDao.deleteByFileUri(fileInfo.uri)
                     UploadResult.Duplicate(body.fileId)
                 }

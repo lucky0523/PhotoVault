@@ -44,7 +44,15 @@ data class PhotoStatus(
     val expiresAt: Long? = null,
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    /**
+     * MediaStore SIZE recorded when this file was last backed up (or back-filled
+     * by the scan). A later scan that sees a different SIZE treats the active file
+     * as modified and re-uploads it. NULL = not yet known (rows from before v11).
+     */
+    @ColumnInfo(name = "file_size")
+    val fileSize: Long? = null
 )
 
 /**

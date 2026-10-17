@@ -63,11 +63,12 @@ fun deriveLocalCounts(folder: BackupFolder): LocalBackupCounts =
 /**
  * 计算一次备份成功后 [folder] 的聚合计数应如何更新（纯函数，便于测试）。
  *
- * 一个文件备份成功后固定进入「已备份」桶，因此 `backedUpImages + 1`。若这是对
- * **回收站/已删除** 文件的重新备份（[priorStatus] 为 trashed/purged），该文件同时
- * 移出原桶，需相应 `-1`，否则 LocalTab 的 回收站/已删除 计数会继续统计一个已备份
- * 的文件。其余情况（未备份文件首次备份、[priorStatus] 为 active 或 null）只增加
- * 已备份计数，与既有行为一致。
+ * - [priorStatus] 为 null（未备份文件首次备份）：文件进入「已备份」桶，`backedUpImages + 1`。
+ * - [priorStatus] 为 trashed/purged（回收站/已删除文件的重新备份）：`backedUpImages + 1`，
+ *   同时移出原桶 `-1`，否则 LocalTab 的 回收站/已删除 计数会继续统计一个已备份的文件。
+ * - [priorStatus] 为 active（本地已备份、内容被修改后的重传）：该文件已经计入「已备份」，
+ *   三个计数都不变，避免重复 +1；与扫描/[com.huoyi.photovault.service.FolderStatusCountsRefresher]
+ *   按 photo_status 全量重算的结果一致。
  *
  * @param priorStatus 上传把状态翻转为 `active` **之前** 的 photo_status 值。
  */
@@ -77,6 +78,8 @@ fun applyBackedUpCountDelta(
 ): BackupFolder {
     val withBackedUp = folder.copy(backedUpImages = folder.backedUpImages + 1)
     return when (priorStatus) {
+        // 已计入已备份（已修改文件重传），不重复 +1
+        com.huoyi.photovault.data.local.entity.PhotoStatusValue.ACTIVE -> folder
         com.huoyi.photovault.data.local.entity.PhotoStatusValue.TRASHED -> withBackedUp.copy(
             trashedImages = (folder.trashedImages - 1).coerceAtLeast(0)
         )

@@ -803,40 +803,38 @@ class BackgroundScanWorker @AssistedInject constructor(
             // later scan instead of only by a manual "立即备份". `allPhotosInFolder`
             // was already enumerated above for counting, so this adds no scan cost.
             //
+            // ACTIVE files whose MediaStore SIZE changed since their backup are
+            // re-enqueued through the same gates (see [selectFilesToEnqueue]).
+            val selection = selectFilesToEnqueue(
+                statusMap = statusMap,
+                files = allPhotosInFolder,
+                queuedUris = queuedUris,
+                inFlightUri = inFlightUri,
+                failureCountByUri = failureCountByUri,
+                lastFailureAtByUri = lastFailureAtByUri,
+                now = currentTime,
+                forceFullScan = forceFullScan
+            )
+            newFiles.addAll(selection.newFiles)
             // DATE_MODIFIED (epoch ms) of files skipped because they are within the
             // quiet period (camera may still be writing); used to roll lastScanTime
             // back so they are re-examined next scan (R1.1/R1.2).
-            val skippedModifiedTimes = mutableListOf<Long>()
-            for (fileInfo in allPhotosInFolder) {
-                // Only files that have never been backed up (no status record).
-                if (statusMap[fileInfo.uri] != null) continue
+            val skippedModifiedTimes = selection.skippedModifiedTimes
 
-                // Skip files modified so recently they may still be being written
-                // (R1.1); recorded so lastScanTime rolls back and re-examines them.
-                if (QuietPeriodLogic.shouldSkipForQuietPeriod(currentTime, fileInfo.createdTime)) {
-                    skippedModifiedTimes.add(fileInfo.createdTime)
-                    continue
+            // Record the size of active rows that have none yet (rows from before
+            // v11), one transaction per folder. This fills in status only — no
+            // upload, no history — so it runs even when backup isn't allowed.
+            if (selection.sizeBackfill.isNotEmpty()) {
+                try {
+                    photoStatusDao.backfillFileSizes(selection.sizeBackfill)
+                } catch (e: Exception) {
+                    android.util.Log.w("PhotoVaultScan", "size backfill failed: ${e.message}", e)
                 }
-
-                // Already queued or currently uploading — don't add a duplicate.
-                if (fileInfo.uri in queuedUris || fileInfo.uri == inFlightUri) continue
-
-                // Lightweight retry backoff: a file that has FAILED before waits an
-                // (exponentially growing) window from its last failure before being
-                // retried, so a permanently-failing file isn't re-enqueued every
-                // scan. A manual full scan ("立即备份") bypasses the backoff.
-                if (!forceFullScan) {
-                    val failCount = failureCountByUri[fileInfo.uri] ?: 0
-                    if (failCount > 0) {
-                        val lastFailAt = lastFailureAtByUri[fileInfo.uri] ?: 0L
-                        if (currentTime - lastFailAt < retryBackoffMs(failCount)) {
-                            continue
-                        }
-                    }
-                }
-
-                newFiles.add(fileInfo)
             }
+            val sizeLog = "folder='${folder.folderName}' modified=${selection.modifiedCount} " +
+                "sizeBackfilled=${selection.sizeBackfill.size}"
+            android.util.Log.i("PhotoVaultScan", sizeLog)
+            com.huoyi.photovault.util.FileLogger.log("PhotoVaultScan", sizeLog)
 
             // Roll back lastScanTime past the earliest skipped file so it isn't missed
             // next scan; preserves currentTime when nothing was skipped (R1.2/R1.3).
@@ -1053,4 +1051,90 @@ class BackgroundScanWorker @AssistedInject constructor(
             0
         }
     }
+}
+
+/** Result of [selectFilesToEnqueue] for one folder. */
+internal data class EnqueueSelection(
+    /** New files plus ACTIVE files detected as modified, in scan order. */
+    val newFiles: List<FileInfo>,
+    /** (uri, MediaStore SIZE) of ACTIVE rows that have no recorded size yet. */
+    val sizeBackfill: List<Pair<String, Long>>,
+    /** DATE_MODIFIED of files skipped for the quiet period, for lastScanTime rollback. */
+    val skippedModifiedTimes: List<Long>,
+    /** ACTIVE files whose MediaStore SIZE differs from the recorded size. */
+    val modifiedCount: Int,
+)
+
+/**
+ * Decides which of a folder's [files] the scan enqueues for backup. Pure so the
+ * gating can be unit-tested without a running worker.
+ *
+ * - No photo_status row: a not-yet-backed-up file, considered for enqueue.
+ * - TRASHED / PURGED: never enqueued (only the per-photo "重新备份" can re-upload them).
+ * - ACTIVE: compared by size ([checkActiveFileSize]). A missing recorded size is
+ *   only back-filled ([EnqueueSelection.sizeBackfill]); an unchanged or untrusted
+ *   size is skipped; a changed size (file modified in place) is considered for
+ *   enqueue like a new file.
+ *
+ * Files considered for enqueue pass the same gates in order: quiet period
+ * (recorded in [EnqueueSelection.skippedModifiedTimes]), already queued or in
+ * flight, and the failure retry backoff (bypassed by [forceFullScan]).
+ */
+internal fun selectFilesToEnqueue(
+    statusMap: Map<String, com.huoyi.photovault.data.local.entity.PhotoStatus>,
+    files: List<FileInfo>,
+    queuedUris: Set<String>,
+    inFlightUri: String?,
+    failureCountByUri: Map<String, Int>,
+    lastFailureAtByUri: Map<String, Long>,
+    now: Long,
+    forceFullScan: Boolean,
+): EnqueueSelection {
+    val newFiles = mutableListOf<FileInfo>()
+    val sizeBackfill = mutableListOf<Pair<String, Long>>()
+    val skippedModifiedTimes = mutableListOf<Long>()
+    var modifiedCount = 0
+    for (fileInfo in files) {
+        val status = statusMap[fileInfo.uri]
+        if (status != null) {
+            // trashed/purged never take part in the automatic scan.
+            if (status.status != PhotoStatusValue.ACTIVE) continue
+            when (checkActiveFileSize(status.fileSize, fileInfo.fileSize)) {
+                SizeCheck.BACKFILL -> {
+                    sizeBackfill += fileInfo.uri to fileInfo.fileSize
+                    continue
+                }
+                SizeCheck.UNKNOWN, SizeCheck.UNCHANGED -> continue
+                // Falls through to the same gates as a new file.
+                SizeCheck.MODIFIED -> modifiedCount++
+            }
+        }
+
+        // Skip files modified so recently they may still be being written
+        // (R1.1); recorded so lastScanTime rolls back and re-examines them.
+        if (QuietPeriodLogic.shouldSkipForQuietPeriod(now, fileInfo.createdTime)) {
+            skippedModifiedTimes.add(fileInfo.createdTime)
+            continue
+        }
+
+        // Already queued or currently uploading — don't add a duplicate.
+        if (fileInfo.uri in queuedUris || fileInfo.uri == inFlightUri) continue
+
+        // Lightweight retry backoff: a file that has FAILED before waits an
+        // (exponentially growing) window from its last failure before being
+        // retried, so a permanently-failing file isn't re-enqueued every
+        // scan. A manual full scan ("立即备份") bypasses the backoff.
+        if (!forceFullScan) {
+            val failCount = failureCountByUri[fileInfo.uri] ?: 0
+            if (failCount > 0) {
+                val lastFailAt = lastFailureAtByUri[fileInfo.uri] ?: 0L
+                if (now - lastFailAt < BackgroundScanWorker.retryBackoffMs(failCount)) {
+                    continue
+                }
+            }
+        }
+
+        newFiles.add(fileInfo)
+    }
+    return EnqueueSelection(newFiles, sizeBackfill, skippedModifiedTimes, modifiedCount)
 }

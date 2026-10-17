@@ -11,7 +11,9 @@ import com.huoyi.photovault.service.BackupQueue
 import com.huoyi.photovault.service.BackupResumePrompt
 import com.huoyi.photovault.service.BackgroundScanWorker
 import com.huoyi.photovault.service.SessionOperationGuard
+import com.huoyi.photovault.service.SessionResetNotice
 import com.huoyi.photovault.service.StatusSyncManager
+import com.huoyi.photovault.util.FileLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -52,6 +54,10 @@ class AccountSessionManager @Inject constructor(
 
     private val switchMutex = Mutex()
 
+    /** Diagnostic log sink (tag, message); a test seam, FileLogger in the app. */
+    @androidx.annotation.VisibleForTesting
+    internal var diagnosticLog: (String, String) -> Unit = FileLogger::log
+
     /**
      * Activates [loginResponse] and returns true when the server/account changed.
      * The new address and tokens are written only after old asynchronous work and
@@ -79,6 +85,12 @@ class AccountSessionManager @Inject constructor(
         // Unknown is the one-time migration state for pre-stable-ID installs.
         // It deliberately clears once rather than guessing from endpoint/username.
         val changed = hasSessionChanged(previousIdentity, incomingIdentity)
+        diagnosticLog(
+            TAG,
+            SessionChangeDiagnostics.describe(
+                previousIdentity, incomingIdentity, changed, reauthenticatedSameAccount
+            )
+        )
 
         if (changed) {
             // Ask WorkManager to cancel first; then the shared gate below waits
@@ -101,14 +113,16 @@ class AccountSessionManager @Inject constructor(
                 // This barrier runs after earlier queued-file mirror writes. The
                 // Room transaction then clears every other server-owned projection.
                 backupQueue.clearAndAwaitPersistence()
-                database.withTransaction {
-                    database.photoStatusDao().getAll().forEach { status ->
+                val cleared = database.withTransaction {
+                    val statuses = database.photoStatusDao().getAll()
+                    statuses.forEach { status ->
                         database.photoStatusDao().delete(status.fileUri)
                     }
-                    database.uploadRecordDao().getAll().forEach { record ->
+                    val records = database.uploadRecordDao().getAll()
+                    records.forEach { record ->
                         database.uploadRecordDao().deleteByFileUri(record.fileUri)
                     }
-                    database.backupHistoryDao().deleteAll()
+                    val historyDeleted = database.backupHistoryDao().deleteAll()
                     database.queuedFileDao().deleteAll()
                     database.backupFolderDao().getAllOnce().forEach { folder ->
                         database.backupFolderDao().update(
@@ -121,9 +135,16 @@ class AccountSessionManager @Inject constructor(
                             )
                         )
                     }
+                    Triple(statuses.size, records.size, historyDeleted)
                 }
+                diagnosticLog(
+                    TAG,
+                    "session reset: cleared photo_status=${cleared.first} " +
+                        "upload_records=${cleared.second} history=${cleared.third}"
+                )
                 settingsPreferences.setUserPausedBackup(false)
                 BackupResumePrompt.consume()
+                SessionResetNotice.request()
             }
 
             credentialManager.saveSession(

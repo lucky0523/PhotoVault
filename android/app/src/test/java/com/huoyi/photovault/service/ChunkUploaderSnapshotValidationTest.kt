@@ -319,6 +319,17 @@ class ChunkUploaderSnapshotValidationTest {
                 if (it.fileUri == fileUri) it.copy(status = PhotoStatusValue.ACTIVE, deletedAt = null, expiresAt = null, updatedAt = updatedAt) else it
             }
         }
+        override suspend fun markActiveWithContent(fileUri: String, fileHash: String, fileSize: Long?, updatedAt: Long) {
+            store.replaceAll {
+                if (it.fileUri == fileUri) it.copy(
+                    status = PhotoStatusValue.ACTIVE, deletedAt = null, expiresAt = null,
+                    fileHash = fileHash, fileSize = fileSize ?: it.fileSize, updatedAt = updatedAt
+                ) else it
+            }
+        }
+        override suspend fun backfillFileSize(fileUri: String, fileSize: Long) {
+            store.replaceAll { if (it.fileUri == fileUri && it.fileSize == null) it.copy(fileSize = fileSize) else it }
+        }
         override suspend fun delete(fileUri: String) { store.removeAll { it.fileUri == fileUri } }
     }
 }

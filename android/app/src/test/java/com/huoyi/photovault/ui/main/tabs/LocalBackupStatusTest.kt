@@ -183,9 +183,8 @@ class LocalBackupStatusTest {
     }
 
     /**
-     * A plain upload of a not-backed-up file (no prior status, or a status other
-     * than trashed/purged) only increments backed-up — existing behavior, no
-     * other bucket changes.
+     * A first upload of a not-backed-up file (no prior status) only increments
+     * backed-up — no other bucket changes.
      */
     @Test
     fun `applyBackedUpCountDelta - plain upload only increments backed up`() {
@@ -196,10 +195,55 @@ class LocalBackupStatusTest {
         assertEquals(1, afterNull.trashedImages)
         assertEquals(1, afterNull.purgedImages)
 
+        // An already-active file (modified and re-uploaded) is already counted.
         val afterActive = applyBackedUpCountDelta(before, PhotoStatusValue.ACTIVE)
-        assertEquals(1, afterActive.backedUpImages)
+        assertEquals(0, afterActive.backedUpImages)
         assertEquals(1, afterActive.trashedImages)
         assertEquals(1, afterActive.purgedImages)
+    }
+
+    /**
+     * 验收 35: re-uploading a modified file whose prior status is ACTIVE must not
+     * change any bucket — it was already counted as backed up.
+     */
+    @Test
+    fun `applyBackedUpCountDelta - active re-upload leaves all three buckets unchanged`() {
+        val before = folder(total = 10, backedUp = 6, trashed = 2, purged = 1)
+
+        val after = applyBackedUpCountDelta(before, PhotoStatusValue.ACTIVE)
+
+        assertEquals(before, after)
+        assertEquals(6, after.backedUpImages)
+        assertEquals(2, after.trashedImages)
+        assertEquals(1, after.purgedImages)
+        assertEquals(1, deriveLocalCounts(after).pending)
+    }
+
+    /** null (first backup) moves one file from pending to backed up. */
+    @Test
+    fun `applyBackedUpCountDelta - null prior status moves one file from pending to backed up`() {
+        val before = folder(total = 10, backedUp = 6, trashed = 2, purged = 1)
+
+        val after = applyBackedUpCountDelta(before, null)
+
+        assertEquals(7, after.backedUpImages)
+        assertEquals(2, after.trashedImages)
+        assertEquals(1, after.purgedImages)
+        assertEquals(0, deriveLocalCounts(after).pending)
+    }
+
+    /** trashed/purged re-backup moves the file between buckets; the total is unchanged. */
+    @Test
+    fun `applyBackedUpCountDelta - trashed and purged re-backup keep the bucket sum`() {
+        val before = folder(total = 10, backedUp = 6, trashed = 2, purged = 1)
+        val sumBefore = before.backedUpImages + before.trashedImages + before.purgedImages
+
+        listOf(PhotoStatusValue.TRASHED, PhotoStatusValue.PURGED).forEach { prior ->
+            val after = applyBackedUpCountDelta(before, prior)
+            assertEquals(sumBefore, after.backedUpImages + after.trashedImages + after.purgedImages)
+            assertEquals(7, after.backedUpImages)
+            assertEquals(1, deriveLocalCounts(after).pending)
+        }
     }
 
     /** Decrement is clamped at 0 even if the source bucket is already empty. */

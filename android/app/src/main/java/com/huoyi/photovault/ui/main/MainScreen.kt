@@ -124,7 +124,24 @@ fun MainScreen(
     var appVisible by remember { mutableStateOf(true) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { appVisible = true }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { appVisible = false }
-    if (showResumePrompt && appVisible) {
+
+    // Login switched to a different account/server and the local backup status
+    // was cleared (AccountSessionManager.activate). Tell the user explicitly; it
+    // takes precedence over the resume prompt, which activate() already consumed.
+    val showSessionReset by com.huoyi.photovault.service.SessionResetNotice.pending.collectAsState()
+    if (showSessionReset && appVisible) {
+        LiquidGlassDialog(
+            onDismissRequest = { com.huoyi.photovault.service.SessionResetNotice.consume() },
+            title = stringResource(R.string.session_reset_notice_title),
+            text = stringResource(R.string.session_reset_notice_message)
+        ) {
+            LiquidDialogButton(
+                text = stringResource(R.string.session_reset_notice_confirm),
+                onClick = { com.huoyi.photovault.service.SessionResetNotice.consume() },
+                style = LiquidDialogButtonStyle.Accent
+            )
+        }
+    } else if (showResumePrompt && appVisible) {
         LiquidGlassDialog(
             onDismissRequest = { com.huoyi.photovault.service.BackupResumePrompt.consume() },
             title = "恢复备份？",

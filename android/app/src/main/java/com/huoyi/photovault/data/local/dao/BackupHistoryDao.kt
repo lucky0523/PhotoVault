@@ -56,10 +56,10 @@ interface BackupHistoryDao {
     suspend fun deleteById(id: Long)
 
     /**
-     * Delete all history records.
+     * Delete all history records. Returns the number of rows deleted.
      */
     @Query("DELETE FROM backup_history")
-    suspend fun deleteAll()
+    suspend fun deleteAll(): Int
 
     /**
      * Delete old history records (older than the specified timestamp).

@@ -161,4 +161,7 @@
     <string name="local_network_permission_denied_settings">影集的局域网访问权限已关闭，无法连接家中局域网里的服务器。请打开设置，在“权限 &gt; 附近的设备”中允许。</string>
     <string name="action_open_settings">去设置</string>
     <string name="action_later">稍后</string>
+    <string name="session_reset_notice_title">本地备份状态已重置</string>
+    <string name="session_reset_notice_message">检测到账户或服务器变化，已重置本地备份状态，将重新核对</string>
+    <string name="session_reset_notice_confirm">知道了</string>
 </resources>

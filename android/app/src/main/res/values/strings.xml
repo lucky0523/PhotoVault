@@ -162,4 +162,7 @@
     <string name="local_network_permission_denied_settings">Local network access is turned off for Photo Vault, so it can\'t reach your server on the home network. Open Settings and allow it under Permissions &gt; Nearby devices.</string>
     <string name="action_open_settings">Open settings</string>
     <string name="action_later">Later</string>
+    <string name="session_reset_notice_title">Local backup status reset</string>
+    <string name="session_reset_notice_message">Account or server change detected. Local backup status has been reset and will be re-checked.</string>
+    <string name="session_reset_notice_confirm">OK</string>
 </resources>

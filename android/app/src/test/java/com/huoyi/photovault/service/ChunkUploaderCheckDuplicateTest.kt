@@ -19,16 +19,24 @@ import com.huoyi.photovault.data.local.dao.UploadRecordDao
 import com.huoyi.photovault.data.local.entity.PhotoStatus
 import com.huoyi.photovault.data.local.entity.PhotoStatusValue
 import com.huoyi.photovault.data.local.entity.UploadRecord
+import com.huoyi.photovault.data.api.model.StoragePolicyConfig
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 import retrofit2.Response
+import java.io.ByteArrayInputStream
 
 /**
  * Unit tests for [ChunkUploader.checkDuplicate]'s force-reupload branch.
@@ -38,14 +46,22 @@ import retrofit2.Response
  * status. Instead it returns null so the caller proceeds to upload and complete,
  * letting the server reactivate the record. Without the flag, the historical
  * behaviour is preserved: the upload is skipped and the local status is recorded.
+ *
+ * The `modified*` cases drive the whole [ChunkUploader.uploadFile] flow for an
+ * already-ACTIVE local file whose content changed (file versioning, 验收 34/36/37).
+ * They need a ContentResolver, hence Robolectric (API 28 so MediaBytesReader
+ * takes the plain-open path, as in ChunkUploaderSnapshotValidationTest).
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE, sdk = [28])
 class ChunkUploaderCheckDuplicateTest {
 
     private fun uploader(
         dao: FakePhotoStatusDao,
         checkResponder: (String) -> Response<DuplicateCheckResponse>
-    ): ChunkUploader {
-        val backupApi = FakeBackupApi(checkResponder)
+    ): ChunkUploader = uploader(dao, FakeBackupApi(checkResponder))
+
+    private fun uploader(dao: FakePhotoStatusDao, backupApi: FakeBackupApi): ChunkUploader {
         val statusSyncManager = StatusSyncManager(FakeFileApi(), backupApi, dao)
         return ChunkUploader(
             backupApi = backupApi,
@@ -150,6 +166,143 @@ class ChunkUploaderCheckDuplicateTest {
         assertNull(uploader.checkDuplicate("hashA", fileInfo(forceReupload = true)))
     }
 
+    // --- modified active file (file versioning, plan 18) ---------------------
+
+    private val modifiedUri = "content://media/external/images/media/88"
+    private val storagePolicy = StoragePolicyConfig(
+        useCustomPath = false,
+        customPath = null,
+        useYearMonthLayer = false
+    )
+
+    /** Structurally complete JPEG (SOI, non-zero payload, EOI). */
+    private fun jpeg(seed: Int): ByteArray {
+        val payload = ByteArray(4096) { (((it + seed) % 250) + 1).toByte() }
+        return byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + payload +
+            byteArrayOf(0xFF.toByte(), 0xD9.toByte())
+    }
+
+    private fun registerSource(bytes: ByteArray) {
+        shadowOf(RuntimeEnvironment.getApplication().contentResolver)
+            .registerInputStreamSupplier(android.net.Uri.parse(modifiedUri)) { ByteArrayInputStream(bytes) }
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    private fun modifiedFileInfo(size: Long) = FileInfo(
+        uri = modifiedUri,
+        fileName = "IMG_modified.jpg",
+        fileSize = size,
+        createdTime = 0L,
+        mimeType = "image/jpeg",
+        folderUri = "tree://folder"
+    )
+
+    /** Local row as it was before the file was modified: ACTIVE with old hash H2 and old size. */
+    private fun activeRowH2() = PhotoStatus(
+        fileUri = modifiedUri,
+        fileHash = "H2-old",
+        status = PhotoStatusValue.ACTIVE,
+        updatedAt = 1_000L,
+        fileSize = 1L
+    )
+
+    @Test
+    fun notFound_forLocallyActiveFile_proceedsAndLeavesRowUntouched() = runTest {
+        val dao = FakePhotoStatusDao(mutableListOf(activeRowH2()))
+        val uploader = uploader(dao) { successCheck(isDuplicate = false, status = "not_found") }
+
+        assertNull(uploader.checkDuplicate("H1", modifiedFileInfo(size = 4100L)))
+        assertEquals(activeRowH2(), dao.get(modifiedUri))
+    }
+
+    /**
+     * 验收 34/37: an ACTIVE file recorded with hash H2 is uploaded with new content
+     * H1 through check(not_found) → init → chunk → complete. Afterwards the row is
+     * still ACTIVE and carries H1 and the enqueue-time MediaStore SIZE.
+     */
+    @Test
+    fun modifiedActiveFile_completes_updatesHashAndSize_staysActive() = runTest {
+        val bytes = jpeg(seed = 7)
+        registerSource(bytes)
+        val dao = FakePhotoStatusDao(mutableListOf(activeRowH2()))
+        val api = FakeBackupApi(
+            checkResponder = { successCheck(isDuplicate = false, status = "not_found") },
+            completeSucceeds = true
+        )
+
+        val result = uploader(dao, api).uploadFile(
+            RuntimeEnvironment.getApplication(), modifiedFileInfo(bytes.size.toLong()), storagePolicy
+        ) {}
+
+        assertTrue("expected Success, got $result", result is UploadResult.Success)
+        assertTrue(api.initCalled)
+        assertTrue(api.completeCalled)
+        val row = dao.get(modifiedUri)!!
+        assertEquals(PhotoStatusValue.ACTIVE, row.status)
+        assertEquals(sha256(bytes), row.fileHash)
+        assertEquals(bytes.size.toLong(), row.fileSize)
+    }
+
+    /** init reports an active duplicate (another device uploaded H1): hash and size still updated. */
+    @Test
+    fun modifiedActiveFile_initDuplicate_updatesHashAndSize() = runTest {
+        val bytes = jpeg(seed = 11)
+        registerSource(bytes)
+        val dao = FakePhotoStatusDao(mutableListOf(activeRowH2()))
+        val api = FakeBackupApi(
+            checkResponder = { successCheck(isDuplicate = false, status = "not_found") },
+            initDuplicate = true
+        )
+
+        val result = uploader(dao, api).uploadFile(
+            RuntimeEnvironment.getApplication(), modifiedFileInfo(bytes.size.toLong()), storagePolicy
+        ) {}
+
+        assertTrue("expected Duplicate, got $result", result is UploadResult.Duplicate)
+        assertFalse(api.completeCalled)
+        val row = dao.get(modifiedUri)!!
+        assertEquals(PhotoStatusValue.ACTIVE, row.status)
+        assertEquals(sha256(bytes), row.fileHash)
+        assertEquals(bytes.size.toLong(), row.fileSize)
+    }
+
+    /** check reports an active duplicate: the enqueue-time SIZE is recorded too. */
+    @Test
+    fun modifiedActiveFile_checkDuplicate_updatesHashAndSize() = runTest {
+        val dao = FakePhotoStatusDao(mutableListOf(activeRowH2()))
+        val uploader = uploader(dao) { successCheck(isDuplicate = true, status = PhotoStatusValue.ACTIVE) }
+
+        val result = uploader.checkDuplicate("H1", modifiedFileInfo(size = 4100L))
+
+        assertTrue(result is UploadResult.Duplicate)
+        val row = dao.get(modifiedUri)!!
+        assertEquals("H1", row.fileHash)
+        assertEquals(4100L, row.fileSize)
+    }
+
+    /** 验收 36: when complete fails the file stays ACTIVE with its old hash and size. */
+    @Test
+    fun modifiedActiveFile_completeFails_staysActiveWithOldContent() = runTest {
+        val bytes = jpeg(seed = 3)
+        registerSource(bytes)
+        val dao = FakePhotoStatusDao(mutableListOf(activeRowH2()))
+        val api = FakeBackupApi(
+            checkResponder = { successCheck(isDuplicate = false, status = "not_found") },
+            completeSucceeds = false
+        )
+
+        val result = uploader(dao, api).uploadFile(
+            RuntimeEnvironment.getApplication(), modifiedFileInfo(bytes.size.toLong()), storagePolicy
+        ) {}
+
+        assertTrue("expected Failed, got $result", result is UploadResult.Failed)
+        assertTrue(api.completeCalled)
+        assertEquals(activeRowH2(), dao.get(modifiedUri))
+    }
+
     // --- helpers -----------------------------------------------------------
 
     private fun successCheck(isDuplicate: Boolean, status: String) =
@@ -216,28 +369,86 @@ class ChunkUploaderCheckDuplicateTest {
             }
         }
 
+        override suspend fun markActiveWithContent(
+            fileUri: String,
+            fileHash: String,
+            fileSize: Long?,
+            updatedAt: Long
+        ) {
+            store.replaceAll {
+                if (it.fileUri == fileUri) {
+                    it.copy(
+                        status = PhotoStatusValue.ACTIVE,
+                        deletedAt = null,
+                        expiresAt = null,
+                        fileHash = fileHash,
+                        fileSize = fileSize ?: it.fileSize,
+                        updatedAt = updatedAt
+                    )
+                } else it
+            }
+        }
+
+        override suspend fun backfillFileSize(fileUri: String, fileSize: Long) {
+            store.replaceAll {
+                if (it.fileUri == fileUri && it.fileSize == null) it.copy(fileSize = fileSize) else it
+            }
+        }
+
         override suspend fun delete(fileUri: String) {
             store.removeAll { it.fileUri == fileUri }
         }
     }
 
-    /** [BackupApi] whose /backup/check response is supplied per test. */
+    /**
+     * [BackupApi] whose /backup/check response is supplied per test. init/chunk/
+     * complete are only reachable from the full-flow tests: [initDuplicate]
+     * makes init report an active duplicate; [completeSucceeds] null means those
+     * endpoints are unexpected for the test.
+     */
     private class FakeBackupApi(
-        private val checkResponder: (String) -> Response<DuplicateCheckResponse>
+        private val checkResponder: (String) -> Response<DuplicateCheckResponse>,
+        private val completeSucceeds: Boolean? = null,
+        private val initDuplicate: Boolean = false
     ) : BackupApi {
+        var initCalled = false
+        var completeCalled = false
+
         override suspend fun checkDuplicate(request: DuplicateCheckRequest): Response<DuplicateCheckResponse> =
             checkResponder(request.fileHash)
 
-        override suspend fun initUpload(request: InitUploadRequest): Response<InitUploadResponse> =
-            throw NotImplementedError()
+        override suspend fun initUpload(request: InitUploadRequest): Response<InitUploadResponse> {
+            if (completeSucceeds == null && !initDuplicate) throw NotImplementedError()
+            initCalled = true
+            return if (initDuplicate) {
+                Response.success(InitUploadResponse(isDuplicate = true, fileId = 9))
+            } else {
+                Response.success(
+                    InitUploadResponse(sessionId = "session-1", totalChunks = 1, chunkSize = ChunkUploader.CHUNK_SIZE)
+                )
+            }
+        }
+
         override suspend fun uploadChunk(
             sessionId: RequestBody,
             chunkIndex: RequestBody,
             checksum: RequestBody,
             chunkData: MultipartBody.Part
-        ): Response<ChunkUploadResponse> = throw NotImplementedError()
-        override suspend fun completeUpload(request: CompleteUploadRequest): Response<CompleteUploadResponse> =
-            throw NotImplementedError()
+        ): Response<ChunkUploadResponse> {
+            if (completeSucceeds == null) throw NotImplementedError()
+            return Response.success(ChunkUploadResponse(chunkIndex = 0, received = true, checksumValid = true))
+        }
+
+        override suspend fun completeUpload(request: CompleteUploadRequest): Response<CompleteUploadResponse> {
+            val succeeds = completeSucceeds ?: throw NotImplementedError()
+            completeCalled = true
+            return if (succeeds) {
+                Response.success(CompleteUploadResponse(success = true, fileId = 1, storedPath = "/stored/x.jpg"))
+            } else {
+                Response.error(409, "".toResponseBody("application/json".toMediaTypeOrNull()))
+            }
+        }
+
         override suspend fun getResumeInfo(sessionId: String): Response<ResumeInfoResponse> =
             throw NotImplementedError()
     }
@@ -267,11 +478,12 @@ class ChunkUploaderCheckDuplicateTest {
     /** In-memory [UploadRecordDao] stub. Terminal duplicate/skip outcomes delete
      * stale resume rows, so deletion is intentionally a successful no-op here. */
     private class FakeUploadRecordDao : UploadRecordDao {
-        override suspend fun insertOrUpdate(record: UploadRecord) = throw NotImplementedError()
-        override suspend fun getByFileUri(fileUri: String): UploadRecord? = throw NotImplementedError()
+        // The full-flow tests start from "no resume record" and create one on init.
+        override suspend fun insertOrUpdate(record: UploadRecord) = Unit
+        override suspend fun getByFileUri(fileUri: String): UploadRecord? = null
         override suspend fun getBySessionId(sessionId: String): UploadRecord? = throw NotImplementedError()
         override suspend fun deleteByFileUri(fileUri: String) = Unit
-        override suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long) = throw NotImplementedError()
+        override suspend fun updateProgress(fileUri: String, chunkIndex: Int, updatedAt: Long) = Unit
         override suspend fun deleteExpired(expiryTime: Long) = throw NotImplementedError()
         override suspend fun deleteByFolderUri(folderUri: String) = throw NotImplementedError()
         override suspend fun getAll(): List<UploadRecord> = throw NotImplementedError()

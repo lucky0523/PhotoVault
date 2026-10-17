@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.huoyi.photovault.data.local.entity.PhotoStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -93,6 +94,47 @@ interface PhotoStatusDao {
         """
     )
     suspend fun markActive(fileUri: String, updatedAt: Long = System.currentTimeMillis())
+
+    /**
+     * Marks a single file as active and records the content that was just backed
+     * up: [fileHash] always replaces the stored hash (StatusSyncManager matches by
+     * hash), [fileSize] replaces the stored MediaStore SIZE unless it is null, in
+     * which case the existing value is kept.
+     */
+    @Query(
+        """
+        UPDATE photo_status
+        SET status = 'active',
+            deleted_at = NULL,
+            expires_at = NULL,
+            file_hash = :fileHash,
+            file_size = COALESCE(:fileSize, file_size),
+            updated_at = :updatedAt
+        WHERE file_uri = :fileUri
+        """
+    )
+    suspend fun markActiveWithContent(
+        fileUri: String,
+        fileHash: String,
+        fileSize: Long?,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    /**
+     * Fills in the MediaStore SIZE for a row that has none yet (rows created
+     * before v11). Rows that already have a size are left untouched.
+     */
+    @Query("UPDATE photo_status SET file_size = :fileSize WHERE file_uri = :fileUri AND file_size IS NULL")
+    suspend fun backfillFileSize(fileUri: String, fileSize: Long)
+
+    /**
+     * Back-fills a batch of sizes (uri to MediaStore SIZE) in one transaction.
+     * The scan calls this once per folder.
+     */
+    @Transaction
+    suspend fun backfillFileSizes(items: List<Pair<String, Long>>) {
+        items.forEach { (uri, size) -> backfillFileSize(uri, size) }
+    }
 
     @Query("DELETE FROM photo_status WHERE file_uri = :fileUri")
     suspend fun delete(fileUri: String)
