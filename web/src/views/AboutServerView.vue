@@ -113,6 +113,13 @@
             <el-descriptions-item label="模型目录">
               <span class="about-path">{{ about.storage.models_root }}</span>
             </el-descriptions-item>
+            <!-- 文件被同源上传替换后留下的旧内容；查询失败时为 null，整项不显示 -->
+            <el-descriptions-item
+              v-if="about.storage.versions_bytes != null && about.storage.versions_count != null"
+              label="历史版本占用"
+            >
+              {{ formatBytes(about.storage.versions_bytes) }}（{{ about.storage.versions_count }} 个，保留 30 天）
+            </el-descriptions-item>
           </el-descriptions>
         </section>
 
@@ -169,6 +176,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import { getServerAbout } from '@/api/server'
 import type { ServerAbout } from '@/api/server'
 import { formatDate } from '@/api/files'
+import { formatBytes } from '@/components/stats/format'
 
 const loading = ref(false)
 const error = ref('')

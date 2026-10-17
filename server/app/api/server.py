@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 import socket
 import sys
@@ -27,10 +28,13 @@ from pydantic import BaseModel
 from app import __version__
 from app.core.config import (
     get_server_address_settings,
+    Settings,
     get_settings,
+    needs_provisioning,
     server_address_settings_path,
     set_server_address_settings,
 )
+from app.core.database import _create_connection
 from app.core.network import detect_lan_ips
 from app.core.runtime import get_started_at, get_uptime_seconds
 from app.core.server_address import (
@@ -84,6 +88,34 @@ class StorageInfo(BaseModel):
     total_gb: float
     used_gb: float
     available_gb: float
+    # History kept by file versioning: every existing row (expired rows not
+    # yet cleaned up still occupy disk). None when it could not be queried.
+    versions_count: Optional[int] = None
+    versions_bytes: Optional[int] = None
+
+
+async def _version_storage(settings: Settings) -> tuple[Optional[int], Optional[int]]:
+    """Count and total size of stored file versions (design section 11).
+
+    Uses its own connection instead of ``Depends(get_db)`` and only once the
+    database exists, so the about page never creates a database before
+    first-run setup. Failures are logged and reported as None.
+    """
+    if needs_provisioning(settings) or not os.path.isfile(settings.database_path):
+        return None, None
+    try:
+        db = await _create_connection(settings.database_url)
+        try:
+            cursor = await db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM file_versions"
+            )
+            row = await cursor.fetchone()
+        finally:
+            await db.close()
+    except Exception:
+        logger.warning("Could not read file version usage for /server/about", exc_info=True)
+        return None, None
+    return int(row[0]), int(row[1])
 
 
 class ConfigInfo(BaseModel):
@@ -227,6 +259,7 @@ async def get_server_about(
             used_gb=disk.get("used_gb", 0.0),
             available_gb=disk.get("available_gb", 0.0),
         )
+        storage.versions_count, storage.versions_bytes = await _version_storage(settings)
         config = ConfigInfo(
             max_users=settings.max_users,
             allow_registration=settings.allow_registration,

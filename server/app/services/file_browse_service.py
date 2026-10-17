@@ -1596,9 +1596,11 @@ class FileBrowseService:
                     "UPDATE file_records SET purged_at = ? WHERE id = ? AND user_id = ?",
                     (now, file_id, user_id),
                 )
+                version_paths = await self._delete_version_rows(file_id)
                 await self._db.commit()
 
                 self._delete_from_trash(physical_path)
+                self._delete_version_files(version_paths)
                 return True, "File permanently deleted"
 
             # Has surviving references — promote first active reference to original
@@ -1641,12 +1643,48 @@ class FileBrowseService:
                 "UPDATE file_records SET purged_at = ? WHERE id = ? AND user_id = ?",
                 (now, file_id, user_id),
             )
+            # Versions belong to the purged original, not to the promoted ref.
+            version_paths = await self._delete_version_rows(file_id)
             await self._db.commit()
+            self._delete_version_files(version_paths)
             logger.info("Purged original %d, promoted ref %d for user %d", file_id, ref_id, user_id)
             return True, "File permanently deleted (ownership transferred)"
         finally:
             if username and lock_acquired:
                 self._release_lock(username, file_hash)
+
+    async def _delete_version_rows(self, file_id: int) -> list[str]:
+        """Cascade of a purge (design section 9): drop the record's history.
+
+        Runs inside the caller's transaction (committed together with
+        ``purged_at``). Returns the version files to delete after the commit.
+        """
+        cursor = await self._db.execute(
+            "SELECT stored_path FROM file_versions WHERE file_record_id = ?", (file_id,)
+        )
+        paths = [r["stored_path"] for r in await cursor.fetchall()]
+        if paths:
+            await self._db.execute(
+                "DELETE FROM file_versions WHERE file_record_id = ?", (file_id,)
+            )
+        return paths
+
+    def _delete_version_files(self, paths: list[str]) -> None:
+        """Delete version files after the commit; leftovers go to the orphan sweep."""
+        if not paths:
+            return
+        # Imported here: version_service imports this module.
+        from app.services.version_service import VersionService
+
+        try:
+            deleted = VersionService.delete_version_files(self._media_root, paths)
+        except Exception:
+            logger.warning(
+                "Failed to delete %d version file(s); orphan sweep will retry",
+                len(paths), exc_info=True,
+            )
+            return
+        logger.info("Deleted %d of %d version file(s) of a purged record", deleted, len(paths))
 
     async def purge_all(self, user_id: int) -> tuple[int, str]:
         """Permanently delete all files in trash for a user.
@@ -1728,7 +1766,12 @@ class FileBrowseService:
         cursor = await self._db.execute(
             """SELECT file_hash, deleted_at, purged_at
                FROM file_records
-               WHERE user_id = ? AND (deleted_at IS NOT NULL OR purged_at IS NOT NULL)""",
+               WHERE user_id = ? AND (deleted_at IS NOT NULL OR purged_at IS NOT NULL)
+               AND NOT EXISTS (
+                   SELECT 1 FROM file_records a
+                   WHERE a.user_id = file_records.user_id
+                     AND a.file_hash = file_records.file_hash
+                     AND a.deleted_at IS NULL AND a.purged_at IS NULL)""",
             (user_id,),
         )
         rows = await cursor.fetchall()

@@ -614,25 +614,27 @@ async def apply_media_metadata(
 
 async def apply_media_metadata_many(
     db: aiosqlite.Connection,
-    rows: Sequence[tuple[int, str, MediaMetadata]],
+    rows: Sequence[tuple[int, str, str, MediaMetadata]],
 ) -> int:
     """Write backfill results with an optimistic guard. Does not commit.
 
-    Each row is ``(file_id, file_path read at SELECT time, meta)``. A row that
-    was moved to the trash or deleted while being extracted no longer matches
-    and is skipped. Returns the number of rows actually updated.
+    Each row is ``(file_id, file_path, file_hash read at SELECT time, meta)``.
+    A row that was moved to the trash, deleted, or had its content replaced
+    in place (new ``file_hash``) while being extracted no longer matches and
+    is skipped. Returns the number of rows actually updated.
     """
     updated = 0
-    for file_id, file_path, meta in rows:
+    for file_id, file_path, file_hash, meta in rows:
         set_sql, params = _set_clause(meta)
         cursor = await db.execute(
             f"UPDATE file_records SET {set_sql} "
-            "WHERE id = ? AND file_path = ? AND deleted_at IS NULL AND purged_at IS NULL",
-            (*params, file_id, file_path),
+            "WHERE id = ? AND file_path = ? AND file_hash = ? "
+            "AND deleted_at IS NULL AND purged_at IS NULL",
+            (*params, file_id, file_path, file_hash),
         )
         if cursor.rowcount == 0:
             logger.debug(
-                "Backfill skipped file_id=%d: moved or deleted during extraction",
+                "Backfill skipped file_id=%d: moved, deleted or replaced during extraction",
                 file_id,
             )
         else:

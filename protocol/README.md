@@ -102,3 +102,106 @@ photovault://connect?v=1&public=https%3A%2F%2Fphotos.example.com%3A8443&lan=http
 | 单地址版（`8340269` 之前） | 整串写进服务器地址框；点登录或测试时 Retrofit `baseUrl()` 抛「must end in /」被捕获，显示连接失败类文案，失败地址不会被保存 | 否，异常发生在 Retrofit 构建阶段 | 否 |
 
 规避办法：先通过 Web 端「下载手机 App」对话框升级 App。不为旧客户端额外生成旧格式二维码。iOS 目前没有扫码功能，将来实现时必须遵守本协议和共享向量。
+
+---
+
+# 备份查重接口
+
+服务端实现：`server/app/api/backup.py`（请求/响应模型即下表），查重逻辑在 `server/app/services/deduplication_service.py`，上传完成的去向在 `server/app/services/upload_service.py`。
+
+## 1. 适用范围
+
+- `POST /api/v1/backup/check`、`POST /api/v1/backup/init`、`POST /api/v1/backup/complete`，都需要 `Authorization: Bearer <access_token>`。
+- 查重只在当前用户自己的记录里进行，只比较文件的 SHA-256 与服务端 `file_records` 中的记录；`file_path` 和 `device_name` 不参与查重。
+- **服务端保留的历史版本不参与查重。** 同一个文件被替换下来的旧内容会作为历史版本保留 30 天，但 check/init 从不读取它们：哈希只与某个历史版本相同的文件，按 `not_found` 处理，客户端应正常上传。
+
+## 2. `POST /api/v1/backup/check`
+
+请求：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file_hash` | string | 是 | 文件内容的 SHA-256（小写十六进制） |
+| `file_path` | string | 是 | 文件在手机上的原始路径（Android 为 MediaStore URI） |
+| `device_name` | string | 是 | 设备名 |
+
+响应：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `is_duplicate` | boolean | 为 `true` 时客户端跳过上传 |
+| `file_id` | integer 或 null | 仅 `status=active` 时有值，是命中的记录 id |
+| `status` | string | 取值见第 3 节 |
+| `expires_at` | string 或 null | 仅 `status=trashed` 时有值：回收站到期时间（ISO 8601） |
+
+## 3. status 取值
+
+与现有实现一致，不新增取值。按优先级从上到下取第一个命中的：
+
+| status | is_duplicate | 含义与客户端行为 |
+|---|---|---|
+| `active` | `true` | 已备份，跳过上传 |
+| `trashed` | `false` | 同哈希的记录在回收站里，`expires_at` 是回收站到期时间；可以重新上传 |
+| `purged` | `false` | 同哈希的记录已被彻底删除；可以重新上传 |
+| `not_found` | `false` | 服务端没有这份内容（包括只存在于历史版本的情况），需要上传 |
+
+优先级：`active` → `trashed`/`purged` → `not_found`。
+
+## 4. `POST /api/v1/backup/init`
+
+请求：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file_hash` | string | 是 | SHA-256 |
+| `file_name` | string | 是 | 文件名，不能包含路径分隔符 |
+| `file_size` | integer | 是 | 字节数 |
+| `file_path` | string | 是 | 手机上的原始路径（服务端保存为记录的 `original_path`） |
+| `device_name` | string | 是 | 设备名 |
+| `source_folder` | string | 是 | 来源文件夹（如 `DCIM/Camera`） |
+| `storage_policy` | object | 是 | `use_custom_path`（boolean，默认 `false`）、`custom_path`（string 或 null，默认 null）、`use_year_month_layer`（boolean，默认 `false`） |
+| `exif_time` | string 或 null | 否 | 拍摄时间（ISO 8601） |
+| `file_modified_time` | string 或 null | 否 | MediaStore `DATE_MODIFIED`（毫秒时间戳），没有拍摄时间时作为目录日期的后备 |
+| `mime_type` | string 或 null | 否 | MIME 类型 |
+
+响应：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `session_id` | string | 上传会话 id |
+| `total_chunks` | integer | 分块数 |
+| `chunk_size` | integer | 分块大小（字节） |
+| `is_duplicate` | boolean | 默认 `false` |
+| `file_id` | integer 或 null | 命中 active 时的记录 id |
+
+命中 `active` 时返回 `is_duplicate=true, session_id="", total_chunks=0, chunk_size=0, file_id=<id>`，客户端必须跳过上传；其余情况（包括哈希只存在于历史版本）都创建会话。错误：400 路径非法，507 磁盘空间不足，500 目标目录无法创建。
+
+## 5. `POST /api/v1/backup/complete`
+
+请求：`session_id`（string，必填）。
+
+响应：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `success` | boolean | |
+| `file_id` | integer 或 null | 结果对应的记录 id |
+| `stored_path` | string | 服务端保存路径，默认 `""` |
+| `replaced` | boolean | 新增字段，默认 `false`；为 `true` 表示原地替换了已有记录的内容 |
+
+替换规则：上传的文件与服务端某条当前记录「同设备（`device_name` 相同）、同路径（目标路径和文件名相同）、同 `original_path`、哈希不同」时，服务端原地替换这条记录的当前内容，`file_id` 不变、不生成 `_1` 文件，`replaced=true`；被替换下来的内容作为历史版本保留 30 天。把文件还原成某个旧内容（哈希等于它的历史版本）也是这样处理。不同源（另一台设备，或同设备另一个 `original_path`）按普通新文件处理，与以前相同：同目录同名时生成 `原名_1`。
+
+失败时的 HTTP 状态码：
+
+| 状态码 | 含义 | 客户端处理 |
+|---|---|---|
+| 409 | 服务端暂时无法替换：同一路径有进行中的操作或待恢复的记录、文件锁忙、维护脚本在运行 | 会话和已上传的分块都保留，稍后重新调用 `/backup/complete` 即可 |
+| 500 | 服务端 I/O 或数据库错误 | 同样可以稍后重试 |
+| 404 | 会话不存在、不属于当前用户或已过期 | 重新 init |
+| 422 | 合并后的完整性校验失败（会话已被清理） | 重新 init 并上传 |
+| 400 | 其他错误（如分块未收齐、分块文件缺失） | 补传分块后重试 |
+
+## 6. 兼容说明
+
+- 客户端遇到不认识的 `status` 时应当继续调用 `/backup/init`，以 `/backup/init` 返回的 `is_duplicate` 为准。
+- `replaced` 是新增字段，旧客户端忽略它即可（Android 用 Gson，未知字段不报错）。旧客户端按 check → init → 分块 → complete 的顺序调用时，得到的结果与新客户端完全相同。

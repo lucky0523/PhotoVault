@@ -21,6 +21,10 @@ export interface ServerStorageInfo {
   total_gb: number
   used_gb: number
   available_gb: number
+  /** Stored file versions (old content kept 30 days); null if it could not be read. */
+  versions_count: number | null
+  /** Total size in bytes of every stored version, expired or not; null if unknown. */
+  versions_bytes: number | null
 }
 
 /** Effective runtime configuration. Only returned to admin users. */

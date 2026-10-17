@@ -341,6 +341,37 @@ class TestRunBackfillRound:
         assert row["meta_version"] == CURRENT_META_VERSION
         assert row["iso"] == 64
 
+    async def test_row_replaced_during_extraction_is_skipped(self, db, db_path, tmp_path):
+        """File versioning: content replaced in place (new hash, same id/path)
+        while extracting must not get the old file's metadata written back."""
+        original = _jpeg(tmp_path / "alice" / "replaced.jpg")
+        file_id = await _insert(db, original)
+
+        def replace_content(path, media_type, exif_time, *, ffprobe_timeout):
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE file_records SET file_hash = 'replaced-hash' WHERE id = ?",
+                    (file_id,),
+                )
+            return MediaMetadata(iso=100)
+
+        with patch(
+            "app.services.metadata_backfill.extract_media_metadata",
+            side_effect=replace_content,
+        ):
+            stats = await mb.run_backfill_round(db)
+
+        assert stats.skipped == 1
+        assert stats.processed == 0
+        row = await _row(db, file_id)
+        assert row["meta_version"] is None
+        assert row["iso"] is None
+
+        # The next round reads the new hash and fills the row in.
+        stats = await mb.run_backfill_round(db)
+        assert stats.processed == 1
+        assert (await _row(db, file_id))["meta_version"] == CURRENT_META_VERSION
+
     async def test_database_error_ends_round_with_warning(self, db, tmp_path, caplog):
         await _insert(db, _jpeg(tmp_path / "x.jpg"))
         with patch(

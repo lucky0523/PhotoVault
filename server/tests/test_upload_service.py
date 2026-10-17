@@ -985,3 +985,269 @@ class TestErrorHandling:
 
         assert result.success is False
         assert "Not all chunks received" in result.error
+
+
+# ---------------------------------------------------------------------------
+# File versioning: complete_upload classification (design sections 4 and 6)
+# ---------------------------------------------------------------------------
+
+_V_DIR = "alice/Pixel9Pro/DCIM/Camera"
+_V_ORIGIN = "content://media/external/images/media/42"
+
+
+def _versioned_jpeg(color: str, *, iso: int, focal_35mm: int, taken: str) -> bytes:
+    img = Image.new("RGB", (64, 48), color)
+    exif = Image.Exif()
+    exif[271] = "OPPO"
+    exif[272] = "Find X9 Ultra"
+    ifd = exif.get_ifd(IFD.Exif)
+    ifd[34855] = iso
+    ifd[36867] = taken
+    ifd[41989] = focal_35mm
+    ifd[37386] = IFDRational(focal_35mm * 10, 45)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif.tobytes())
+    return buf.getvalue()
+
+
+def _motion_photo(still: bytes) -> bytes:
+    """Still JPEG + GCamera MotionPhoto/Ultra HDR XMP + appended MP4 (ftyp box)."""
+    video = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 200
+    xmp = (
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description '
+        'GCamera:MotionPhoto="1" hdrgm:Version="1.0"><Container:Directory><rdf:Seq>'
+        '<rdf:li><Container:Item Item:Mime="image/jpeg" Item:Semantic="Primary"/></rdf:li>'
+        f'<rdf:li><Container:Item Item:Mime="video/mp4" Item:Semantic="MotionPhoto" '
+        f'Item:Length="{len(video)}"/></rdf:li>'
+        "</rdf:Seq></Container:Directory></rdf:Description></rdf:RDF></x:xmpmeta>"
+    ).encode()
+    payload = b"http://ns.adobe.com/xap/1.0/\x00" + xmp
+    segment = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    return still[:2] + segment + still[2:] + video
+
+
+async def _versioned_session(
+    db,
+    storage_root: str,
+    content: bytes,
+    *,
+    file_name: str = "IMG_0001.jpg",
+    device_name: str = "Pixel9Pro",
+    original_path: str = _V_ORIGIN,
+    exif_time: datetime | None = None,
+) -> str:
+    target = Path(storage_root) / _V_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    manager = ChunkManager(db, storage_root)
+    session_id = await manager.create_session(
+        user_id=1,
+        file_hash=hashlib.sha256(content).hexdigest(),
+        file_name=file_name,
+        file_size=len(content),
+        target_path=str(target),
+        device_name=device_name,
+        original_path=original_path,
+        exif_time=exif_time,
+    )
+    size = manager.chunk_size
+    for index, start in enumerate(range(0, len(content), size)):
+        data = content[start:start + size]
+        await manager.store_chunk(session_id, index, data, hashlib.md5(data).hexdigest())
+    return session_id
+
+
+async def _upload(db, storage_root, content, **kwargs) -> CompleteUploadResult:
+    session_id = await _versioned_session(db, storage_root, content, **kwargs)
+    return await UploadService(db, storage_root).complete_upload(session_id, user_id=1)
+
+
+async def _rows(db) -> list[dict]:
+    cursor = await db.execute("SELECT * FROM file_records ORDER BY id")
+    return [dict(r) for r in await cursor.fetchall()]
+
+
+async def _version_count(db) -> int:
+    cursor = await db.execute("SELECT COUNT(*) FROM file_versions")
+    return (await cursor.fetchone())[0]
+
+
+class TestCompleteUploadVersioning:
+    """Same-origin replacement vs. the original behavior (acceptance 3, 4, 7-9)."""
+
+    OLD = b"old content of the photo" * 20
+    NEW = b"new content of the photo" * 20
+
+    @pytest.fixture(autouse=True)
+    def _presence_fds(self):
+        from app.services import version_service as vs
+
+        yield
+        for fd in vs._presence_fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        vs._presence_fds.clear()
+
+    async def test_motion_photo_replacement_rewrites_metadata(self, seeded_db, storage_root):
+        """Acceptance 3: plain JPEG replaced by a motion photo, all metadata new."""
+        old = _versioned_jpeg("blue", iso=100, focal_35mm=24, taken="2024:01:01 08:00:00")
+        new = _motion_photo(
+            _versioned_jpeg("red", iso=1600, focal_35mm=70, taken="2025:02:02 10:00:00")
+        )
+        first = await _upload(seeded_db, storage_root, old, exif_time=datetime(2024, 1, 1, 8))
+        before = (await _rows(seeded_db))[0]
+        assert not before["is_motion_photo"] and not before["is_ultra_hdr"]
+
+        second = await _upload(seeded_db, storage_root, new, exif_time=datetime(2025, 2, 2, 10))
+        assert (second.success, second.replaced) == (True, True)
+        assert second.file_id == first.file_id and second.stored_path == first.stored_path
+        rows = await _rows(seeded_db)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["file_hash"] == hashlib.sha256(new).hexdigest()
+        assert row["file_size"] == len(new)
+        assert row["is_motion_photo"] == 1
+        assert row["motion_video_offset"] == len(new) - 224
+        assert row["is_ultra_hdr"] == 1
+        assert row["focal_length"] == 70.0 != before["focal_length"]
+        assert row["exif_time"] == datetime(2025, 2, 2, 10).isoformat() != before["exif_time"]
+        assert (row["iso"], before["iso"]) == (1600, 100)
+        assert row["focal_35mm"] == 70.0
+        assert row["capture_time"] == "2025-02-02T10:00:00"
+        assert row["meta_version"] == 1 and row["meta_status"] == "ok"
+        assert Path(row["file_path"]).read_bytes() == new
+        assert await _version_count(seeded_db) == 1
+
+    async def test_thumbnail_follows_new_hash(self, seeded_db, storage_root):
+        """Acceptance 4: the thumbnail is generated from the new content."""
+        from app.services.file_browse_service import FileBrowseService
+
+        old = _versioned_jpeg("blue", iso=100, focal_35mm=24, taken="2024:01:01 08:00:00")
+        new = _versioned_jpeg("red", iso=200, focal_35mm=24, taken="2024:01:01 08:00:00")
+        first = await _upload(seeded_db, storage_root, old)
+        browse = FileBrowseService(seeded_db, storage_root)
+        old_thumb = await browse.get_thumbnail(1, first.file_id)
+        thumbs = Path(storage_root) / ".thumbnails" / "alice"
+        old_hash = hashlib.sha256(old).hexdigest()
+        assert list(thumbs.glob(f"{old_hash}_*.jpg"))
+
+        second = await _upload(seeded_db, storage_root, new)
+        assert second.replaced and second.file_id == first.file_id
+        new_thumb = await browse.get_thumbnail(1, first.file_id)
+        new_hash = hashlib.sha256(new).hexdigest()
+        assert new_thumb is not None and new_thumb != old_thumb
+        assert list(thumbs.glob(f"{new_hash}_*.jpg"))
+        assert not list(thumbs.glob(f"{old_hash}_*.jpg"))
+        with Image.open(io.BytesIO(new_thumb)) as img:
+            r, g, b = img.convert("RGB").getpixel((img.width // 2, img.height // 2))
+        assert r > 200 and b < 60
+
+    async def test_other_device_keeps_suffix(self, seeded_db, storage_root):
+        """Acceptance 7."""
+        first = await _upload(seeded_db, storage_root, self.OLD)
+        second = await _upload(seeded_db, storage_root, self.NEW, device_name="OtherPhone")
+        assert second.success and not second.replaced
+        assert second.stored_path.endswith("IMG_0001_1.jpg")
+        rows = await _rows(seeded_db)
+        assert len(rows) == 2 and rows[0]["file_hash"] == hashlib.sha256(self.OLD).hexdigest()
+        assert Path(first.stored_path).read_bytes() == self.OLD
+        assert await _version_count(seeded_db) == 0
+
+    async def test_same_device_other_origin_keeps_suffix(self, seeded_db, storage_root):
+        """Acceptance 8."""
+        await _upload(seeded_db, storage_root, self.OLD)
+        second = await _upload(
+            seeded_db, storage_root, self.NEW, original_path="content://media/external/images/media/43"
+        )
+        assert second.success and not second.replaced
+        assert second.stored_path.endswith("IMG_0001_1.jpg")
+        assert len(await _rows(seeded_db)) == 2
+        assert await _version_count(seeded_db) == 0
+
+    @pytest.mark.parametrize("state", ["trashed", "purged"])
+    async def test_trashed_or_purged_record_is_not_replaced(self, seeded_db, storage_root, state):
+        """Acceptance 9: same content reactivates R; new content adds a row."""
+        from app.services.file_browse_service import FileBrowseService
+
+        first = await _upload(seeded_db, storage_root, self.OLD)
+        browse = FileBrowseService(seeded_db, storage_root)
+        assert (await browse.delete_file(1, first.file_id))[0]
+        if state == "purged":
+            assert (await browse.purge_file(1, first.file_id))[0]
+        assert not Path(first.stored_path).exists()
+
+        again = await _upload(seeded_db, storage_root, self.OLD)
+        assert again.success and not again.replaced
+        assert again.file_id == first.file_id and again.stored_path == first.stored_path
+        row = (await _rows(seeded_db))[0]
+        assert row["deleted_at"] is None and row["purged_at"] is None
+
+        await browse.delete_file(1, first.file_id)
+        other = await _upload(seeded_db, storage_root, self.NEW)
+        assert other.success and not other.replaced and other.file_id != first.file_id
+        assert other.stored_path == first.stored_path
+        assert len(await _rows(seeded_db)) == 2
+        assert await _version_count(seeded_db) == 0
+
+    @pytest.mark.parametrize("same_hash", [False, True], ids=["new-content", "same-content"])
+    async def test_trashed_record_with_file_left_in_place(self, seeded_db, storage_root, same_hash):
+        """The trash move failed (device name with spaces): legacy rules apply."""
+        first = await _upload(seeded_db, storage_root, self.OLD)
+        await seeded_db.execute(
+            "UPDATE file_records SET deleted_at = '2026-10-17T00:00:00' WHERE id = ?",
+            (first.file_id,),
+        )
+        await seeded_db.commit()
+        content = self.OLD if same_hash else self.NEW
+        result = await _upload(seeded_db, storage_root, content)
+        assert result.success and not result.replaced
+        if same_hash:
+            assert result.file_id == first.file_id and result.is_duplicate
+            assert (await _rows(seeded_db))[0]["deleted_at"] is None
+        else:
+            assert result.stored_path.endswith("IMG_0001_1.jpg")
+            assert len(await _rows(seeded_db)) == 2
+        assert Path(first.stored_path).read_bytes() == self.OLD
+        assert await _version_count(seeded_db) == 0
+
+    async def test_same_content_adds_no_row(self, seeded_db, storage_root):
+        first = await _upload(seeded_db, storage_root, self.OLD)
+        session_id = await _versioned_session(seeded_db, storage_root, self.OLD)
+        result = await UploadService(seeded_db, storage_root).complete_upload(session_id, 1)
+        assert (result.success, result.is_duplicate, result.replaced) == (True, True, False)
+        assert result.file_id == first.file_id
+        assert len(await _rows(seeded_db)) == 1
+        cursor = await seeded_db.execute(
+            "SELECT status FROM upload_sessions WHERE id = ?", (session_id,)
+        )
+        assert (await cursor.fetchone())["status"] == "completed"
+        assert not (Path(storage_root) / ".chunks" / session_id).exists()
+
+    async def test_force_suffix_ignores_missing_final_path(self, seeded_db, storage_root):
+        service = UploadService(seeded_db, storage_root)
+        session_id = await _versioned_session(seeded_db, storage_root, self.NEW)
+        session = await service._chunk_manager.get_session(session_id)
+        merged = await service._chunk_manager.merge_chunks(session_id, user_id=1)
+        final_path = Path(storage_root) / _V_DIR / "IMG_0001.jpg"
+        assert not final_path.exists()
+        result = await service._complete_legacy(session, merged, final_path, force_suffix=True)
+        assert result.success
+        assert result.stored_path == str(final_path.with_name("IMG_0001_1.jpg"))
+        assert not final_path.exists()
+
+    async def test_hash_only_in_versions_is_not_a_duplicate(self, seeded_db, storage_root):
+        """Plan B: init_upload never consults the history."""
+        first = await _upload(seeded_db, storage_root, self.OLD)
+        await _upload(seeded_db, storage_root, self.NEW)  # OLD becomes a version
+        assert await _version_count(seeded_db) == 1
+        service = UploadService(seeded_db, storage_root)
+        result = await service.init_upload(
+            user_id=1,
+            username="alice",
+            file_info=_make_file_info(
+                file_hash=hashlib.sha256(self.OLD).hexdigest(), file_size=len(self.OLD)
+            ),
+        )
+        assert result.is_duplicate is False and result.session_id
+        assert first.file_id is not None

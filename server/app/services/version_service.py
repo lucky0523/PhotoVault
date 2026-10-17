@@ -51,6 +51,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -76,6 +77,10 @@ SERVER_PRESENCE_LOCK_NAME = ".server-presence.lock"
 MAINTENANCE_LOCK_NAME = ".maintenance.lock"
 FILE_LOCK_ATTEMPTS = 3
 FILE_LOCK_RETRY_SECONDS = 0.2
+PURGE_BATCH_SIZE = 500
+# Files created by an in-flight operation have a fresh ctime (link and copy
+# both update it), so sweeps never touch anything younger than this.
+ORPHAN_MIN_AGE_SECONDS = 24 * 3600
 
 # Generated once per process. pid alone is not enough: a restarted container
 # often gets the same pid (1, 7, ...) as the process that died.
@@ -83,6 +88,10 @@ PROCESS_TOKEN = uuid.uuid4().hex[:12]
 OWNER = f"{socket.gethostname()}:{os.getpid()}:{PROCESS_TOKEN}"
 
 _HASH8_RE = re.compile(r"^[0-9a-f]{8}$")
+# Names the maintenance sweeps may delete (design 5.2 and 10; gate #3: no
+# restore files).
+_VERSION_FILE_RE = re.compile(r"^\d{8}T\d{6}Z_[0-9a-f]{8}(\.[^/.]+)?(\.part)?$")
+_PATH_TEMP_RE = re.compile(r"^\.pv-(staging|rollback)-[0-9a-f]{12}(\.[^/]*)?(\.part)?$")
 _COLUMN_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _FORBIDDEN_CONTENT_COLUMNS = frozenset(
     {"id", "user_id", "file_path", "deleted_at", "deleted_batch_id", "purged_at"}
@@ -1451,6 +1460,231 @@ class VersionService:
             row["file_record_id"], row["final_path"], row["rollback_path"],
             row["version_path"], row["staging_path"], row["id"], reason,
         )
+
+    # ------------------------------------------------------------------
+    # Periodic maintenance (design section 10, gate #3/#4/#6)
+    # ------------------------------------------------------------------
+
+    async def purge_expired(self, *, batch_size: int = PURGE_BATCH_SIZE) -> int:
+        """Delete expired versions: the file first, then the row.
+
+        Only touches ``file_versions``. A missing file is logged (WARNING) and
+        its row deleted anyway; a file that cannot be deleted or lies outside
+        ``.versions/`` (ERROR) keeps its row for the next round. One commit
+        per batch. Returns the number of rows deleted.
+        """
+        now = _iso(_utc_now())
+        deleted_rows = 0
+        last_id = 0
+        while True:
+            cursor = await self._db.execute(
+                """SELECT id, stored_path, file_record_id FROM file_versions
+                   WHERE expires_at <= ? AND id > ? ORDER BY id LIMIT ?""",
+                (now, last_id, batch_size),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                break
+            last_id = rows[-1]["id"]
+            dirs: set[str] = set()
+            for row in rows:
+                path = row["stored_path"]
+                result = self._unlink_version_file(self._media_root, path)
+                if result == "out_of_bounds":
+                    continue  # ERROR already logged; keep the row
+                if result == "error":
+                    logger.error(
+                        "could not delete expired version file %s (version_id=%d); "
+                        "retrying next round",
+                        path, row["id"],
+                    )
+                    continue
+                if result == "missing":
+                    logger.warning(
+                        "expired version file missing: %s (version_id=%d)", path, row["id"]
+                    )
+                cursor = await self._db.execute(
+                    "DELETE FROM file_versions WHERE id = ?", (row["id"],)
+                )
+                deleted_rows += max(cursor.rowcount, 0)
+                resolved = _resolve_version_file(self._media_root, path)
+                if resolved is not None:
+                    dirs.add(os.path.dirname(resolved))
+            await self._db.commit()
+            for directory in dirs:
+                try:
+                    os.rmdir(directory)
+                except OSError:
+                    pass
+            if len(rows) < batch_size:
+                break
+        if deleted_rows:
+            logger.info("Deleted %d expired file version(s)", deleted_rows)
+        return deleted_rows
+
+    async def _path_referenced(self, sql: str, path: str) -> bool:
+        cursor = await self._db.execute(sql, (path, os.path.realpath(path)))
+        return bool((await cursor.fetchone())[0])
+
+    async def sweep_orphans(self, min_age_seconds: float = ORPHAN_MIN_AGE_SECONDS) -> int:
+        """Delete unreferenced files under ``.versions/<digits>/`` (conservative).
+
+        Skipped entirely (ERROR) when a user is named ``.versions`` or
+        ``.versions/`` holds anything but digit directories and the two lock
+        files. A directory with a subdirectory or an unexpected file name is
+        skipped (WARNING). A file is deleted only if its ctime is older than
+        ``min_age_seconds`` and no version row, journal row (any state) or
+        file record refers to it. Returns the number of files deleted.
+        """
+        cursor = await self._db.execute(
+            "SELECT 1 FROM users WHERE username = ?", (VERSIONS_DIRNAME,)
+        )
+        if await cursor.fetchone() is not None:
+            logger.error(
+                "username '%s' collides with the version store; orphan sweep disabled",
+                VERSIONS_DIRNAME,
+            )
+            return 0
+        root = _versions_root(self._media_root)
+        try:
+            entries = sorted(os.scandir(root), key=lambda e: e.name)
+        except FileNotFoundError:
+            return 0
+        except OSError as exc:
+            logger.warning("cannot list %s: %s; orphan sweep skipped", root, exc)
+            return 0
+        version_dirs: list[str] = []
+        for entry in entries:
+            if entry.name in (SERVER_PRESENCE_LOCK_NAME, MAINTENANCE_LOCK_NAME) and entry.is_file(
+                follow_symlinks=False
+            ):
+                continue
+            if entry.name.isdigit() and entry.is_dir(follow_symlinks=False):
+                version_dirs.append(entry.path)
+                continue
+            logger.error(
+                "media_root/.versions contains unexpected entry %r; "
+                "orphan sweep disabled this round",
+                entry.name,
+            )
+            return 0
+
+        removed = 0
+        now = time.time()
+        for directory in version_dirs:
+            try:
+                children = list(os.scandir(directory))
+            except OSError as exc:
+                logger.warning("cannot list %s: %s; skipped", directory, exc)
+                continue
+            if any(
+                not child.is_file(follow_symlinks=False)
+                or not _VERSION_FILE_RE.match(child.name)
+                for child in children
+            ):
+                logger.warning(
+                    "%s contains unexpected entries; skipped by the orphan sweep", directory
+                )
+                continue
+            for child in children:
+                path = child.path
+                try:
+                    ctime = os.lstat(path).st_ctime
+                except FileNotFoundError:
+                    continue
+                if now - ctime <= min_age_seconds:
+                    continue
+                if await self._path_referenced(
+                    "SELECT EXISTS (SELECT 1 FROM file_versions WHERE stored_path IN (?, ?))",
+                    path,
+                ):
+                    continue
+                base = path[: -len(".part")] if path.endswith(".part") else path
+                if await self._path_referenced(
+                    """SELECT EXISTS (SELECT 1 FROM file_version_journal
+                                      WHERE version_path IN (?, ?))""",
+                    base,
+                ):
+                    continue
+                if await self._path_referenced(
+                    "SELECT EXISTS (SELECT 1 FROM file_records WHERE file_path IN (?, ?))",
+                    path,
+                ):
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError as exc:
+                    logger.warning("could not delete orphan version file %s: %s", path, exc)
+                    continue
+                removed += 1
+                logger.info("Deleted orphan version file %s (ctime=%s)", path, ctime)
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+        return removed
+
+    async def sweep_path_temps(self, min_age_seconds: float = ORPHAN_MIN_AGE_SECONDS) -> int:
+        """Fallback cleanup of ``.pv-staging-*`` / ``.pv-rollback-*`` files.
+
+        Scans, without recursion, only directories where a ``final_path`` can
+        be: parents of ``file_records.file_path`` and of journal
+        ``final_path``, plus ``upload_sessions.target_path`` (gate #6). A
+        matching regular file is deleted only if its ctime is older than
+        ``min_age_seconds``, no journal row (any state) registers it
+        (``_temp_paths``, gate #4) and no file record points to it. Returns
+        the number of files deleted.
+        """
+        directories: set[str] = set()
+        cursor = await self._db.execute("SELECT DISTINCT file_path FROM file_records")
+        directories.update(os.path.dirname(r[0]) for r in await cursor.fetchall() if r[0])
+        cursor = await self._db.execute("SELECT * FROM file_version_journal")
+        journal = await cursor.fetchall()
+        directories.update(os.path.dirname(r["final_path"]) for r in journal if r["final_path"])
+        cursor = await self._db.execute("SELECT DISTINCT target_path FROM upload_sessions")
+        directories.update(str(r[0]).rstrip("/") or "/" for r in await cursor.fetchall() if r[0])
+
+        registered: set[str] = set()
+        for row in journal:
+            for path in _temp_paths(row):
+                registered.add(path)
+                registered.add(os.path.realpath(path))
+
+        removed = 0
+        now = time.time()
+        for directory in sorted(directories):
+            try:
+                entries = list(os.scandir(directory))
+            except OSError as exc:
+                logger.debug("sweep_path_temps: cannot list %s: %s", directory, exc)
+                continue
+            for entry in entries:
+                if not _PATH_TEMP_RE.match(entry.name):
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                path = entry.path
+                if path in registered or os.path.realpath(path) in registered:
+                    continue
+                try:
+                    ctime = os.lstat(path).st_ctime
+                except FileNotFoundError:
+                    continue
+                if now - ctime <= min_age_seconds:
+                    continue
+                if await self._path_referenced(
+                    "SELECT EXISTS (SELECT 1 FROM file_records WHERE file_path IN (?, ?))",
+                    path,
+                ):
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError as exc:
+                    logger.warning("could not delete stale temporary file %s: %s", path, exc)
+                    continue
+                removed += 1
+                logger.info("Deleted stale temporary file %s (ctime=%s)", path, ctime)
+        return removed
 
     # ------------------------------------------------------------------
     # Version file deletion (design section 9)

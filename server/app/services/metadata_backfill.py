@@ -76,7 +76,7 @@ AND ((meta_version IS NULL OR meta_version < ?)
 _PENDING_COUNT_SQL = f"SELECT COUNT(*) FROM file_records WHERE {_PENDING_WHERE}"
 
 _BATCH_SELECT_SQL = f"""
-SELECT id, file_path, media_type, exif_time FROM file_records
+SELECT id, file_path, file_hash, media_type, exif_time FROM file_records
 WHERE id > ? AND {_PENDING_WHERE}
 ORDER BY id LIMIT ?
 """
@@ -174,18 +174,20 @@ async def run_backfill_round(db: aiosqlite.Connection) -> BackfillStats:
             if not rows:
                 break
 
-            results: list[tuple[int, str, MediaMetadata]] = []
+            results: list[tuple[int, str, str, MediaMetadata]] = []
             for row in rows:
-                file_id, file_path, media_type, exif_time = row[0], row[1], row[2], row[3]
+                file_id, file_path, file_hash, media_type, exif_time = (
+                    row[0], row[1], row[2], row[3], row[4]
+                )
                 meta = await _extract_one(file_path, media_type, exif_time)
-                results.append((file_id, file_path, meta))
+                results.append((file_id, file_path, file_hash, meta))
 
             # One call per row (same transaction, one commit per batch) so the
             # per-status counters only include rows that were actually written.
             for entry in results:
                 if await apply_media_metadata_many(db, [entry]):
                     stats.processed += 1
-                    status = entry[2].status
+                    status = entry[3].status
                     if status == "ok":
                         stats.ok += 1
                     elif status == "no_ffprobe":

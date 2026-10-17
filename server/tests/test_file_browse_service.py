@@ -662,3 +662,192 @@ async def test_delete_directory_skips_moving_a_changed_file(service_with_data, m
     assert rows[0]["file_path"] == path1 and os.path.exists(path1)  # not moved
     assert rows[1]["file_path"] != path2 and "/.trash/" in rows[1]["file_path"]
     assert not os.path.exists(path2)
+
+
+# ---------------------------------------------------------------------------
+# File versioning (design sections 8 and 9): isolation, purge cascade and the
+# status-sync correction. Real schema via init_db (file_versions exists).
+# ---------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+from dataclasses import asdict  # noqa: E402
+
+from app.core.database import init_db  # noqa: E402
+
+V_OLD = b"\xff\xd8 version one of the picture " * 16
+V_NEW = b"\xff\xd8 version two of the picture " * 16  # same length as V_OLD
+
+
+def _h(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest_asyncio.fixture
+async def versioned(tmp_path):
+    """init_db schema, alice (id 1), four Pixel9Pro records: R and A active,
+    T trashed, P purged."""
+    from app.services import version_service as vs
+
+    db_path = str(tmp_path / "pv.db")
+    media_root = str(tmp_path / "media")
+    await init_db(db_path)
+    db = await aiosqlite.connect(db_path)
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA foreign_keys=ON;")
+    await db.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'alice', 'x')")
+    camera = Path(media_root) / "alice" / "Pixel9Pro" / "DCIM" / "Camera"
+    camera.mkdir(parents=True)
+    ids = {}
+    for key, name, content, extra in (
+        ("R", "IMG_1.jpg", V_OLD, {}),
+        ("A", "IMG_2.jpg", b"another photo", {}),
+        ("T", "IMG_3.jpg", b"trashed photo", {"deleted_at": "2026-10-01T00:00:00+00:00"}),
+        ("P", "IMG_4.jpg", b"purged photo", {"deleted_at": "2026-09-01T00:00:00+00:00",
+                                             "purged_at": "2026-10-01T00:00:00+00:00"}),
+    ):
+        path = camera / name
+        path.write_bytes(content)
+        values = {
+            "user_id": 1, "file_hash": _h(content), "file_path": str(path),
+            "original_path": f"content://media/{key}", "device_name": "Pixel9Pro",
+            "file_size": len(content), "file_name": name, "mime_type": "image/jpeg",
+            "created_at": "2026-10-01 00:00:00", **extra,
+        }
+        cursor = await db.execute(
+            f"INSERT INTO file_records ({', '.join(values)}) "
+            f"VALUES ({', '.join('?' for _ in values)})",
+            tuple(values.values()),
+        )
+        ids[key] = cursor.lastrowid
+    await db.commit()
+    try:
+        yield db, media_root, ids
+    finally:
+        for fd in vs._presence_fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        vs._presence_fds.clear()
+        await db.close()
+
+
+async def _replace_r(db, media_root, record_id, content=V_NEW):
+    from app.services.version_service import VersionService
+
+    cursor = await db.execute("SELECT * FROM file_records WHERE id = ?", (record_id,))
+    record = await cursor.fetchone()
+    incoming = Path(media_root) / ".chunks" / "s" / "merged-000000000000.jpg"
+    incoming.parent.mkdir(parents=True, exist_ok=True)
+    incoming.write_bytes(content)
+    return await VersionService(db, media_root, role="server").replace_record_content(
+        op="upload", username="alice", record=record, incoming_path=str(incoming),
+        new_hash=_h(content), new_size=len(content), content_values={}, media_meta=None,
+    )
+
+
+async def _snapshot(service):
+    listings = {}
+    for path in ("", "Pixel9Pro", "Pixel9Pro/DCIM", "Pixel9Pro/DCIM/Camera"):
+        listings[path] = asdict(await service.list_directory(1, path))
+    trash, trash_total = await service.list_trash(1)
+    return {
+        "devices": [asdict(d) for d in await service.get_device_stats(1)],
+        "listings": listings,
+        "all": asdict(await service.list_all_files(1)),
+        "trash": ([asdict(t) for t in trash], trash_total),
+        "status": sorted(
+            (asdict(s) for s in await service.get_status_changes(1)),
+            key=lambda s: s["file_hash"],
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_replacement_changes_no_listing_or_count(versioned):
+    """Acceptance 10: stats, tree counts, listings, trash and status-sync are
+    identical before and after a replacement (same size, so even byte totals),
+    and status-sync never mentions the history hash."""
+    db, media_root, ids = versioned
+    service = FileBrowseService(db, media_root)
+    before = await _snapshot(service)
+    await _replace_r(db, media_root, ids["R"])
+    cursor = await db.execute("SELECT file_hash FROM file_versions")
+    assert [r["file_hash"] for r in await cursor.fetchall()] == [_h(V_OLD)]
+    after = await _snapshot(service)
+    assert after == before
+    device = after["devices"][0]
+    assert (device["backed_up_count"], device["trashed_count"], device["purged_count"]) == (2, 1, 1)
+    assert after["all"]["total_files"] == 2 and after["trash"][1] == 1
+    assert _h(V_OLD) not in {s["file_hash"] for s in after["status"]}
+    assert _h(V_NEW) not in {s["file_hash"] for s in after["status"]}
+
+
+@pytest.mark.asyncio
+async def test_purge_cascades_to_versions(versioned):
+    db, media_root, ids = versioned
+    service = FileBrowseService(db, media_root)
+    outcome = await _replace_r(db, media_root, ids["R"])
+    version_file = Path(outcome.version_path)
+    assert version_file.read_bytes() == V_OLD
+    assert (await service.delete_file(1, ids["R"]))[0]
+    ok, _ = await service.purge_file(1, ids["R"])
+    assert ok
+    cursor = await db.execute("SELECT COUNT(*) FROM file_versions")
+    assert (await cursor.fetchone())[0] == 0
+    assert not version_file.exists() and not version_file.parent.exists()
+    versions_root = Path(os.path.realpath(media_root)) / ".versions"
+    assert (versions_root / ".server-presence.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_purge_with_promotion_cascades_to_versions(versioned):
+    """The promotion branch: the versions belong to the purged original."""
+    db, media_root, ids = versioned
+    service = FileBrowseService(db, media_root)
+    cursor = await db.execute("SELECT * FROM file_records WHERE id = ?", (ids["T"],))
+    original = await cursor.fetchone()
+    await db.execute(
+        """INSERT INTO file_records (user_id, file_hash, file_path, original_path, device_name,
+           file_size, file_name, is_reference, reference_to)
+           VALUES (1, ?, ?, 'content://ref', 'Pixel9Pro', 1, 'ref.jpg', 1, ?)""",
+        (original["file_hash"], original["file_path"] + ".ref.jpg", ids["T"]),
+    )
+    version_dir = Path(os.path.realpath(media_root)) / ".versions" / str(ids["T"])
+    version_dir.mkdir(parents=True)
+    version_file = version_dir / "20261001T000000Z_aaaaaaaa.jpg"
+    version_file.write_bytes(b"older")
+    await db.execute(
+        """INSERT INTO file_versions (file_record_id, user_id, file_hash, file_size,
+           stored_path, replaced_at, expires_at)
+           VALUES (?, 1, 'aaaaaaaa', 5, ?, '2026-10-01T00:00:00+00:00',
+                   '2026-10-31T00:00:00+00:00')""",
+        (ids["T"], str(version_file)),
+    )
+    await db.commit()
+    ok, message = await service.purge_file(1, ids["T"])
+    assert ok and "ownership transferred" in message
+    cursor = await db.execute("SELECT COUNT(*) FROM file_versions")
+    assert (await cursor.fetchone())[0] == 0
+    assert not version_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_status_changes_skip_hashes_that_are_still_active(versioned):
+    """A hash on any active record is active: a trashed _1 with R's new hash
+    must not make the client mark R's file as trashed."""
+    db, media_root, ids = versioned
+    service = FileBrowseService(db, media_root)
+    cursor = await db.execute("SELECT file_hash FROM file_records WHERE id = ?", (ids["A"],))
+    active_hash = (await cursor.fetchone())["file_hash"]
+    await db.execute(
+        """INSERT INTO file_records (user_id, file_hash, file_path, original_path, device_name,
+           file_size, file_name, deleted_at)
+           VALUES (1, ?, '/m/alice/Pixel9Pro/IMG_2_1.jpg', 'content://x', 'Pixel9Pro', 1,
+                   'IMG_2_1.jpg', '2026-10-02T00:00:00+00:00')""",
+        (active_hash,),
+    )
+    await db.commit()
+    hashes = {s.file_hash: s.status for s in await service.get_status_changes(1)}
+    assert active_hash not in hashes
+    assert hashes == {_h(b"trashed photo"): "trashed", _h(b"purged photo"): "purged"}

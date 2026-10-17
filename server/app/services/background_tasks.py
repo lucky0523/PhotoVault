@@ -4,6 +4,8 @@ Provides periodic background tasks that run during the application lifecycle:
 - Expired upload session cleanup (every 6 hours)
 - Disk space monitoring (every hour)
 - Statistics metadata backfill (every hour, ``metadata_backfill``)
+- File version maintenance (every 6 hours, ``cleanup_expired_versions``) and
+  holding the server presence lock (``hold_server_presence``)
 
 Tasks are started via asyncio.create_task in the FastAPI lifespan and cancelled
 on shutdown. No external scheduler dependency required.
@@ -530,6 +532,109 @@ async def cleanup_expired_trash_task(
 
 
 # ---------------------------------------------------------------------------
+# File version maintenance (design section 10) and server presence (5.4)
+# ---------------------------------------------------------------------------
+
+VERSION_MAINTENANCE_INTERVAL_SECONDS: int = 6 * 60 * 60  # 6 hours
+SERVER_PRESENCE_POLL_SECONDS: float = 60
+
+
+async def _run_version_maintenance(database_url: str, media_root: str) -> dict[str, int] | None:
+    """Execute one round of version maintenance.
+
+    Skipped (None) while the repair script holds ``.versions`` exclusively or
+    another worker runs this round. Otherwise, on its own connection
+    (``_create_connection``: foreign keys, ``synchronous=FULL``, Row factory):
+    recover interrupted replacements, delete expired versions, sweep orphan
+    version files and stale ``.pv-*`` temporaries.
+    """
+    from app.core.database import _create_connection
+    from app.services.version_service import (
+        VersionService,
+        ensure_server_presence,
+        try_maintenance_lock,
+    )
+
+    if not ensure_server_presence(media_root):
+        logger.warning("Version maintenance skipped: maintenance script holds .versions lock")
+        return None
+    with try_maintenance_lock(media_root) as acquired:
+        if not acquired:
+            logger.debug("Version maintenance skipped: another worker holds the lock")
+            return None
+        db = await _create_connection(database_url)
+        try:
+            service = VersionService(db, media_root, role="server")
+            result = {
+                "recovered": await service.recover_pending(),
+                "expired": await service.purge_expired(),
+                "orphans": await service.sweep_orphans(),
+                "temps": await service.sweep_path_temps(),
+            }
+        finally:
+            await db.close()
+    if any(result.values()):
+        logger.info(
+            "Version maintenance: recovered=%d expired=%d orphans=%d temps=%d",
+            result["recovered"], result["expired"], result["orphans"], result["temps"],
+        )
+    return result
+
+
+async def cleanup_expired_versions_task(
+    interval_seconds: int = VERSION_MAINTENANCE_INTERVAL_SECONDS,
+) -> None:
+    """Periodically run version maintenance (see :func:`_run_version_maintenance`).
+
+    Re-checks every ``DB_NOT_READY_POLL_SECONDS`` while the database is not
+    ready yet, see :func:`run_periodic_db_task`.
+    """
+    settings = get_settings()
+
+    async def _round() -> None:
+        await _run_version_maintenance(settings.database_url, settings.media_root)
+
+    await run_periodic_db_task(
+        _round,
+        interval_seconds=interval_seconds,
+        task_logger=logger,
+        task_label="Version maintenance",
+        cancelled_message="Version maintenance task cancelled",
+        error_message="Error during version maintenance",
+    )
+
+
+async def hold_server_presence_task() -> None:
+    """Once the database is ready, take the shared ``.server-presence.lock``.
+
+    Retries every ``SERVER_PRESENCE_POLL_SECONDS`` while the repair script
+    holds it exclusively, then ends; the lock is kept until the process exits.
+    Not built on :func:`run_periodic_db_task`: it must stop after succeeding.
+    """
+    from app.services.version_service import ensure_server_presence
+
+    try:
+        while True:
+            if _database_ready():
+                media_root = get_settings().media_root
+                if ensure_server_presence(media_root):
+                    logger.info("Holding server presence lock on %s", media_root)
+                    return
+                logger.warning(
+                    "Server presence lock busy (maintenance script running?); retrying in %ss",
+                    SERVER_PRESENCE_POLL_SECONDS,
+                )
+            await asyncio.sleep(SERVER_PRESENCE_POLL_SECONDS)
+    except asyncio.CancelledError:
+        logger.info("Server presence task cancelled")
+        raise
+    except Exception:
+        logger.exception(
+            "Server presence task failed; replacement entry will keep retrying lazily"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Analysis worker task
 # ---------------------------------------------------------------------------
 
@@ -603,6 +708,14 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(
             metadata_backfill_task(),
             name="metadata_backfill",
+        ),
+        asyncio.create_task(
+            cleanup_expired_versions_task(),
+            name="cleanup_expired_versions",
+        ),
+        asyncio.create_task(
+            hold_server_presence_task(),
+            name="hold_server_presence",
         ),
     ]
     logger.info("Background tasks started: %s", [t.get_name() for t in tasks])

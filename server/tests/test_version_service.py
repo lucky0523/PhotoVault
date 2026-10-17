@@ -31,7 +31,9 @@ import pytest
 from app.core.config import reset_settings
 from app.core.database import init_db
 from app.services import version_service as vs
+from app.services.chunk_manager import ChunkManager
 from app.services.file_browse_service import FileBrowseService
+from app.services.upload_service import UploadService
 from app.services.version_service import (
     OWNER,
     VERSION_RETENTION_DAYS,
@@ -1399,3 +1401,694 @@ class TestLocksAndDeletion:
             VersionService._unlink_version_file(env.media_root, str(Path(env.media_root) / "x"))
             == "out_of_bounds"
         )
+
+
+# ---------------------------------------------------------------------------
+# complete_upload integration (design section 6, FEAT-002)
+# ---------------------------------------------------------------------------
+
+PIX = "Pixel9Pro"
+PIX_DIR = "alice/Pixel9Pro/DCIM/Camera"
+
+
+async def open_conn(env):
+    conn = await aiosqlite.connect(env.db_path)
+    await conn.execute("PRAGMA foreign_keys=ON;")
+    conn.row_factory = aiosqlite.Row
+    return conn
+
+
+async def make_session(
+    env, content: bytes = NEW, *, db=None, device: str = DEVICE, origin: str = ORIGIN,
+    name: str = NAME, rel_dir: str = REL_DIR,
+) -> str:
+    """An upload session with every chunk stored (what the client does)."""
+    manager = ChunkManager(db or env.db, env.media_root)
+    target = Path(env.media_root) / rel_dir
+    target.mkdir(parents=True, exist_ok=True)
+    session_id = await manager.create_session(
+        user_id=1, file_hash=sha(content), file_name=name, file_size=len(content),
+        target_path=str(target), device_name=device, original_path=origin,
+    )
+    size = manager.chunk_size
+    for index, start in enumerate(range(0, len(content), size)):
+        data = content[start:start + size]
+        await manager.store_chunk(session_id, index, data, hashlib.md5(data).hexdigest())
+    return session_id
+
+
+async def all_records(env):
+    cursor = await env.db.execute("SELECT * FROM file_records ORDER BY id")
+    return await cursor.fetchall()
+
+
+async def session_status(env, session_id: str) -> str:
+    cursor = await env.db.execute(
+        "SELECT status FROM upload_sessions WHERE id = ?", (session_id,)
+    )
+    return (await cursor.fetchone())["status"]
+
+
+def suffixed(record, n: int = 1) -> str:
+    path = Path(record["file_path"])
+    return str(path.with_name(f"{path.stem}_{n}{path.suffix}"))
+
+
+class TestCompleteUploadIntegration:
+    async def test_same_origin_upload_replaces_in_place(self, env):
+        record = await make_record(env)
+        session_id = await make_session(env)
+        result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        assert (result.success, result.replaced, result.is_duplicate) == (True, True, False)
+        assert result.file_id == record["id"] and result.stored_path == record["file_path"]
+        assert Path(record["file_path"]).read_bytes() == NEW
+        assert len(await all_records(env)) == 1
+        assert not os.path.exists(suffixed(record))
+        assert await count(env, "file_versions") == 1
+        assert await count(env, "file_version_journal") == 0
+        assert await session_status(env, session_id) == "completed"
+        assert not (Path(env.media_root) / ".chunks" / session_id).exists()
+
+    @pytest.mark.parametrize("content", [NEW, OLD], ids=["different-hash", "same-hash"])
+    async def test_missing_file_forces_suffix(self, env, capture, content):
+        record = await make_record(env)
+        os.unlink(record["file_path"])
+        session_id = await make_session(env, content)
+        result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        assert result.success and not result.replaced
+        assert result.stored_path == suffixed(record)
+        assert Path(result.stored_path).read_bytes() == content
+        rows = await all_records(env)
+        assert len(rows) == 2
+        assert (rows[0]["file_hash"], rows[0]["file_path"]) == (
+            record["file_hash"], record["file_path"]
+        )
+        assert not os.path.exists(record["file_path"])
+        assert await count(env, "file_versions") == 0
+        assert await count(env, "file_version_journal") == 0
+        assert "is missing; storing new content with suffix" in capture.text
+
+    async def test_directory_at_path_forces_suffix(self, env):
+        record = await make_record(env)
+        os.unlink(record["file_path"])
+        os.mkdir(record["file_path"])
+        session_id = await make_session(env)
+        result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        assert result.success and result.stored_path == suffixed(record)
+        assert os.path.isdir(record["file_path"])
+        assert len(await all_records(env)) == 2
+        assert await count(env, "file_versions") == 0
+
+    async def test_delete_directory_moved_file_before_replacement(self, env, monkeypatch):
+        """Interleaving (a): files moved to .trash, UPDATE not yet run."""
+        record = await make_record(env, device=PIX, rel_dir=PIX_DIR)
+        other = await open_conn(env)
+        try:
+            moved = asyncio.Event()
+            release = asyncio.Event()
+            real_execute = other.execute
+
+            async def paused_execute(sql, *args):
+                if sql.lstrip().startswith("UPDATE file_records SET deleted_at"):
+                    moved.set()
+                    await release.wait()
+                return await real_execute(sql, *args)
+
+            monkeypatch.setattr(other, "execute", paused_execute)
+            browse = FileBrowseService(other, env.media_root)
+            deleting = asyncio.create_task(browse.delete_directory(1, "Pixel9Pro/DCIM/Camera"))
+            await asyncio.wait_for(moved.wait(), 5)
+            assert not os.path.exists(record["file_path"])
+
+            session_id = await make_session(env, device=PIX, rel_dir=PIX_DIR)
+            result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+            assert result.success and not result.replaced
+            assert result.stored_path == suffixed(record)
+
+            release.set()
+            assert (await deleting)[0] == 1
+        finally:
+            await other.close()
+        row = await fetch_record(env, record["id"])
+        assert row["deleted_at"] is not None and "/.trash/" in row["file_path"]
+        assert sha(Path(row["file_path"]).read_bytes()) == row["file_hash"] == record["file_hash"]
+        assert not os.path.exists(record["file_path"])
+        new_row = (await all_records(env))[1]
+        assert sha(Path(new_row["file_path"]).read_bytes()) == new_row["file_hash"] == sha(NEW)
+        assert await count(env, "file_versions") == 0
+
+    async def test_delete_directory_while_replacement_holds_the_lock(self, env, monkeypatch):
+        """Interleaving (b): delete_directory cannot lock, marks the record deleted
+        in place; the replacement's record CAS fails, it reclassifies to legacy."""
+        record = await make_record(env, device=PIX, rel_dir=PIX_DIR)
+        session_id = await make_session(env, device=PIX, rel_dir=PIX_DIR)
+        entered = threading.Event()
+        release = threading.Event()
+        real_link = vs._link_or_copy
+        paused = {"done": False}
+
+        def slow_link(src, dst):
+            if ".pv-staging-" in dst and not paused["done"]:
+                paused["done"] = True
+                entered.set()
+                release.wait(5)
+            return real_link(src, dst)
+
+        monkeypatch.setattr(vs, "_link_or_copy", slow_link)
+        uploading = asyncio.create_task(
+            UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        )
+        other = await open_conn(env)
+        try:
+            await asyncio.to_thread(entered.wait, 5)
+            count_deleted, _ = await FileBrowseService(other, env.media_root).delete_directory(
+                1, "Pixel9Pro/DCIM/Camera"
+            )
+            assert count_deleted == 1
+        finally:
+            release.set()
+            await other.close()
+        result = await uploading
+        assert result.success and not result.replaced
+        assert result.stored_path == suffixed(record)
+        row = await fetch_record(env, record["id"])
+        assert row["deleted_at"] is not None and row["file_path"] == record["file_path"]
+        assert sha(Path(row["file_path"]).read_bytes()) == row["file_hash"]
+        assert await count(env, "file_versions") == 0
+        assert await count(env, "file_version_journal") == 0
+        assert version_files(env) == [] and pv_temps(record) == []
+
+    async def test_delete_file_with_stale_hash_does_not_move(self, env, monkeypatch):
+        """delete_file read H1, a replacement H1->H2 commits before it locks."""
+        record = await make_record(env, device=PIX, rel_dir=PIX_DIR)
+        other = await open_conn(env)
+        try:
+            browse = FileBrowseService(other, env.media_root)
+            reached = asyncio.Event()
+            release = asyncio.Event()
+            real_get_username = browse._get_username
+
+            async def paused_get_username(user_id):
+                reached.set()
+                await release.wait()
+                return await real_get_username(user_id)
+
+            monkeypatch.setattr(browse, "_get_username", paused_get_username)
+            deleting = asyncio.create_task(browse.delete_file(1, record["id"]))
+            await asyncio.wait_for(reached.wait(), 5)
+            session_id = await make_session(env, device=PIX, rel_dir=PIX_DIR)
+            result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+            assert result.replaced
+            release.set()
+            assert await deleting == (False, "File is currently being processed")
+        finally:
+            await other.close()
+        row = await fetch_record(env, record["id"])
+        assert row["deleted_at"] is None and row["file_path"] == record["file_path"]
+        assert sha(Path(row["file_path"]).read_bytes()) == row["file_hash"] == sha(NEW)
+
+    async def test_delete_directory_with_stale_hash_does_not_move(self, env, monkeypatch):
+        record = await make_record(env, device=PIX, rel_dir=PIX_DIR)
+        other = await open_conn(env)
+        try:
+            read = asyncio.Event()
+            release = asyncio.Event()
+            real_execute = other.execute
+
+            class Prefetched:
+                def __init__(self, rows):
+                    self._rows = rows
+
+                async def fetchall(self):
+                    return self._rows
+
+            async def paused_execute(sql, *args):
+                cursor = await real_execute(sql, *args)
+                if "file_path LIKE" in sql:
+                    rows = await cursor.fetchall()
+                    read.set()
+                    await release.wait()
+                    return Prefetched(rows)
+                return cursor
+
+            monkeypatch.setattr(other, "execute", paused_execute)
+            browse = FileBrowseService(other, env.media_root)
+            deleting = asyncio.create_task(browse.delete_directory(1, "Pixel9Pro/DCIM/Camera"))
+            await asyncio.wait_for(read.wait(), 5)
+            session_id = await make_session(env, device=PIX, rel_dir=PIX_DIR)
+            result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+            assert result.replaced
+            release.set()
+            assert (await deleting)[0] == 1
+        finally:
+            await other.close()
+        row = await fetch_record(env, record["id"])
+        assert row["deleted_at"] is not None
+        assert row["file_path"] == record["file_path"]
+        assert sha(Path(row["file_path"]).read_bytes()) == row["file_hash"] == sha(NEW)
+
+    async def test_pre_switch_inode_check_reclassifies_to_suffix(self, env):
+        """final_path moved away at F2: no switch; reclassified to row 3 (_1)."""
+        record = await make_record(env)
+        moved = record["file_path"] + ".moved"
+        service = UploadService(env.db, env.media_root)
+
+        def move_away(stage):
+            if stage == "after_version_row" and os.path.exists(record["file_path"]):
+                os.rename(record["file_path"], moved)
+
+        service._versions._fault_hook = move_away
+        session_id = await make_session(env)
+        result = await service.complete_upload(session_id, 1)
+        assert result.success and not result.replaced
+        assert result.stored_path == suffixed(record)
+        assert not os.path.exists(record["file_path"])
+        row = await fetch_record(env, record["id"])
+        assert row["file_hash"] == record["file_hash"]
+        assert await count(env, "file_versions") == 0
+        assert await count(env, "file_version_journal") == 0
+
+    @pytest.mark.parametrize("change", ["trashed", "file_removed"])
+    async def test_change_between_classify_and_lock(self, env, change):
+        """Post-lock CAS window: NeedsReclassify, reclassified, never a 500."""
+        record = await make_record(env)
+        service = UploadService(env.db, env.media_root)
+        real_classify = service._versions.classify_target
+        calls = {"n": 0}
+
+        async def classify_then_change(user_id, session, final_path):
+            decision = await real_classify(user_id, session, final_path)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                if change == "trashed":
+                    await env.db.execute(
+                        "UPDATE file_records SET deleted_at = '2026-10-17T00:00:00' WHERE id = ?",
+                        (record["id"],),
+                    )
+                    await env.db.commit()
+                else:
+                    os.unlink(record["file_path"])
+            return decision
+
+        service._versions.classify_target = classify_then_change
+        session_id = await make_session(env)
+        result = await service.complete_upload(session_id, 1)
+        assert calls["n"] == 2
+        assert result.success and not result.replaced
+        assert result.stored_path == suffixed(record)
+        row = await fetch_record(env, record["id"])
+        assert (row["file_hash"], row["file_path"]) == (record["file_hash"], record["file_path"])
+        assert await count(env, "file_versions") == 0
+        assert await count(env, "file_version_journal") == 0
+
+    async def test_concurrent_complete_of_one_session(self, env, monkeypatch):
+        """The second complete merges its own inode and never touches final_path."""
+        record = await make_record(env)
+        session_id = await make_session(env)
+        second_db = await open_conn(env)
+        try:
+            first = UploadService(env.db, env.media_root)
+            second = UploadService(second_db, env.media_root)
+            swapped = asyncio.Event()
+            release = asyncio.Event()
+            real_execute = env.db.execute
+
+            async def paused_execute(sql, *args):
+                if sql.lstrip().startswith("UPDATE file_records SET") and not swapped.is_set():
+                    swapped.set()
+                    await release.wait()
+                return await real_execute(sql, *args)
+
+            monkeypatch.setattr(env.db, "execute", paused_execute)
+            merged = asyncio.Event()
+            merged_paths = []
+            real_merge = second._chunk_manager.merge_chunks
+
+            async def tracking_merge(*args, **kwargs):
+                path = await real_merge(*args, **kwargs)
+                merged_paths.append((path, os.stat(path).st_ino))
+                merged.set()
+                return path
+
+            monkeypatch.setattr(second._chunk_manager, "merge_chunks", tracking_merge)
+            first_task = asyncio.create_task(first.complete_upload(session_id, 1))
+            await asyncio.wait_for(swapped.wait(), 5)
+            second_task = asyncio.create_task(second.complete_upload(session_id, 1))
+            await asyncio.wait_for(merged.wait(), 5)
+            assert Path(record["file_path"]).read_bytes() == NEW  # switched, not committed
+            release.set()
+            first_result = await first_task
+            second_result = await second_task
+        finally:
+            await second_db.close()
+        assert first_result.replaced
+        assert second_result.is_duplicate or not second_result.success
+        assert Path(record["file_path"]).read_bytes() == NEW
+        assert os.stat(record["file_path"]).st_ino != merged_paths[0][1]
+        assert await count(env, "file_versions") == 1
+        assert len(await all_records(env)) == 1
+
+    async def test_missing_username_is_busy(self, env):
+        record = await make_record(env)
+        session_id = await make_session(env)
+        await env.db.execute("PRAGMA foreign_keys=OFF;")
+        await env.db.execute("DELETE FROM users WHERE id = 1")
+        await env.db.commit()
+        await env.db.execute("PRAGMA foreign_keys=ON;")
+        result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        assert (result.success, result.error_code) == (False, "busy")
+        assert Path(record["file_path"]).read_bytes() == OLD
+        row = await fetch_record(env, record["id"])
+        assert row["file_hash"] == record["file_hash"]
+        assert await count(env, "file_versions") == 0
+        assert await session_status(env, session_id) == "active"
+
+    async def test_prepared_content_is_reused_on_reclassify(self, env, monkeypatch):
+        """Attempt 1 fails the pre-switch check (reclassify=True); attempt 2 is
+        still a replacement and reuses the extraction result."""
+        record = await make_record(env)
+        service = UploadService(env.db, env.media_root)
+        calls = {"prepare": 0}
+        real_prepare = service._prepare_replacement_content
+
+        async def counting_prepare(*args):
+            calls["prepare"] += 1
+            return await real_prepare(*args)
+
+        monkeypatch.setattr(service, "_prepare_replacement_content", counting_prepare)
+
+        def new_inode_same_bytes(stage):
+            if stage == "after_version_row" and not calls.get("swapped"):
+                calls["swapped"] = True
+                copy = record["file_path"] + ".copy"
+                Path(copy).write_bytes(OLD)
+                os.replace(copy, record["file_path"])
+
+        service._versions._fault_hook = new_inode_same_bytes
+        session_id = await make_session(env)
+        result = await service.complete_upload(session_id, 1)
+        assert result.replaced and calls == {"prepare": 1, "swapped": True}
+        assert await count(env, "file_versions") == 1
+
+    async def test_foreign_journal_in_lease_is_busy(self, env):
+        record = await make_record(env)
+        owner = f"{socket.gethostname()}:{os.getppid()}:deadbeef0000"
+        jid = await insert_journal(env, record, owner=owner)
+        session_id = await make_session(env)
+        result = await UploadService(env.db, env.media_root).complete_upload(session_id, 1)
+        assert (result.success, result.error_code) == (False, "busy")
+        assert [r["id"] for r in await journal_rows(env)] == [jid]
+        assert Path(record["file_path"]).read_bytes() == OLD
+
+    async def test_concurrent_different_contents(self, env):
+        record = await make_record(env)
+        other = await open_conn(env)
+        try:
+            s2 = await make_session(env, NEW)
+            s3 = await make_session(env, THIRD, db=other)
+            results = await asyncio.gather(
+                UploadService(env.db, env.media_root).complete_upload(s2, 1),
+                UploadService(other, env.media_root).complete_upload(s3, 1),
+            )
+        finally:
+            await other.close()
+        assert [r.replaced for r in results] == [True, True]
+        assert await count(env, "file_versions") == 2
+        row = await fetch_record(env, record["id"])
+        final = Path(record["file_path"]).read_bytes()
+        assert row["file_hash"] == sha(final) and final in (NEW, THIRD)
+        cursor = await env.db.execute("SELECT stored_path, file_hash FROM file_versions")
+        for version in await cursor.fetchall():
+            assert sha(Path(version["stored_path"]).read_bytes()) == version["file_hash"]
+        assert len(version_files(env)) == 2 and pv_temps(record) == []
+        assert len(await all_records(env)) == 1
+
+    async def test_concurrent_same_content(self, env):
+        record = await make_record(env)
+        other = await open_conn(env)
+        try:
+            s1 = await make_session(env, NEW)
+            s2 = await make_session(env, NEW, db=other)
+            results = await asyncio.gather(
+                UploadService(env.db, env.media_root).complete_upload(s1, 1),
+                UploadService(other, env.media_root).complete_upload(s2, 1),
+            )
+        finally:
+            await other.close()
+        assert sorted((r.replaced, r.is_duplicate) for r in results) == [
+            (False, True), (True, False)
+        ]
+        assert await count(env, "file_versions") == 1
+        assert len(await all_records(env)) == 1
+        assert Path(record["file_path"]).read_bytes() == NEW
+
+
+# ---------------------------------------------------------------------------
+# Maintenance (design section 10, gate #3/#4/#6)
+# ---------------------------------------------------------------------------
+
+
+async def insert_version(env, record_id: int, path: Path, *, expires: str, size: int = 3):
+    cursor = await env.db.execute(
+        """INSERT INTO file_versions
+           (file_record_id, user_id, file_hash, file_size, stored_path, replaced_at, expires_at)
+           VALUES (?, 1, ?, ?, ?, '2026-01-01T00:00:00+00:00', ?)""",
+        (record_id, uuid.uuid4().hex, size, str(path), expires),
+    )
+    await env.db.commit()
+    return cursor.lastrowid
+
+
+def versions_dir(env, record_id: int | str) -> Path:
+    path = Path(os.path.realpath(env.media_root)) / ".versions" / str(record_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+PAST = "2026-01-31T00:00:00+00:00"
+FUTURE = "2099-01-31T00:00:00+00:00"
+
+
+class TestPurgeExpired:
+    async def test_expired_deleted_live_kept_records_untouched(self, env):
+        """Acceptance 19."""
+        record = await make_record(env)
+        before = dict(await fetch_record(env, record["id"]))
+        directory = versions_dir(env, record["id"])
+        old = directory / "20260101T000000Z_aaaaaaaa.jpg"
+        live = directory / "20990101T000000Z_bbbbbbbb.jpg"
+        old.write_bytes(b"1")
+        live.write_bytes(b"2")
+        await insert_version(env, record["id"], old, expires=PAST)
+        keep = await insert_version(env, record["id"], live, expires=FUTURE)
+        assert await env.svc.purge_expired() == 1
+        assert not old.exists() and live.exists()
+        cursor = await env.db.execute("SELECT id FROM file_versions")
+        assert [r["id"] for r in await cursor.fetchall()] == [keep]
+        assert dict(await fetch_record(env, record["id"])) == before
+
+    async def test_missing_file_warns_and_deletes_row(self, env, capture):
+        """Acceptance 20."""
+        record = await make_record(env)
+        directory = versions_dir(env, record["id"])
+        missing = directory / "20260101T000000Z_aaaaaaaa.jpg"
+        present = directory / "20260102T000000Z_bbbbbbbb.jpg"
+        present.write_bytes(b"x")
+        vid = await insert_version(env, record["id"], missing, expires=PAST)
+        await insert_version(env, record["id"], present, expires=PAST)
+        assert await env.svc.purge_expired() == 2
+        assert await count(env, "file_versions") == 0
+        assert f"expired version file missing: {missing} (version_id={vid})" in capture.text
+        assert not directory.exists()
+
+    async def test_out_of_bounds_path_is_kept(self, env, capture):
+        record = await make_record(env)
+        await insert_version(env, record["id"], Path(record["file_path"]), expires=PAST)
+        assert await env.svc.purge_expired() == 0
+        assert await count(env, "file_versions") == 1
+        assert Path(record["file_path"]).read_bytes() == OLD
+        assert "refusing to delete version file outside" in capture.text
+
+    async def test_unlink_error_keeps_row_and_continues(self, env, monkeypatch, capture):
+        record = await make_record(env)
+        directory = versions_dir(env, record["id"])
+        stuck = directory / "20260101T000000Z_aaaaaaaa.jpg"
+        fine = directory / "20260102T000000Z_bbbbbbbb.jpg"
+        stuck.write_bytes(b"1")
+        fine.write_bytes(b"2")
+        await insert_version(env, record["id"], stuck, expires=PAST)
+        await insert_version(env, record["id"], fine, expires=PAST)
+        real_unlink = os.unlink
+
+        def failing_unlink(path, *args, **kwargs):
+            if str(path) == str(stuck):
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", failing_unlink)
+        assert await env.svc.purge_expired() == 1
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        assert stuck.exists() and not fine.exists()
+        assert await count(env, "file_versions") == 1
+        assert any(
+            r.levelno == logging.ERROR and "could not delete expired version file" in r.getMessage()
+            for r in capture.records
+        )
+
+    async def test_batches(self, env):
+        record = await make_record(env)
+        directory = versions_dir(env, record["id"])
+        for i in range(5):
+            path = directory / f"2026010{i}T000000Z_aaaaaaa{i}.jpg"
+            path.write_bytes(b"v")
+            await insert_version(env, record["id"], path, expires=PAST)
+        assert await env.svc.purge_expired(batch_size=2) == 5
+        assert await count(env, "file_versions") == 0
+
+
+class TestSweepOrphans:
+    NAME_OK = "20260101T000000Z_aaaaaaaa.jpg"
+
+    async def test_unreferenced_old_file_deleted_and_dir_removed(self, env):
+        directory = versions_dir(env, 77)
+        orphan = directory / self.NAME_OK
+        orphan.write_bytes(b"o")
+        part = directory / "20260101T000001Z_bbbbbbbb.jpg.part"
+        part.write_bytes(b"p")
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 2
+        assert not directory.exists()
+        assert (Path(os.path.realpath(env.media_root)) / ".versions").is_dir()
+
+    async def test_young_file_kept(self, env):
+        orphan = versions_dir(env, 77) / self.NAME_OK
+        orphan.write_bytes(b"o")
+        assert await env.svc.sweep_orphans(min_age_seconds=3600) == 0
+        assert orphan.exists()
+
+    @pytest.mark.parametrize("reference", ["version", "journal_manual", "record"])
+    async def test_referenced_file_kept(self, env, reference):
+        record = await make_record(env)
+        path = versions_dir(env, record["id"]) / self.NAME_OK
+        path.write_bytes(b"o")
+        if reference == "version":
+            await insert_version(env, record["id"], path, expires=FUTURE)
+        elif reference == "journal_manual":
+            jid = await insert_journal(env, record, owner=OWNER, state="manual")
+            await env.db.execute(
+                "UPDATE file_version_journal SET version_path = ? WHERE id = ?", (str(path), jid)
+            )
+            await env.db.commit()
+        else:
+            await insert_record(env, str(path), sha(b"o"))
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert path.exists()
+
+    async def test_directory_with_unexpected_name_skipped(self, env, capture):
+        directory = versions_dir(env, 77)
+        (directory / self.NAME_OK).write_bytes(b"o")
+        (directory / "notes.txt").write_bytes(b"n")
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert (directory / self.NAME_OK).exists()
+        assert "contains unexpected entries" in capture.text
+
+    async def test_directory_with_subdirectory_skipped(self, env):
+        directory = versions_dir(env, 77)
+        (directory / self.NAME_OK).write_bytes(b"o")
+        (directory / "sub").mkdir()
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert (directory / self.NAME_OK).exists()
+
+    async def test_unexpected_top_level_entry_disables_round(self, env, capture):
+        (versions_dir(env, 77) / self.NAME_OK).write_bytes(b"o")
+        (Path(os.path.realpath(env.media_root)) / ".versions" / "OPPO_Find_X9").mkdir()
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert (versions_dir(env, 77) / self.NAME_OK).exists()
+        assert any(
+            r.levelno == logging.ERROR and "unexpected entry 'OPPO_Find_X9'" in r.getMessage()
+            for r in capture.records
+        )
+
+    async def test_lock_files_are_allowed(self, env):
+        root = Path(os.path.realpath(env.media_root)) / ".versions"
+        (versions_dir(env, 77) / self.NAME_OK).write_bytes(b"o")
+        (root / ".maintenance.lock").write_bytes(b"")
+        (root / ".server-presence.lock").write_bytes(b"")
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 1
+        assert (root / ".maintenance.lock").exists()
+
+    async def test_user_named_versions_disables_round(self, env, capture):
+        (versions_dir(env, 77) / self.NAME_OK).write_bytes(b"o")
+        await env.db.execute(
+            "INSERT INTO users (id, username, password_hash) VALUES (2, '.versions', 'x')"
+        )
+        await env.db.commit()
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert (versions_dir(env, 77) / self.NAME_OK).exists()
+        assert "collides with the version store" in capture.text
+
+
+class TestSweepPathTemps:
+    STAGING = ".pv-staging-0123456789ab.jpg"
+    ROLLBACK_PART = ".pv-rollback-0123456789ab.jpg.part"
+
+    async def test_only_matching_old_files_are_deleted(self, env):
+        record = await make_record(env)
+        parent = Path(record["file_path"]).parent
+        for name in (self.STAGING, self.ROLLBACK_PART, ".pv-restore-j7.jpg", ".pv-notes.txt",
+                     "IMG_0001.jpg"):
+            (parent / name).write_bytes(b"x")
+        assert await env.svc.sweep_path_temps(min_age_seconds=3600) == 0
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 2
+        remaining = sorted(p.name for p in parent.iterdir())
+        assert remaining == sorted(
+            [".pv-notes.txt", ".pv-restore-j7.jpg", "IMG_0001.jpg", NAME]
+        )
+
+    async def test_files_registered_by_any_journal_row_are_kept(self, env):
+        record = await make_record(env)
+        jid = await insert_journal(env, record, owner="other:1:dead", state="manual")
+        rows = await journal_rows(env)
+        for path in vs._temp_paths(rows[0]):
+            Path(path).write_bytes(b"x")
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 0
+        assert all(Path(p).exists() for p in vs._temp_paths(rows[0]))
+        assert rows[0]["id"] == jid
+
+    async def test_file_record_pointing_to_temp_name_is_kept(self, env):
+        record = await make_record(env)
+        temp = Path(record["file_path"]).parent / self.STAGING
+        temp.write_bytes(b"x")
+        await insert_record(env, str(temp), sha(b"x"))
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 0
+        assert temp.exists()
+
+    async def test_directories_without_records_are_not_scanned(self, env):
+        await make_record(env)
+        stray = Path(env.media_root) / "alice" / "elsewhere"
+        stray.mkdir(parents=True)
+        (stray / self.STAGING).write_bytes(b"x")
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 0
+        assert (stray / self.STAGING).exists()
+
+    async def test_upload_session_target_directory_is_scanned(self, env):
+        """gate #6: a directory known only from upload_sessions.target_path."""
+        directory = Path(env.media_root) / "alice" / "Pixel9Pro" / "Only" / "Sessions"
+        directory.mkdir(parents=True)
+        (directory / self.STAGING).write_bytes(b"x")
+        manager = ChunkManager(env.db, env.media_root)
+        await manager.create_session(
+            user_id=1, file_hash=sha(b"s"), file_name="s.jpg", file_size=1,
+            target_path=str(directory), device_name=PIX, original_path="content://9",
+        )
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 1
+        assert not (directory / self.STAGING).exists()
+
+    async def test_journal_final_path_directory_is_scanned(self, env):
+        record = await make_record(env)
+        await env.db.execute("DELETE FROM file_records")
+        await env.db.commit()
+        await insert_journal(env, record, owner="other:1:dead", state="manual")
+        stray = Path(record["file_path"]).parent / ".pv-staging-ffffffffffff.jpg"
+        stray.write_bytes(b"x")
+        assert await env.svc.sweep_path_temps(min_age_seconds=0) == 1
+        assert not stray.exists()

@@ -1,7 +1,9 @@
 """Tests for background tasks: expired session cleanup and disk space monitoring."""
 
 import asyncio
+import fcntl
 import logging
+import os
 import shutil
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -21,6 +23,7 @@ from app.services.background_tasks import (
     stop_background_tasks,
     cleanup_expired_sessions_task,
     cleanup_expired_trash_task,
+    cleanup_expired_versions_task,
     cleanup_thumbnail_cache_task,
     disk_space_monitor_task,
     DISK_WARNING_THRESHOLD_GB,
@@ -283,8 +286,10 @@ class TestBackgroundTaskLifecycle:
             mock_settings.return_value.database_url = "/tmp/test.db"
 
             tasks = await start_background_tasks()
-            assert len(tasks) == 6
-            assert "metadata_backfill" in {t.get_name() for t in tasks}
+            assert len(tasks) == 8
+            names = {t.get_name() for t in tasks}
+            assert "metadata_backfill" in names
+            assert {"cleanup_expired_versions", "hold_server_presence"} <= names
             assert all(not t.done() for t in tasks)
 
             # Stop immediately
@@ -364,6 +369,8 @@ _GUARDED_TASKS = [
                  "Error during thumbnail cache cleanup", id="thumbnails"),
     pytest.param(cleanup_expired_trash_task, "_run_trash_purge", "Trash purge",
                  "Error during trash purge", id="trash"),
+    pytest.param(cleanup_expired_versions_task, "_run_version_maintenance",
+                 "Version maintenance", "Error during version maintenance", id="versions"),
 ]
 
 
@@ -494,6 +501,7 @@ class TestDatabaseReadinessPolling:
                     cleanup_expired_sessions_task,
                     cleanup_thumbnail_cache_task,
                     cleanup_expired_trash_task,
+                    cleanup_expired_versions_task,
                     mb.metadata_backfill_task,
                 )
             ]
@@ -505,3 +513,144 @@ class TestDatabaseReadinessPolling:
 
         connect.assert_not_called()
         assert not Path(settings.database_path).exists()
+
+
+# ---------------------------------------------------------------------------
+# File version maintenance and server presence (design 5.4, section 10)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionMaintenance:
+    """_run_version_maintenance, cleanup_expired_versions and hold_server_presence."""
+
+    @pytest.fixture(autouse=True)
+    def _isolation(self, monkeypatch):
+        from app.services import version_service as vs
+
+        monkeypatch.setattr(logging.getLogger("photovault"), "propagate", True)
+        self.vs = vs
+        yield
+        for fd in vs._presence_fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        vs._presence_fds.clear()
+
+    @pytest.fixture
+    async def store(self, tmp_path):
+        """Initialised database with one expired and one live version."""
+        from app.core.database import init_db
+
+        db_path = str(tmp_path / "pv.db")
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        await init_db(db_path)
+        root = Path(os.path.realpath(media_root)) / ".versions" / "1"
+        root.mkdir(parents=True)
+        expired = root / "20200101T000000Z_aaaaaaaa.jpg"
+        live = root / "20990101T000000Z_bbbbbbbb.jpg"
+        expired.write_bytes(b"old")
+        live.write_bytes(b"older")
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'alice', 'x')")
+            await db.execute(
+                """INSERT INTO file_records (id, user_id, file_hash, file_path, original_path,
+                   device_name, file_size, file_name)
+                   VALUES (1, 1, 'h', ?, 'content://1', 'Pixel', 1, 'a.jpg')""",
+                (str(media_root / "alice" / "a.jpg"),),
+            )
+            for path, expires in ((expired, "2020-01-31T00:00:00+00:00"),
+                                  (live, "2099-01-31T00:00:00+00:00")):
+                await db.execute(
+                    """INSERT INTO file_versions (file_record_id, user_id, file_hash, file_size,
+                       stored_path, replaced_at, expires_at)
+                       VALUES (1, 1, ?, 3, ?, '2020-01-01T00:00:00+00:00', ?)""",
+                    (path.name, str(path), expires),
+                )
+            await db.commit()
+        return SimpleNamespace(
+            db_path=db_path, media_root=str(media_root), expired=expired, live=live
+        )
+
+    async def test_one_round(self, store):
+        result = await bt._run_version_maintenance(store.db_path, store.media_root)
+        assert result == {"recovered": 0, "expired": 1, "orphans": 0, "temps": 0}
+        assert not store.expired.exists()
+        assert store.live.exists()
+        async with aiosqlite.connect(store.db_path) as db:
+            rows = await (await db.execute("SELECT stored_path FROM file_versions")).fetchall()
+            records = await (await db.execute("SELECT COUNT(*) FROM file_records")).fetchone()
+        assert [r[0] for r in rows] == [str(store.live)]
+        assert records[0] == 1
+
+    async def test_maintenance_lock_held_skips_round(self, store):
+        with self.vs.try_maintenance_lock(store.media_root) as acquired:
+            assert acquired
+            assert await bt._run_version_maintenance(store.db_path, store.media_root) is None
+        assert store.expired.exists()
+
+    async def test_presence_lock_held_exclusively_skips_round(self, store, caplog):
+        lock = Path(os.path.realpath(store.media_root)) / ".versions" / ".server-presence.lock"
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with caplog.at_level(logging.WARNING, logger="photovault.background_tasks"):
+                assert await bt._run_version_maintenance(store.db_path, store.media_root) is None
+        finally:
+            os.close(fd)
+        assert "maintenance script holds .versions lock" in caplog.text
+        assert store.expired.exists()
+
+    async def test_maintenance_connection_is_synchronous_full(self, store, monkeypatch):
+        """gate #2: the maintenance connection comes from _create_connection."""
+        seen = {}
+        original = self.vs.VersionService.recover_pending
+
+        async def spy(service):
+            cursor = await service._db.execute("PRAGMA synchronous")
+            seen["synchronous"] = (await cursor.fetchone())[0]
+            cursor = await service._db.execute("PRAGMA foreign_keys")
+            seen["foreign_keys"] = (await cursor.fetchone())[0]
+            seen["row_factory"] = service._db.row_factory
+            return await original(service)
+
+        monkeypatch.setattr(self.vs.VersionService, "recover_pending", spy)
+        await bt._run_version_maintenance(store.db_path, store.media_root)
+        assert seen == {"synchronous": 2, "foreign_keys": 1, "row_factory": aiosqlite.Row}
+
+    async def test_hold_server_presence_retries_until_free(self, tmp_path, monkeypatch, caplog):
+        media_root = tmp_path / "media"
+        versions = media_root / ".versions"
+        versions.mkdir(parents=True)
+        monkeypatch.setattr(bt, "SERVER_PRESENCE_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(bt, "_database_ready", lambda: True)
+        monkeypatch.setattr(bt, "get_settings", lambda: SimpleNamespace(media_root=str(media_root)))
+        fd = os.open(versions / ".server-presence.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with caplog.at_level(logging.INFO, logger="photovault.background_tasks"):
+            task = asyncio.create_task(bt.hold_server_presence_task())
+            try:
+                await asyncio.sleep(0.1)
+                assert not task.done()
+                assert "Server presence lock busy" in caplog.text
+            finally:
+                os.close(fd)
+            await asyncio.wait_for(task, timeout=2)
+        assert os.path.realpath(media_root) in self.vs._presence_fds
+        assert "Holding server presence lock" in caplog.text
+
+    async def test_hold_server_presence_waits_for_database(self, tmp_path, monkeypatch):
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        monkeypatch.setattr(bt, "SERVER_PRESENCE_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(bt, "_database_ready", lambda: False)
+        monkeypatch.setattr(bt, "get_settings", lambda: SimpleNamespace(media_root=str(media_root)))
+        task = asyncio.create_task(bt.hold_server_presence_task())
+        try:
+            await asyncio.sleep(0.1)
+            assert not task.done()
+        finally:
+            await _cancel(task)
+        assert not (media_root / ".versions").exists()
+        assert self.vs._presence_fds == {}

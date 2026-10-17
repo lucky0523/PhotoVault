@@ -262,6 +262,9 @@ class CompleteUploadResponse(BaseModel):
     success: bool
     file_id: Optional[int] = None
     stored_path: str = ""
+    # True when the content of the existing record (same device, path and
+    # original_path) was replaced in place; file_id is unchanged.
+    replaced: bool = False
 
 
 class ResumeInfoResponse(BaseModel):
@@ -436,19 +439,29 @@ async def complete_upload(
     )
 
     if not result.success:
-        if "not found" in result.error.lower():
+        # Version flow codes first: busy/conflict mean "retry later" (409, the
+        # session and its chunks are kept), io/db are server errors (500).
+        if result.error_code in ("busy", "conflict"):
+            raise HTTPException(status_code=409, detail=result.error)
+        elif result.error_code in ("io", "db"):
+            raise HTTPException(status_code=500, detail=result.error)
+        elif "not found" in result.error.lower():
             raise HTTPException(status_code=404, detail=result.error)
         elif "integrity" in result.error.lower():
             raise HTTPException(status_code=422, detail=result.error)
         else:
             raise HTTPException(status_code=400, detail=result.error)
 
-    # Reactivate trashed/purged record if this is a re-upload
-    cursor = await db.execute(
-        "SELECT file_hash FROM upload_sessions WHERE id = ?",
-        (body.session_id,),
-    )
-    session_row = await cursor.fetchone()
+    # Reactivate trashed/purged record if this is a re-upload. Not after an
+    # in-place replacement (another trashed row with the new hash must stay
+    # as it is) nor for same-content registration (already reactivated).
+    session_row = None
+    if not result.replaced and not result.is_duplicate:
+        cursor = await db.execute(
+            "SELECT file_hash FROM upload_sessions WHERE id = ?",
+            (body.session_id,),
+        )
+        session_row = await cursor.fetchone()
     if session_row:
         from app.services.file_browse_service import FileBrowseService
         browse_service = FileBrowseService(db, settings.media_root, settings.trash_retention_days)
@@ -461,6 +474,7 @@ async def complete_upload(
         success=True,
         file_id=result.file_id,
         stored_path=result.stored_path,
+        replaced=result.replaced,
     )
 
 

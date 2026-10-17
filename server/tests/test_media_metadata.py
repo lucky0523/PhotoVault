@@ -732,8 +732,8 @@ class TestApplyMediaMetadata:
         updated = await apply_media_metadata_many(
             db,
             [
-                (1, "/m/alice/a.mp4", MediaMetadata(iso=200)),
-                (2, "/m/alice/stale-path.jpg", MediaMetadata(iso=300)),
+                (1, "/m/alice/a.mp4", "h1", MediaMetadata(iso=200)),
+                (2, "/m/alice/stale-path.jpg", "h2", MediaMetadata(iso=300)),
             ],
         )
         await db.commit()
@@ -748,7 +748,18 @@ class TestApplyMediaMetadata:
             "UPDATE file_records SET deleted_at = '2025-01-01T00:00:00' WHERE id = 1"
         )
         updated = await apply_media_metadata_many(
-            db, [(1, "/m/alice/a.mp4", MediaMetadata(iso=200))]
+            db, [(1, "/m/alice/a.mp4", "h1", MediaMetadata(iso=200))]
         )
         assert updated == 0
         assert (await _row(db))["meta_version"] is None
+
+    async def test_many_skips_rows_whose_hash_changed(self, db):
+        """Content replaced in place (file versioning): same id and path, new hash."""
+        await db.execute("UPDATE file_records SET file_hash = 'h1-new' WHERE id = 1")
+        updated = await apply_media_metadata_many(
+            db, [(1, "/m/alice/a.mp4", "h1", MediaMetadata(iso=200))]
+        )
+        assert updated == 0
+        row = await _row(db)
+        assert row["iso"] == 100
+        assert row["meta_version"] is None

@@ -16,6 +16,7 @@ from typing import List
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_admin
 from app.core.validators import validate_password
@@ -171,6 +172,20 @@ async def clear_purged_records(
                 (file_id, user_id),
             )
 
+        # Defensive: purge_file already removed the history of these records,
+        # but any leftover file_versions row would block the DELETE below
+        # (foreign key). Files are deleted only after the commit.
+        version_paths: list[str] = []
+        for record in records:
+            cursor = await db.execute(
+                "SELECT stored_path FROM file_versions WHERE file_record_id = ?",
+                (record["id"],),
+            )
+            version_paths.extend(r["stored_path"] for r in await cursor.fetchall())
+            await db.execute(
+                "DELETE FROM file_versions WHERE file_record_id = ?", (record["id"],)
+            )
+
         # Reference records are deleted first, which keeps reference_to foreign
         # keys valid while their purged original records are removed afterwards.
         for record in records:
@@ -186,6 +201,18 @@ async def clear_purged_records(
         await db.rollback()
         logger.exception("Failed to clear purged records for user %d", user_id)
         raise
+
+    if version_paths:
+        from app.services.version_service import VersionService
+
+        try:
+            VersionService.delete_version_files(get_settings().media_root, version_paths)
+        except Exception:
+            logger.warning(
+                "Failed to delete %d version file(s) of cleared records; "
+                "orphan sweep will retry",
+                len(version_paths), exc_info=True,
+            )
 
     logger.info("Cleared %d purged records for user %d", deleted_count, user_id)
     return {"success": True, "count": deleted_count}

@@ -34,7 +34,15 @@ from app.services.media_metadata import (
     resolve_capture_time,
 )
 from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
+from app.services.path_locks import path_lock
 from app.services.storage_path_engine import StoragePathEngine
+from app.services.version_service import (
+    Decision,
+    NeedsReclassify,
+    PreparedContent,
+    VersionReplaceError,
+    VersionService,
+)
 
 logger = logging.getLogger("photovault.upload")
 
@@ -83,6 +91,12 @@ class CompleteUploadResult:
     stored_path: str = ""
     is_duplicate: bool = False
     error: str = ""
+    # True when the upload replaced the content of an existing record in place
+    # (same device, path and original_path; the old content became a version).
+    replaced: bool = False
+    # Set by the version flow: busy/conflict (retry later) or io/db (server
+    # error). None for the original failure modes, mapped by message.
+    error_code: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +152,7 @@ class UploadService:
         self._media_root = media_root
         self._chunk_manager = ChunkManager(db, media_root)
         self._dedup_service = DeduplicationService(db)
+        self._versions = VersionService(db, media_root, role="server")
 
     async def init_upload(
         self,
@@ -255,10 +270,13 @@ class UploadService:
         1. Verify all chunks received
         2. Merge chunks
         3. Verify integrity (SHA-256)
-        4. Handle filename conflicts (same content = skip, different = append _1, _2...)
-        5. Move to target path
-        6. Register file record
-        7. Cleanup session chunks
+        4. Classify the target under ``path_lock`` (design section 6):
+           - same origin, different content: replace the record in place
+             (``VersionService``; the old content becomes a version);
+           - the active record already has this content: register nothing;
+           - otherwise the original steps 4-7 (``_complete_legacy``): same
+             content = skip, different = append _1, _2..., move, register,
+             cleanup session chunks.
 
         Args:
             session_id: The upload session ID.
@@ -332,13 +350,95 @@ class UploadService:
                 error="File integrity verification failed",
             )
 
+        # Step 4: decide where the content lands (design section 6). Under the
+        # in-process path lock: finish interrupted replacements of this path,
+        # classify, then replace in place, register as same content, or fall
+        # back to the original flow. Cancellation is not caught here.
+        final_path = Path(session["target_path"]) / session["file_name"]
+        prepared: Optional[PreparedContent] = None  # reused by the second attempt
+        username: Optional[str] = None
+        async with path_lock(str(final_path)):
+            for attempt in (1, 2):
+                remaining, ids = await self._versions.recover_for_path(str(final_path))
+                if remaining > 0:
+                    logger.warning(
+                        "unresolved version journal for %s (ids=%s)", final_path, ids
+                    )
+                    return CompleteUploadResult(
+                        success=False, error="busy", error_code="busy"
+                    )
+                decision = await self._versions.classify_target(
+                    user_id, session, final_path
+                )
+                if decision.kind == "same_content":
+                    return await self._complete_same_content(session, merged_path, decision)
+                if decision.kind == "replace":
+                    if username is None:
+                        username = await self._get_username(user_id)
+                        if username is None:
+                            logger.warning(
+                                "user %d not found; replacement deferred", user_id
+                            )
+                            return CompleteUploadResult(
+                                success=False, error="busy", error_code="busy"
+                            )
+                    if prepared is None:
+                        prepared = await self._prepare_replacement_content(
+                            session, merged_path
+                        )
+                    try:
+                        return await self._complete_as_replacement(
+                            session,
+                            merged_path,
+                            decision,
+                            username=username,
+                            prepared=prepared,
+                        )
+                    except NeedsReclassify:
+                        if attempt == 2:
+                            return CompleteUploadResult(
+                                success=False, error="conflict", error_code="conflict"
+                            )
+                        continue
+                    except VersionReplaceError as e:
+                        if e.code == "conflict" and e.reclassify and attempt == 1:
+                            continue
+                        return CompleteUploadResult(
+                            success=False, error=str(e), error_code=e.code
+                        )
+                # legacy, including the forced suffix (judgement rows 3 and 4)
+                return await self._complete_legacy(
+                    session, merged_path, final_path, force_suffix=decision.force_suffix
+                )
+        # Unreachable: every iteration returns or continues once at most.
+        return CompleteUploadResult(success=False, error="conflict", error_code="conflict")
+
+    async def _complete_legacy(
+        self,
+        session: dict,
+        merged_path: str,
+        final_path: Path,
+        *,
+        force_suffix: bool = False,
+    ) -> CompleteUploadResult:
+        """Original steps 4-7: same content registers, different content gets _N.
+
+        ``force_suffix=True`` (an active record exists but ``final_path`` is
+        missing or not a regular file) skips the existence/hash check and
+        always stores the new content under ``<stem>_N<suffix>``.
+        """
+        session_id = session["id"]
+        user_id = session["user_id"]
+
         # Step 4 & 5: Handle filename conflicts and move to target path
-        target_dir = Path(session["target_path"])
+        target_dir = final_path.parent
         await asyncio.to_thread(self._ensure_directory, str(target_dir) + "/")
 
-        final_path = target_dir / session["file_name"]
-
-        if await asyncio.to_thread(final_path.exists):
+        if force_suffix:
+            final_path = await asyncio.to_thread(
+                self._resolve_filename_conflict, final_path
+            )
+        elif await asyncio.to_thread(final_path.exists):
             # Check if content is the same without hashing on the event loop.
             existing_hash = await asyncio.to_thread(
                 self._chunk_manager.compute_file_hash, str(final_path)
@@ -496,6 +596,147 @@ class UploadService:
     # Private helpers
     # ---------------------------------------------------------------------------
 
+    async def _complete_same_content(
+        self, session: dict, merged_path: str, decision: Decision
+    ) -> CompleteUploadResult:
+        """Judgement row 5: the active record at final_path already has this
+        content. No new row; the merged file is dropped and the session closed."""
+        record = decision.record
+        assert record is not None
+        await asyncio.to_thread(Path(merged_path).unlink, missing_ok=True)
+        await self._db.execute(
+            "UPDATE upload_sessions SET status = 'completed' WHERE id = ?",
+            (session["id"],),
+        )
+        await self._db.commit()
+        await asyncio.to_thread(self._cleanup_chunk_dir, session["id"])
+        logger.info(
+            "Record %d already holds this content at %s; nothing stored",
+            record["id"],
+            record["file_path"],
+        )
+        return CompleteUploadResult(
+            success=True,
+            file_id=record["id"],
+            stored_path=record["file_path"],
+            is_duplicate=True,
+        )
+
+    async def _get_username(self, user_id: int) -> Optional[str]:
+        """Same query as ``FileBrowseService._get_username`` (fcntl lock path)."""
+        cursor = await self._db.execute(
+            "SELECT username FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row["username"] if row is not None else None
+
+    async def _prepare_replacement_content(
+        self, session: dict, merged_path: str
+    ) -> PreparedContent:
+        """Design 5.3 step 1: inspect the merged file (read-only).
+
+        The merged file is this call's own inode with the original extension,
+        so detection by extension works and the result stays valid for a
+        second attempt.
+        """
+        mime_type = self._resolve_mime_type(session)
+        media_type = self._infer_media_type(session["file_name"], mime_type)
+        is_motion, motion_offset, is_ultra_hdr, focal_length = await asyncio.to_thread(
+            self._inspect_completed_file, merged_path
+        )
+        media_meta = await self._extract_media_metadata(
+            merged_path, media_type, session["exif_time"]
+        )
+        return PreparedContent(
+            content_values={
+                "file_hash": session["file_hash"],
+                "file_size": session["file_size"],
+                "mime_type": mime_type,
+                "exif_time": session["exif_time"],
+                "focal_length": focal_length,
+                "media_type": media_type,
+                "is_motion_photo": is_motion,
+                "motion_video_offset": motion_offset,
+                "is_ultra_hdr": is_ultra_hdr,
+            },
+            media_meta=media_meta,
+        )
+
+    async def _complete_as_replacement(
+        self,
+        session: dict,
+        merged_path: str,
+        decision: Decision,
+        *,
+        username: str,
+        prepared: PreparedContent,
+    ) -> CompleteUploadResult:
+        """Judgement row 9: replace the record's content in place.
+
+        Raises ``NeedsReclassify`` / ``VersionReplaceError`` unchanged (the
+        caller decides whether to reclassify). The session is marked completed
+        inside the replacement transaction.
+        """
+        record = decision.record
+        assert record is not None
+        session_id = session["id"]
+        user_id = session["user_id"]
+
+        async def _complete_session(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                "UPDATE upload_sessions SET status = 'completed' WHERE id = ?",
+                (session_id,),
+            )
+
+        outcome = await self._versions.replace_record_content(
+            op="upload",
+            username=username,
+            record=record,
+            incoming_path=merged_path,
+            new_hash=session["file_hash"],
+            new_size=session["file_size"],
+            content_values=prepared.content_values,
+            media_meta=prepared.media_meta,
+            extra_ops=_complete_session,
+        )
+
+        enqueue_analysis(outcome.record_id, user_id)
+        await asyncio.to_thread(self._cleanup_chunk_dir, session_id)
+
+        logger.info(
+            "Replaced content of record %d in place: %s -> %s (version_id=%d)",
+            outcome.record_id,
+            str(record["file_hash"])[:12],
+            str(session["file_hash"])[:12],
+            outcome.version_id,
+        )
+        return CompleteUploadResult(
+            success=True,
+            file_id=outcome.record_id,
+            stored_path=str(record["file_path"]),
+            replaced=True,
+        )
+
+    async def _extract_media_metadata(
+        self,
+        path: str,
+        media_type: Optional[str],
+        client_exif_time: Optional[str],
+    ) -> MediaMetadata:
+        """Extract statistics metadata in a worker thread; degrade to 'error'."""
+        try:
+            return await asyncio.to_thread(
+                extract_media_metadata, path, media_type, client_exif_time,
+                ffprobe_timeout=UPLOAD_FFPROBE_TIMEOUT,
+            )
+        except Exception:  # defensive: extract_media_metadata is documented not to raise
+            logger.debug("Metadata extraction raised for %s", path, exc_info=True)
+            try:
+                ct, kind = resolve_capture_time(None, client_exif_time, media_type)
+            except Exception:
+                ct, kind = None, None
+            return MediaMetadata(status="error", capture_time=ct, capture_time_kind=kind)
+
     async def _record_media_metadata(
         self,
         file_id: int,
@@ -510,20 +751,7 @@ class UploadService:
         the session status. A ffprobe timeout leaves the row pending for the
         background backfill.
         """
-        try:
-            meta = await asyncio.to_thread(
-                extract_media_metadata, path, media_type, client_exif_time,
-                ffprobe_timeout=UPLOAD_FFPROBE_TIMEOUT,
-            )
-        except Exception:  # defensive: extract_media_metadata is documented not to raise
-            logger.debug(
-                "Metadata extraction raised for file_id=%d", file_id, exc_info=True
-            )
-            try:
-                ct, kind = resolve_capture_time(None, client_exif_time, media_type)
-            except Exception:
-                ct, kind = None, None
-            meta = MediaMetadata(status="error", capture_time=ct, capture_time_kind=kind)
+        meta = await self._extract_media_metadata(path, media_type, client_exif_time)
         try:
             await apply_media_metadata(self._db, file_id, meta)  # no commit
         except aiosqlite.Error:
