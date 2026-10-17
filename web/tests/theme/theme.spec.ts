@@ -10,25 +10,29 @@ const rgb = (hex: string) => {
   return `rgb(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255})`
 }
 
+// Every disabled el-button (all types, solid/plain/dashed) uses one neutral grey triplet.
+const disabled = ['#58677E', '#EFF0F2', '#CFD3DA']
+
 const solid = {
-  primary: { default: ['#FFFFFF', '#D92D4F', '#D92D4F'], hover: ['#FFFFFF', '#B3123A', '#B3123A'], active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled: ['#65001F', '#EC96A7', '#EC96A7'] },
-  success: { default: ['#00391C', '#00D066', '#00D066'], hover: ['#00391C', '#4DDB8F', '#4DDB8F'], active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled: ['#00391C', '#80E8AF', '#80E8AF'] },
-  warning: { default: ['#422B00', '#FFA91F', '#FFA91F'], hover: ['#422B00', '#FFC25C', '#FFC25C'], active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled: ['#422B00', '#FFD48C', '#FFD48C'] },
-  danger: { default: ['#5B101B', '#FF5C72', '#FF5C72'], hover: ['#5B101B', '#FF8D9C', '#FF8D9C'], active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled: ['#5B101B', '#FFB3BD', '#FFB3BD'] },
+  primary: { default: ['#FFFFFF', '#D92D4F', '#D92D4F'], hover: ['#FFFFFF', '#B3123A', '#B3123A'], active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled },
+  success: { default: ['#00391C', '#6ECF9C', '#6ECF9C'], hover: ['#00391C', '#8CD9B1', '#8CD9B1'], active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled },
+  warning: { default: ['#422B00', '#FFA91F', '#FFA91F'], hover: ['#422B00', '#FFC25C', '#FFC25C'], active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled },
+  danger: { default: ['#FFFFFF', '#D92D4F', '#D92D4F'], hover: ['#FFFFFF', '#B3123A', '#B3123A'], active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled },
 }
 
 const plain = {
   primary: { default: ['#B3123A', '#FCEAED', '#D92D4F'], hover: ['#FFFFFF', '#D92D4F', '#D92D4F'], active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled: solid.primary.disabled },
-  success: { default: ['#00391C', '#E6FBEF', '#007A3D'], hover: ['#00391C', '#CCF7DF', '#007A3D'], active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled: solid.success.disabled },
+  success: { default: ['#00391C', '#F1FAF5', '#007A3D'], hover: ['#00391C', '#E2F5EB', '#007A3D'], active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled: solid.success.disabled },
   warning: { default: ['#422B00', '#FFF6E8', '#A86200'], hover: ['#422B00', '#FFEDD1', '#A86200'], active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled: solid.warning.disabled },
-  danger: { default: ['#5B101B', '#FFF2F4', '#9F293B'], hover: ['#5B101B', '#FFE6EA', '#9F293B'], active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled: solid.danger.disabled },
+  danger: { default: ['#B3123A', '#FFF2F4', '#D92D4F'], hover: ['#FFFFFF', '#D92D4F', '#D92D4F'], active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled: solid.danger.disabled },
 }
 
+// Focus outline uses the active ink.
 const links = {
-  primary: { ink: '#B3123A', active: '#B3123A' },
-  success: { ink: '#00391C', active: '#007A3D' },
-  warning: { ink: '#422B00', active: '#A86200' },
-  danger: { ink: '#5B101B', active: '#9F293B' },
+  primary: { ink: '#B3123A', hover: '#B3123A', active: '#B3123A' },
+  success: { ink: '#007A3D', hover: '#006633', active: '#00592D' },
+  warning: { ink: '#422B00', hover: '#422B00', active: '#A86200' },
+  danger: { ink: '#D92D4F', hover: '#B3123A', active: '#9F293B' },
 }
 
 async function colors(locator: Locator) {
@@ -179,7 +183,8 @@ const statsResponse = {
   video: {},
 }
 
-async function installApiMock(page: Page) {
+async function installApiMock(page: Page, options: { trashItems?: unknown[]; clientVersions?: unknown[] } = {}) {
+  const trashItems = options.trashItems ?? [trashItem]
   const unknown: string[] = []
   await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
     const request = route.request()
@@ -190,7 +195,8 @@ async function installApiMock(page: Page) {
     if (key === 'GET /api/v1/setup/status') return json({ initialized: true, needs_work_dir: false })
     if (key === 'GET /api/v1/auth/registration-status') return json({ allow_registration: true })
     if (key === 'GET /api/v1/files/config') return json({ trash_retention_days: 30 })
-    if (key === 'GET /api/v1/files/trash') return json({ items: [trashItem], total: 1, page: 1, page_size: Number(url.searchParams.get('page_size') ?? 50) })
+    if (key === 'GET /api/v1/files/trash') return json({ items: trashItems, total: trashItems.length, page: 1, page_size: Number(url.searchParams.get('page_size') ?? 50) })
+    if (key === 'GET /api/v1/admin/client-versions') return json(options.clientVersions ?? [])
     if (key === 'GET /api/v1/files/all') return json(listResponse)
     if (key === 'GET /api/v1/files/list') return json(listResponse)
     if (key === 'GET /api/v1/files/browse') return json({ ...listResponse, files: [] })
@@ -245,14 +251,26 @@ test('Element Plus 2.14 state matrix and derived controls use Yingji colors', as
 
     for (const prefix of ['link-button', 'element-link']) {
       const link = page.getByTestId(`${prefix}-${type}`)
+      await page.mouse.move(0, 0)
+      await link.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 150)))
       expect((await colors(link)).color).toBe(rgb(links[type].ink))
       await link.hover()
-      expect((await colors(link)).color).toBe(rgb(links[type].ink))
+      await link.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 150)))
+      expect((await colors(link)).color).toBe(rgb(links[type].hover))
       await expectActiveColor(page, link, links[type].active)
       await expectFocus(page, link, links[type].active)
       expect((await colors(page.getByTestId(`${prefix}-${type}-disabled`))).color).toBe(rgb('#58677E'))
     }
   }
+
+  for (const id of ['solid-default-disabled', 'plain-default-disabled', 'solid-info-disabled', 'plain-info-disabled', 'dashed-danger-disabled']) {
+    await expectTriplet(page.getByTestId(id), disabled)
+  }
+  // Hovering a disabled button must not reveal a type color.
+  await expectHover(page.getByTestId('plain-danger-disabled'), disabled)
+  await expectHover(page.getByTestId('solid-success-disabled'), disabled)
+  // Loading sets the disabled attribute but not .is-disabled, so it keeps the brand fill.
+  await expectTriplet(page.getByTestId('solid-primary-loading'), solid.primary.default)
 
   await page.getByTestId('checkbox').click()
   await page.getByTestId('checkbox').evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 750)))
@@ -292,7 +310,7 @@ test('Element Plus 2.14 state matrix and derived controls use Yingji colors', as
   expect(unknown).toEqual([])
 })
 
-test('real TimelineView and Trash danger plain expose approved states', async ({ page }) => {
+test('real TimelineView and Trash header actions expose approved states', async ({ page }) => {
   const unknown = await installApiMock(page)
   await page.goto('/tests/theme/theme-fixture.html')
 
@@ -311,18 +329,112 @@ test('real TimelineView and Trash danger plain expose approved states', async ({
   expect(await colors(badge)).toMatchObject({ color: rgb('#B3123A'), background: rgb('#FCEAED') })
 
   await page.getByTestId('show-trash').click()
-  const dangerPlain = page.getByRole('button', { name: /彻底删除已选/ })
-  await expect(dangerPlain).toBeVisible()
-  await expectTriplet(dangerPlain, plain.danger.disabled)
+  const restoreSelected = page.getByRole('button', { name: /恢复已选/ })
+  const restoreAll = page.getByRole('button', { name: /恢复所有文件/ })
+  const purgeSelected = page.getByRole('button', { name: /彻底删除已选/ })
+  const clearAll = page.getByRole('button', { name: /清空回收站/ })
+  await expect(restoreAll).toBeEnabled()
+  // The buttons flip from disabled to enabled when the list loads; let the color transition settle.
+  await restoreAll.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 750)))
+  // One item, nothing selected: selection actions are grey, whole-trash actions keep their colors.
+  for (const action of [restoreSelected, purgeSelected]) {
+    await expect(action).toBeDisabled()
+    await expectTriplet(action, disabled)
+  }
+  await expectTriplet(restoreAll, solid.success.default)
+  await expectTriplet(clearAll, solid.danger.default)
+
+  // One item selected: restore pair is soft green, delete pair is brand red with white text.
   await page.locator('.el-table__body-wrapper .el-checkbox').first().click()
-  await expect(dangerPlain).toBeEnabled()
-  await dangerPlain.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 750)))
-  await expectTriplet(dangerPlain, plain.danger.default)
-  await expectHover(dangerPlain, plain.danger.hover)
-  await expectActive(page, dangerPlain, plain.danger.active)
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog')).toBeHidden()
-  await expectFocus(page, dangerPlain, plain.danger.focus)
+  await expect(restoreSelected).toBeEnabled()
+  await expect(purgeSelected).toBeEnabled()
+  await purgeSelected.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 750)))
+  const actions = [
+    [restoreSelected, solid.success],
+    [restoreAll, solid.success],
+    [purgeSelected, solid.danger],
+    [clearAll, solid.danger],
+  ] as const
+  for (const [action, states] of actions) {
+    await expectTriplet(action, states.default)
+    await expectHover(action, states.hover)
+    // Pressing opens the confirm box; Escape cancels without side effects.
+    await expectActive(page, action, states.active)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expectFocus(page, action, states.focus)
+  }
+  expect(unknown).toEqual([])
+})
+
+test('Trash row actions use green 恢复 and red 彻底删除 links', async ({ page }) => {
+  const unknown = await installApiMock(page)
+  await page.goto('/tests/theme/theme-fixture.html')
+  await page.getByTestId('show-trash').click()
+
+  const row = page.locator('.el-table__body tr.el-table__row').first()
+  const restore = row.getByRole('button', { name: '恢复', exact: true })
+  const purge = row.getByRole('button', { name: '彻底删除', exact: true })
+  await expect(restore).toBeVisible()
+
+  await page.mouse.move(0, 0)
+  await restore.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 250)))
+  expect((await colors(restore)).color).toBe(rgb(links.success.ink))
+  expect((await colors(purge)).color).toBe(rgb(links.danger.ink))
+
+  // Over the #F5F7FA row-hover fill, #D92D4F (4.41:1) gives way to #B3123A; green #007A3D still passes (5.08:1).
+  await row.locator('td').nth(2).hover()
+  await restore.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 250)))
+  await expect(row).toHaveClass(/hover-row/)
+  expect((await colors(purge.locator('xpath=ancestor::td[1]'))).background).toBe(rgb('#F5F7FA'))
+  expect((await colors(restore)).color).toBe(rgb(links.success.ink))
+  expect((await colors(purge)).color).toBe(rgb('#B3123A'))
+  await page.screenshot({ path: `${screenshotDir}/trash-row-actions-hover.png`, fullPage: true })
+
+  for (const [action, states] of [[restore, links.success], [purge, links.danger]] as const) {
+    await action.hover()
+    await action.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 150)))
+    expect((await colors(action)).color).toBe(rgb(states.hover))
+    // Pressing opens the confirm box; Escape cancels without side effects.
+    await expectActiveColor(page, action, states.active)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expectFocus(page, action, states.active)
+  }
+  expect(unknown).toEqual([])
+})
+
+test('Trash empty state shows all four header actions in neutral grey', async ({ page }) => {
+  const unknown = await installApiMock(page, { trashItems: [] })
+  await page.goto('/tests/theme/theme-fixture.html')
+  await page.getByTestId('show-trash').click()
+  await expect(page.getByText('回收站为空')).toBeVisible()
+
+  // success 恢复已选 / success 恢复所有文件 / danger 彻底删除已选 / danger 清空回收站
+  const actions = [/恢复已选/, /恢复所有文件/, /彻底删除已选/, /清空回收站/].map((name) => page.getByRole('button', { name }))
+  for (const action of actions) {
+    await expect(action).toBeDisabled()
+    await expectTriplet(action, disabled)
+  }
+  await expectHover(actions[3], disabled)
+
+  await page.screenshot({ path: `${screenshotDir}/trash-empty-disabled.png`, fullPage: true })
+  expect(unknown).toEqual([])
+})
+
+test('ClientVersions upload dialog disables 上传并校验 in neutral grey', async ({ page }) => {
+  const unknown = await installApiMock(page, { clientVersions: [] })
+  await authenticate(page)
+  await page.goto('/settings/client-versions')
+  await expect(page.getByText('尚未上传 Android 客户端')).toBeVisible()
+  await page.getByRole('button', { name: '上传 Android APK' }).click()
+
+  const upload = page.getByRole('dialog').getByRole('button', { name: /上传并校验/ })
+  await expect(upload).toBeDisabled()
+  await upload.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 400)))
+  await expectTriplet(upload, disabled)
+
+  await page.screenshot({ path: `${screenshotDir}/client-versions-upload-disabled.png`, fullPage: true })
   expect(unknown).toEqual([])
 })
 
@@ -346,5 +458,92 @@ test('captures login, main gallery, and statistics in real Chromium', async ({ p
   await expect(page.locator('canvas').first()).toBeVisible()
   await page.screenshot({ path: `${screenshotDir}/statistics.png`, fullPage: true })
 
+  expect(unknown).toEqual([])
+})
+
+const timelineScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-timeline-datepicker-overflow-2026-10-17/screenshots'
+
+test('Timeline date range picker stays inside the header card', async ({ page }) => {
+  test.setTimeout(90_000)
+  mkdirSync(timelineScreenshotDir, { recursive: true })
+  const unknown = await installApiMock(page)
+  await authenticate(page)
+  const tolerance = 0.5
+
+  async function measure() {
+    return page.evaluate(() => {
+      const rect = (element: Element | null) => {
+        if (!element) throw new Error('missing element')
+        const r = element.getBoundingClientRect()
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+      }
+      const card = document.querySelector('.timeline-view .pv-page-header')!
+      const editor = document.querySelector<HTMLElement>('.timeline-view .date-filter .el-date-editor')!
+      const style = getComputedStyle(card)
+      return {
+        card: rect(card),
+        padding: {
+          left: Number.parseFloat(style.paddingLeft),
+          right: Number.parseFloat(style.paddingRight),
+          top: Number.parseFloat(style.paddingTop),
+          bottom: Number.parseFloat(style.paddingBottom),
+        },
+        left: rect(document.querySelector('.timeline-view .pv-page-header__left')),
+        wrapper: rect(document.querySelector('.timeline-view .date-filter')),
+        editor: rect(editor),
+        editorScroll: { scrollWidth: editor.scrollWidth, clientWidth: editor.clientWidth },
+        extra: [...document.querySelectorAll('.timeline-view .pv-page-header__extra > *')].map(rect),
+      }
+    })
+  }
+
+  for (const filtered of [false, true]) {
+    for (const width of [1920, 1440, 1280, 1024, 900, 800]) {
+      await page.setViewportSize({ width, height: 900 })
+      if (!filtered) {
+        await page.goto('/timeline')
+      } else if (width === 1920) {
+        await page.goto('/timeline')
+        await page.locator('.timeline-view .filter-select').first().click()
+        await page.locator('.el-select-dropdown__item').filter({ hasText: '测试手机' }).click()
+        await page.keyboard.press('Escape')
+        await expect(page.locator('.timeline-view .filter-badge')).toBeVisible()
+      }
+      await expect(page.locator('.timeline-view .date-filter .el-date-editor')).toBeVisible()
+      await page.waitForTimeout(300)
+      const m = await measure()
+      const label = `${width} ${filtered ? 'filtered' : 'default'}`
+      const inner = {
+        left: m.card.left + m.padding.left,
+        right: m.card.right - m.padding.right,
+        top: m.card.top + m.padding.top,
+        bottom: m.card.bottom - m.padding.bottom,
+      }
+      console.log(label, JSON.stringify(m))
+      await page.locator('.timeline-view .pv-page-head').screenshot({
+        path: `${timelineScreenshotDir}/timeline-header-${width}-${filtered ? 'filtered' : 'default'}.png`,
+      })
+
+      expect.soft(m.editor.right, `${label} editor right`).toBeLessThanOrEqual(inner.right + tolerance)
+      expect.soft(m.editor.left, `${label} editor left`).toBeGreaterThanOrEqual(inner.left - tolerance)
+      expect.soft(m.editor.top, `${label} editor top`).toBeGreaterThanOrEqual(inner.top - tolerance)
+      expect.soft(m.editor.bottom, `${label} editor bottom`).toBeLessThanOrEqual(inner.bottom + tolerance)
+      expect.soft(Math.abs(m.editor.width - m.wrapper.width), `${label} editor vs wrapper width`).toBeLessThanOrEqual(tolerance)
+      expect.soft(m.editorScroll.scrollWidth, `${label} editor scrollWidth`).toBeLessThanOrEqual(m.editorScroll.clientWidth)
+      for (const [index, child] of m.extra.entries()) {
+        expect.soft(child.left, `${label} extra[${index}] left`).toBeGreaterThanOrEqual(inner.left - tolerance)
+        expect.soft(child.right, `${label} extra[${index}] right`).toBeLessThanOrEqual(inner.right + tolerance)
+      }
+
+      // Wide layouts must stay as they were: a single 48px row at 1920/1440,
+      // and the title still beside the filters at 1280.
+      if (!filtered && (width === 1920 || width === 1440)) {
+        expect.soft(m.card.height, `${label} card height`).toBeCloseTo(48, 0)
+      }
+      if (!filtered && width >= 1280) {
+        expect.soft(m.left.right, `${label} title beside filters`).toBeLessThan(m.extra[0].left)
+      }
+    }
+  }
   expect(unknown).toEqual([])
 })

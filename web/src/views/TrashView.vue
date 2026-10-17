@@ -7,7 +7,7 @@
     >
       <template #extra>
         <el-button
-          type="primary"
+          type="success"
           :disabled="selectedItems.length === 0"
           :loading="restoreSelectedLoading"
           @click="handleRestoreSelected"
@@ -24,7 +24,6 @@
         </el-button>
         <el-button
           type="danger"
-          plain
           :disabled="selectedItems.length === 0"
           :loading="purgeSelectedLoading"
           @click="handlePurgeSelected"
@@ -79,7 +78,7 @@
         </el-table-column>
         <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" link @click="handleRestore(row)">恢复</el-button>
+            <el-button type="success" link @click="handleRestore(row)">恢复</el-button>
             <el-button type="danger" link @click="handlePurge(row)">彻底删除</el-button>
           </template>
         </el-table-column>

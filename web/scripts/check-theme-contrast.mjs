@@ -40,6 +40,12 @@ const expectedTokens = {
   '--pv-warning-active': '#A86200',
   '--pv-danger-ink': '#5B101B',
   '--pv-danger-active': '#9F293B',
+  // Base semantic tokens stay (tags/alerts/messages); the button-level matrix below carries the button colors.
+  '--el-color-success': '#00D066',
+  '--el-color-danger': '#FF5C72',
+  '--el-color-info': '#58677E',
+  '--el-color-info-light-9': '#EFF0F2',
+  '--el-color-info-light-7': '#CFD3DA',
 }
 
 for (const [name, value] of Object.entries(expectedTokens)) {
@@ -70,41 +76,44 @@ function rule(selector) {
   return matches[0].values
 }
 
+// Every disabled el-button (all types, solid/plain/dashed) uses one neutral grey triplet.
+const disabled = ['#58677E', '#EFF0F2', '#CFD3DA']
+
 const solid = {
   primary: {
     default: ['#FFFFFF', '#D92D4F', '#D92D4F'], hover: ['#FFFFFF', '#B3123A', '#B3123A'],
-    active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled: ['#65001F', '#EC96A7', '#EC96A7'],
+    active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled,
   },
   success: {
-    default: ['#00391C', '#00D066', '#00D066'], hover: ['#00391C', '#4DDB8F', '#4DDB8F'],
-    active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled: ['#00391C', '#80E8AF', '#80E8AF'],
+    default: ['#00391C', '#6ECF9C', '#6ECF9C'], hover: ['#00391C', '#8CD9B1', '#8CD9B1'],
+    active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled,
   },
   warning: {
     default: ['#422B00', '#FFA91F', '#FFA91F'], hover: ['#422B00', '#FFC25C', '#FFC25C'],
-    active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled: ['#422B00', '#FFD48C', '#FFD48C'],
+    active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled,
   },
   danger: {
-    default: ['#5B101B', '#FF5C72', '#FF5C72'], hover: ['#5B101B', '#FF8D9C', '#FF8D9C'],
-    active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled: ['#5B101B', '#FFB3BD', '#FFB3BD'],
+    default: ['#FFFFFF', '#D92D4F', '#D92D4F'], hover: ['#FFFFFF', '#B3123A', '#B3123A'],
+    active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled,
   },
 }
 
 const plain = {
   primary: {
     default: ['#B3123A', '#FCEAED', '#D92D4F'], hover: ['#FFFFFF', '#D92D4F', '#D92D4F'],
-    active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled: solid.primary.disabled,
+    active: ['#FFFFFF', '#B3123A', '#B3123A'], focus: '#B3123A', disabled,
   },
   success: {
-    default: ['#00391C', '#E6FBEF', '#007A3D'], hover: ['#00391C', '#CCF7DF', '#007A3D'],
-    active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled: solid.success.disabled,
+    default: ['#00391C', '#F1FAF5', '#007A3D'], hover: ['#00391C', '#E2F5EB', '#007A3D'],
+    active: ['#FFFFFF', '#007A3D', '#007A3D'], focus: '#007A3D', disabled,
   },
   warning: {
     default: ['#422B00', '#FFF6E8', '#A86200'], hover: ['#422B00', '#FFEDD1', '#A86200'],
-    active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled: solid.warning.disabled,
+    active: ['#FFFFFF', '#A86200', '#A86200'], focus: '#A86200', disabled,
   },
   danger: {
-    default: ['#5B101B', '#FFF2F4', '#9F293B'], hover: ['#5B101B', '#FFE6EA', '#9F293B'],
-    active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled: solid.danger.disabled,
+    default: ['#B3123A', '#FFF2F4', '#D92D4F'], hover: ['#FFFFFF', '#D92D4F', '#D92D4F'],
+    active: ['#FFFFFF', '#9F293B', '#9F293B'], focus: '#9F293B', disabled,
   },
 }
 
@@ -120,13 +129,16 @@ function verifyMatrix(matrix, plainMode) {
     const selector = `.el-button.el-button--${type}${plainMode ? '.is-plain' : ''}`
     const own = rule(selector)
     const solidValues = plainMode ? rule(`.el-button.el-button--${type}`) : own
-    for (const state of ['default', 'hover', 'active', 'disabled']) {
+    for (const state of ['default', 'hover', 'active']) {
       const expected = states[state]
       for (let index = 0; index < 3; index++) {
         const name = names[state][index]
         const actual = own.get(name) ?? solidValues.get(name)
         if (actual !== expected[index]) throw new Error(`${selector} ${state} ${name}: expected ${expected[index]}, got ${actual}`)
       }
+    }
+    if (names.disabled.some((name) => own.has(name))) {
+      throw new Error(`${selector}: per-type disabled override is not allowed; use the global disabled rule`)
     }
     if ((own.get('--el-button-outline-color') ?? solidValues.get('--el-button-outline-color')) !== states.focus) {
       throw new Error(`${selector}: incomplete focus state`)
@@ -137,26 +149,89 @@ function verifyMatrix(matrix, plainMode) {
 verifyMatrix(solid, false)
 verifyMatrix(plain, true)
 
-const linkStates = {
-  primary: ['#B3123A', '#B3123A'],
-  success: ['#00391C', '#007A3D'],
-  warning: ['#422B00', '#A86200'],
-  danger: ['#5B101B', '#9F293B'],
+// One global neutral disabled rule for every non-link/text el-button.
+const disabledSelector = '.el-button.el-button.is-disabled:not(.is-link):not(.is-text)'
+const disabledRules = rules.filter(({ selectors }) => selectors.includes(disabledSelector))
+if (disabledRules.length !== 1) throw new Error(`${disabledSelector}: expected one rule, found ${disabledRules.length}`)
+const disabledRule = disabledRules[0]
+const expectedDisabledSelectors = ['', ':hover', ':focus', ':active'].map((suffix) => `${disabledSelector}${suffix}`)
+if (JSON.stringify(disabledRule.selectors) !== JSON.stringify(expectedDisabledSelectors)) {
+  throw new Error(`${disabledSelector}: selectors must be exactly ${expectedDisabledSelectors.join(', ')}`)
 }
-for (const [type, [ink, active]] of Object.entries(linkStates)) {
+const resolveVar = (value) => {
+  const match = value?.match(/^var\((--[\w-]+)\)$/)
+  return match ? tokens.get(match[1]) : value
+}
+const disabledTokens = ['var(--el-color-info)', 'var(--el-color-info-light-9)', 'var(--el-color-info-light-7)']
+const disabledProperties = ['color', 'background-color', 'border-color']
+for (let index = 0; index < 3; index++) {
+  for (const name of [names.disabled[index], disabledProperties[index]]) {
+    const raw = disabledRule.values.get(name)
+    if (raw !== disabledTokens[index]) throw new Error(`${disabledSelector} ${name}: expected ${disabledTokens[index]}, got ${raw}`)
+    if (resolveVar(raw) !== disabled[index]) throw new Error(`${disabledSelector} ${name}: expected ${disabled[index]}, got ${resolveVar(raw)}`)
+  }
+}
+// Guard against pastel regressions: no other rule may repaint a disabled button's fill or border.
+for (const candidate of rules) {
+  if (candidate === disabledRule) continue
+  if (candidate.values.has('--el-button-disabled-bg-color') || candidate.values.has('--el-button-disabled-border-color')) {
+    throw new Error(`${candidate.selectors.join(', ')}: disabled fill/border must come from the global disabled rule`)
+  }
+  if (candidate.selectors.some((selector) => selector.includes('is-disabled')) && candidate.values.has('background-color')) {
+    throw new Error(`${candidate.selectors.join(', ')}: disabled background must come from the global disabled rule`)
+  }
+}
+
+// [ink, hover, active]; focus outline = active.
+const linkStates = {
+  primary: ['#B3123A', '#B3123A', '#B3123A'],
+  success: ['#007A3D', '#006633', '#00592D'],
+  warning: ['#422B00', '#422B00', '#A86200'],
+  danger: ['#D92D4F', '#B3123A', '#9F293B'],
+}
+for (const [type, [ink, hover, active]] of Object.entries(linkStates)) {
   const elementLink = rule(`.el-link.el-link--${type}`)
   const linkButton = rule(`.el-button.el-button--${type}.is-link`)
-  for (const [values, prefix] of [[elementLink, '--el-link'], [linkButton, '--el-button']]) {
-    const textName = `${prefix}-text-color`
-    const hoverName = prefix === '--el-link' ? '--el-link-hover-text-color' : '--el-button-hover-link-text-color'
-    if (values.get(textName) !== ink || values.get(hoverName) !== ink) throw new Error(`${type} link default/hover matrix is incomplete`)
+  if (rule(`.el-button.el-button--${type}.is-text`) !== linkButton) {
+    throw new Error(`${type} link and text buttons must share one rule`)
   }
-  if (elementLink.get('--pv-link-active-color') !== active || linkButton.get('--el-button-active-color') !== active) {
-    throw new Error(`${type} link active matrix is incomplete`)
+  const checks = [
+    ['default', elementLink.get('--el-link-text-color'), ink],
+    ['default', linkButton.get('--el-button-text-color'), ink],
+    ['hover', elementLink.get('--el-link-hover-text-color'), hover],
+    ['hover', linkButton.get('--el-button-hover-link-text-color'), hover],
+    ['hover', linkButton.get('--el-button-hover-text-color'), hover],
+    ['active', elementLink.get('--pv-link-active-color'), active],
+    ['active', linkButton.get('--el-button-active-color'), active],
+    ['focus', elementLink.get('--pv-link-focus-color'), active],
+    ['focus', linkButton.get('--el-button-outline-color'), active],
+    ['disabled', elementLink.get('--el-link-disabled-text-color'), '#58677E'],
+    ['disabled', linkButton.get('--el-button-disabled-text-color'), '#58677E'],
+  ]
+  for (const [state, actual, expected] of checks) {
+    if (actual !== expected) throw new Error(`${type} link ${state}: expected ${expected}, got ${actual}`)
   }
-  if (elementLink.get('--el-link-disabled-text-color') !== '#58677E' || linkButton.get('--el-button-disabled-text-color') !== '#58677E') {
-    throw new Error(`${type} link disabled matrix is incomplete`)
-  }
+}
+
+// Danger links inside a hovered table row (#F5F7FA) rest at the hover ink; #D92D4F is only 4.41:1 there.
+const rowHoverInk = '#B3123A'
+const rowHoverSelectors = [
+  '.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-button.el-button--danger.is-link',
+  '.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-button.el-button--danger.is-text',
+  '.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-link.el-link--danger',
+  '.el-table__body tr.hover-row > td.el-table__cell .el-button.el-button--danger.is-link',
+  '.el-table__body tr.hover-row > td.el-table__cell .el-button.el-button--danger.is-text',
+  '.el-table__body tr.hover-row > td.el-table__cell .el-link.el-link--danger',
+]
+const rowHoverRules = rules.filter(({ selectors }) => JSON.stringify(selectors) === JSON.stringify(rowHoverSelectors))
+if (rowHoverRules.length !== 1) throw new Error(`danger row-hover link rule: expected one rule, found ${rowHoverRules.length}`)
+const rowHoverValues = rowHoverRules[0].values
+if (
+  rowHoverValues.size !== 2
+  || rowHoverValues.get('--el-button-text-color') !== rowHoverInk
+  || rowHoverValues.get('--el-link-text-color') !== rowHoverInk
+) {
+  throw new Error(`danger row-hover link rule must only set --el-button-text-color and --el-link-text-color to ${rowHoverInk}`)
 }
 
 function channels(hex) {
@@ -192,8 +267,19 @@ for (const [type, states] of Object.entries(plain)) {
 for (const [type, states] of Object.entries(solid)) {
   requireRatio(`${type}.focus`, states.focus, '#FFFFFF', 3)
 }
-for (const [type, [ink]] of Object.entries(linkStates)) {
-  requireRatio(`${type}.link`, ink, '#FFFFFF', 4.5)
+// Link ink on white, the #FAFAFA table stripe, and the #F5F7FA table row-hover fill.
+for (const [type, [ink, hover, active]] of Object.entries(linkStates)) {
+  for (const [state, color] of [['default', ink], ['hover', hover], ['active', active]]) {
+    requireRatio(`${type}.link.${state}`, color, '#FFFFFF', 4.5)
+    requireRatio(`${type}.link.${state}.stripe`, color, '#FAFAFA', 4.5)
+  }
+  requireRatio(`${type}.link.row-hover`, type === 'danger' ? rowHoverInk : ink, '#F5F7FA', 4.5)
+  // Row actions (restore/delete) are success/danger; warning's #A86200 active ink is unchanged here.
+  if (type === 'success' || type === 'danger') {
+    requireRatio(`${type}.link.hover.row-hover`, hover, '#F5F7FA', 4.5)
+    requireRatio(`${type}.link.active.row-hover`, active, '#F5F7FA', 4.5)
+  }
+  requireRatio(`${type}.link.focus`, active, '#FFFFFF', 3)
 }
 requireRatio('selected.brand.ink', '#B3123A', '#FCEAED', 4.5)
 requireRatio('input.focus', '#D92D4F', '#FFFFFF', 3)

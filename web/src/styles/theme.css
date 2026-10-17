@@ -95,26 +95,24 @@
   --el-button-active-border-color: #B3123A;
   --el-button-active-color: #B3123A;
   --el-button-outline-color: #B3123A;
-  --el-button-disabled-text-color: #65001F;
-  --el-button-disabled-bg-color: #EC96A7;
-  --el-button-disabled-border-color: #EC96A7;
 }
 
+/*
+ * Success buttons use a softer green than --el-color-success (#00D066) so restore actions read calm;
+ * tags/alerts/messages keep the token. #6ECF9C = hsl(149, 50%, 62%); ink #00391C is 6.91:1.
+ */
 .el-button.el-button--success {
   --el-button-text-color: #00391C;
-  --el-button-bg-color: #00D066;
-  --el-button-border-color: #00D066;
+  --el-button-bg-color: #6ECF9C;
+  --el-button-border-color: #6ECF9C;
   --el-button-hover-text-color: #00391C;
-  --el-button-hover-bg-color: #4DDB8F;
-  --el-button-hover-border-color: #4DDB8F;
+  --el-button-hover-bg-color: #8CD9B1;
+  --el-button-hover-border-color: #8CD9B1;
   --el-button-active-text-color: #FFFFFF;
   --el-button-active-bg-color: #007A3D;
   --el-button-active-border-color: #007A3D;
   --el-button-active-color: #007A3D;
   --el-button-outline-color: #007A3D;
-  --el-button-disabled-text-color: #00391C;
-  --el-button-disabled-bg-color: #80E8AF;
-  --el-button-disabled-border-color: #80E8AF;
 }
 
 .el-button.el-button--warning {
@@ -129,26 +127,24 @@
   --el-button-active-border-color: #A86200;
   --el-button-active-color: #A86200;
   --el-button-outline-color: #A86200;
-  --el-button-disabled-text-color: #422B00;
-  --el-button-disabled-bg-color: #FFD48C;
-  --el-button-disabled-border-color: #FFD48C;
 }
 
+/*
+ * Danger buttons use the brand red with white text (4.73:1); they intentionally match primary at rest.
+ * Tags/alerts/messages keep --el-color-danger (#FF5C72).
+ */
 .el-button.el-button--danger {
-  --el-button-text-color: #5B101B;
-  --el-button-bg-color: #FF5C72;
-  --el-button-border-color: #FF5C72;
-  --el-button-hover-text-color: #5B101B;
-  --el-button-hover-bg-color: #FF8D9C;
-  --el-button-hover-border-color: #FF8D9C;
+  --el-button-text-color: #FFFFFF;
+  --el-button-bg-color: #D92D4F;
+  --el-button-border-color: #D92D4F;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-hover-bg-color: #B3123A;
+  --el-button-hover-border-color: #B3123A;
   --el-button-active-text-color: #FFFFFF;
   --el-button-active-bg-color: #9F293B;
   --el-button-active-border-color: #9F293B;
   --el-button-active-color: #9F293B;
   --el-button-outline-color: #9F293B;
-  --el-button-disabled-text-color: #5B101B;
-  --el-button-disabled-bg-color: #FFB3BD;
-  --el-button-disabled-border-color: #FFB3BD;
 }
 
 /* Element Plus 2.14 plain button state matrix. */
@@ -163,25 +159,19 @@
   --el-button-active-bg-color: #B3123A;
   --el-button-active-border-color: #B3123A;
   --el-button-outline-color: #B3123A;
-  --el-button-disabled-text-color: #65001F;
-  --el-button-disabled-bg-color: #EC96A7;
-  --el-button-disabled-border-color: #EC96A7;
 }
 
 .el-button.el-button--success.is-plain {
   --el-button-text-color: #00391C;
-  --el-button-bg-color: #E6FBEF;
+  --el-button-bg-color: #F1FAF5;
   --el-button-border-color: #007A3D;
   --el-button-hover-text-color: #00391C;
-  --el-button-hover-bg-color: #CCF7DF;
+  --el-button-hover-bg-color: #E2F5EB;
   --el-button-hover-border-color: #007A3D;
   --el-button-active-text-color: #FFFFFF;
   --el-button-active-bg-color: #007A3D;
   --el-button-active-border-color: #007A3D;
   --el-button-outline-color: #007A3D;
-  --el-button-disabled-text-color: #00391C;
-  --el-button-disabled-bg-color: #80E8AF;
-  --el-button-disabled-border-color: #80E8AF;
 }
 
 .el-button.el-button--warning.is-plain {
@@ -195,76 +185,46 @@
   --el-button-active-bg-color: #A86200;
   --el-button-active-border-color: #A86200;
   --el-button-outline-color: #A86200;
-  --el-button-disabled-text-color: #422B00;
-  --el-button-disabled-bg-color: #FFD48C;
-  --el-button-disabled-border-color: #FFD48C;
 }
 
 .el-button.el-button--danger.is-plain {
-  --el-button-text-color: #5B101B;
+  --el-button-text-color: #B3123A;
   --el-button-bg-color: #FFF2F4;
-  --el-button-border-color: #9F293B;
-  --el-button-hover-text-color: #5B101B;
-  --el-button-hover-bg-color: #FFE6EA;
-  --el-button-hover-border-color: #9F293B;
+  --el-button-border-color: #D92D4F;
+  --el-button-hover-text-color: #FFFFFF;
+  --el-button-hover-bg-color: #D92D4F;
+  --el-button-hover-border-color: #D92D4F;
   --el-button-active-text-color: #FFFFFF;
   --el-button-active-bg-color: #9F293B;
   --el-button-active-border-color: #9F293B;
   --el-button-outline-color: #9F293B;
-  --el-button-disabled-text-color: #5B101B;
-  --el-button-disabled-bg-color: #FFB3BD;
-  --el-button-disabled-border-color: #FFB3BD;
 }
 
-.el-button.el-button--primary.is-plain.is-disabled,
-.el-button.el-button--primary.is-plain.is-disabled:hover,
-.el-button.el-button--primary.is-plain.is-disabled:focus,
-.el-button.el-button--primary.is-plain.is-disabled:active {
-  --el-button-disabled-text-color: #65001F;
-  --el-button-disabled-bg-color: #EC96A7;
-  --el-button-disabled-border-color: #EC96A7;
-  color: #65001F;
-  background-color: #EC96A7;
-  border-color: #EC96A7;
+/*
+ * Disabled buttons share one neutral state for every type and variant
+ * (default/info/primary/success/warning/danger; solid/plain/dashed) so they never
+ * read as a pastel version of an enabled action. Link/text buttons keep the
+ * ink-only disabled rule below. Contrast #58677E on #EFF0F2 is 5.04:1.
+ */
+.el-button.el-button.is-disabled:not(.is-link):not(.is-text),
+.el-button.el-button.is-disabled:not(.is-link):not(.is-text):hover,
+.el-button.el-button.is-disabled:not(.is-link):not(.is-text):focus,
+.el-button.el-button.is-disabled:not(.is-link):not(.is-text):active {
+  --el-button-disabled-text-color: var(--el-color-info);
+  --el-button-disabled-bg-color: var(--el-color-info-light-9);
+  --el-button-disabled-border-color: var(--el-color-info-light-7);
+  color: var(--el-color-info);
+  background-color: var(--el-color-info-light-9);
+  border-color: var(--el-color-info-light-7);
 }
 
-.el-button.el-button--success.is-plain.is-disabled,
-.el-button.el-button--success.is-plain.is-disabled:hover,
-.el-button.el-button--success.is-plain.is-disabled:focus,
-.el-button.el-button--success.is-plain.is-disabled:active {
-  --el-button-disabled-text-color: #00391C;
-  --el-button-disabled-bg-color: #80E8AF;
-  --el-button-disabled-border-color: #80E8AF;
-  color: #00391C;
-  background-color: #80E8AF;
-  border-color: #80E8AF;
-}
-
-.el-button.el-button--warning.is-plain.is-disabled,
-.el-button.el-button--warning.is-plain.is-disabled:hover,
-.el-button.el-button--warning.is-plain.is-disabled:focus,
-.el-button.el-button--warning.is-plain.is-disabled:active {
-  --el-button-disabled-text-color: #422B00;
-  --el-button-disabled-bg-color: #FFD48C;
-  --el-button-disabled-border-color: #FFD48C;
-  color: #422B00;
-  background-color: #FFD48C;
-  border-color: #FFD48C;
-}
-
-.el-button.el-button--danger.is-plain.is-disabled,
-.el-button.el-button--danger.is-plain.is-disabled:hover,
-.el-button.el-button--danger.is-plain.is-disabled:focus,
-.el-button.el-button--danger.is-plain.is-disabled:active {
-  --el-button-disabled-text-color: #5B101B;
-  --el-button-disabled-bg-color: #FFB3BD;
-  --el-button-disabled-border-color: #FFB3BD;
-  color: #5B101B;
-  background-color: #FFB3BD;
-  border-color: #FFB3BD;
-}
-
-/* Link/text buttons use accessible semantic ink instead of bright fills. */
+/*
+ * Link/text buttons use accessible semantic ink instead of bright fills.
+ * Success (restore) ladder: #007A3D → hover #006633 → active/outline #00592D
+ * (5.45 / 7.12 / 8.51:1 on white; 5.08 / 6.64 / 7.93:1 on the #F5F7FA row-hover fill).
+ * Danger (delete) ladder matches the solid buttons: #D92D4F → hover #B3123A → active/outline #9F293B
+ * (4.73 / 6.85 / 7.36:1 on white; 4.53 / 6.57 / 7.05:1 on the #FAFAFA stripe).
+ */
 .el-button.el-button--primary.is-link,
 .el-button.el-button--primary.is-text {
   --el-button-text-color: #B3123A;
@@ -277,11 +237,11 @@
 
 .el-button.el-button--success.is-link,
 .el-button.el-button--success.is-text {
-  --el-button-text-color: #00391C;
-  --el-button-hover-text-color: #00391C;
-  --el-button-hover-link-text-color: #00391C;
-  --el-button-active-color: #007A3D;
-  --el-button-outline-color: #007A3D;
+  --el-button-text-color: #007A3D;
+  --el-button-hover-text-color: #006633;
+  --el-button-hover-link-text-color: #006633;
+  --el-button-active-color: #00592D;
+  --el-button-outline-color: #00592D;
   --el-button-disabled-text-color: #58677E;
 }
 
@@ -297,12 +257,27 @@
 
 .el-button.el-button--danger.is-link,
 .el-button.el-button--danger.is-text {
-  --el-button-text-color: #5B101B;
-  --el-button-hover-text-color: #5B101B;
-  --el-button-hover-link-text-color: #5B101B;
+  --el-button-text-color: #D92D4F;
+  --el-button-hover-text-color: #B3123A;
+  --el-button-hover-link-text-color: #B3123A;
   --el-button-active-color: #9F293B;
   --el-button-outline-color: #9F293B;
   --el-button-disabled-text-color: #58677E;
+}
+
+/*
+ * #D92D4F is 4.73:1 on white but only 4.41:1 on the #F5F7FA row-hover fill, so danger links in a
+ * hovered row rest at #B3123A (6.39:1). Tables with fixed columns mark the row with .hover-row
+ * instead of relying on :hover.
+ */
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-button.el-button--danger.is-link,
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-button.el-button--danger.is-text,
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell .el-link.el-link--danger,
+.el-table__body tr.hover-row > td.el-table__cell .el-button.el-button--danger.is-link,
+.el-table__body tr.hover-row > td.el-table__cell .el-button.el-button--danger.is-text,
+.el-table__body tr.hover-row > td.el-table__cell .el-link.el-link--danger {
+  --el-button-text-color: #B3123A;
+  --el-link-text-color: #B3123A;
 }
 
 .el-link.el-link--primary {
@@ -314,11 +289,11 @@
 }
 
 .el-link.el-link--success {
-  --el-link-text-color: #00391C;
-  --el-link-hover-text-color: #00391C;
+  --el-link-text-color: #007A3D;
+  --el-link-hover-text-color: #006633;
   --el-link-disabled-text-color: #58677E;
-  --pv-link-active-color: #007A3D;
-  --pv-link-focus-color: #007A3D;
+  --pv-link-active-color: #00592D;
+  --pv-link-focus-color: #00592D;
 }
 
 .el-link.el-link--warning {
@@ -330,8 +305,8 @@
 }
 
 .el-link.el-link--danger {
-  --el-link-text-color: #5B101B;
-  --el-link-hover-text-color: #5B101B;
+  --el-link-text-color: #D92D4F;
+  --el-link-hover-text-color: #B3123A;
   --el-link-disabled-text-color: #58677E;
   --pv-link-active-color: #9F293B;
   --pv-link-focus-color: #9F293B;

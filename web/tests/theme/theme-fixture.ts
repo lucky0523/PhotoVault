@@ -49,6 +49,16 @@ const ThemeFixture = defineComponent({
       h(ElLink, { type, disabled: true, 'data-testid': `element-link-${type}-disabled` }, () => `${type} element disabled`),
     ]))
 
+    // Disabled variants outside the per-type matrix; a loading button must keep its brand color.
+    const disabledVariants = () => h('section', { class: 'matrix', 'data-testid': 'disabled-variants' }, [
+      h(ElButton, { disabled: true, 'data-testid': 'solid-default-disabled' }, () => 'default disabled'),
+      h(ElButton, { plain: true, disabled: true, 'data-testid': 'plain-default-disabled' }, () => 'default plain disabled'),
+      h(ElButton, { type: 'info', disabled: true, 'data-testid': 'solid-info-disabled' }, () => 'info disabled'),
+      h(ElButton, { type: 'info', plain: true, disabled: true, 'data-testid': 'plain-info-disabled' }, () => 'info plain disabled'),
+      h(ElButton, { type: 'danger', dashed: true, disabled: true, 'data-testid': 'dashed-danger-disabled' }, () => 'danger dashed disabled'),
+      h(ElButton, { type: 'primary', loading: true, 'data-testid': 'solid-primary-loading' }, () => 'primary loading'),
+    ])
+
     const controls = () => h('section', { class: 'controls', 'data-testid': 'derived-controls' }, [
       h(ElCheckbox, { modelValue: checked.value, 'onUpdate:modelValue': (value: boolean) => { checked.value = value }, 'data-testid': 'checkbox' }, () => '复选框'),
       h(ElRadio, { modelValue: radio.value, value: 'selected', 'onUpdate:modelValue': (value: string) => { radio.value = value }, 'data-testid': 'radio' }, () => '单选框'),
@@ -97,7 +107,7 @@ const ThemeFixture = defineComponent({
         h(ElButton, { onClick: () => { view.value = 'timeline' }, 'data-testid': 'show-timeline' }, () => '时间线'),
         h(ElButton, { onClick: () => { view.value = 'trash' }, 'data-testid': 'show-trash' }, () => '回收站'),
       ]),
-      view.value === 'controls' ? h('div', [matrix(), controls()]) : null,
+      view.value === 'controls' ? h('div', [matrix(), disabledVariants(), controls()]) : null,
       view.value === 'timeline' ? h('div', { class: 'real-view', 'data-testid': 'real-timeline' }, [h(TimelineView)]) : null,
       view.value === 'trash' ? h('div', { class: 'real-view', 'data-testid': 'real-trash' }, [h(TrashView)]) : null,
     ])

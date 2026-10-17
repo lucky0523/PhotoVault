@@ -840,6 +840,20 @@ onBeforeUnmount(() => {
 
 .date-filter :deep(.el-date-editor) {
   width: 100%;
+  /* Element 的 .el-range-editor 带 padding: 0 10px 且是 content-box，
+     width:100% 会再加 20px，右端超出白色标题栏。 */
+  box-sizing: border-box;
+}
+
+/* 窄窗口降级：标题 + 280px 日期框放不下时，整组筛选器换到标题下一行，
+   而不是溢出卡片。flex-basis 0 让筛选区只在真放不下时才换行，
+   宽屏布局保持不变。只作用于时间线页，不改共享的 PageHeader。 */
+.pv-page-head :deep(.pv-page-header) {
+  flex-wrap: wrap;
+}
+
+.pv-page-head :deep(.pv-page-header__extra) {
+  flex: 1 1 0;
 }
 
 /* Highlight the date range picker when a range is set */
