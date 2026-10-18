@@ -17,6 +17,8 @@ from typing import Optional
 
 import aiosqlite
 
+from app.services.filename_search import derived_name_columns
+
 logger = logging.getLogger("photovault.dedup")
 
 
@@ -120,13 +122,15 @@ class DeduplicationService:
         Returns:
             The newly created FileRecord.
         """
+        name_key, name_ext = derived_name_columns(file_name)
         cursor = await self._db.execute(
             """INSERT INTO file_records
                (user_id, file_hash, file_path, original_path, device_name,
-                file_size, file_name, mime_type, exif_time, focal_length,
+                file_size, file_name, file_name_key, file_ext, mime_type,
+                exif_time, focal_length,
                 media_type, is_motion_photo, motion_video_offset, is_ultra_hdr,
                 is_reference, reference_to)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL)""",
             (
                 user_id,
                 file_hash,
@@ -135,6 +139,8 @@ class DeduplicationService:
                 device_name,
                 file_size,
                 file_name,
+                name_key,
+                name_ext,
                 mime_type,
                 exif_time,
                 focal_length,
@@ -220,6 +226,7 @@ class DeduplicationService:
             )
 
         record_id = row["id"]
+        name_key, name_ext = derived_name_columns(file_name)
         # Reactivate: clear deletion markers and refresh the stored metadata/path.
         await self._db.execute(
             """UPDATE file_records
@@ -231,6 +238,8 @@ class DeduplicationService:
                    device_name = ?,
                    file_size = ?,
                    file_name = ?,
+                   file_name_key = ?,
+                   file_ext = ?,
                    mime_type = ?,
                    exif_time = ?,
                    focal_length = ?,
@@ -247,6 +256,8 @@ class DeduplicationService:
                 device_name,
                 file_size,
                 file_name,
+                name_key,
+                name_ext,
                 mime_type,
                 exif_time,
                 focal_length,
@@ -298,11 +309,13 @@ class DeduplicationService:
         Returns:
             The newly created reference FileRecord.
         """
+        name_key, name_ext = derived_name_columns(file_name)
         cursor = await self._db.execute(
             """INSERT INTO file_records
                (user_id, file_hash, file_path, original_path, device_name,
-                file_size, file_name, is_reference, reference_to)
-               VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?)""",
+                file_size, file_name, file_name_key, file_ext,
+                is_reference, reference_to)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)""",
             (
                 user_id,
                 file_hash,
@@ -311,6 +324,8 @@ class DeduplicationService:
                 device_name,
                 file_size,
                 file_name,
+                name_key,
+                name_ext,
                 source_record_id,
             ),
         )

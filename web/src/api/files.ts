@@ -1,3 +1,4 @@
+import axios from 'axios'
 import http from './http'
 import { getAccessToken } from '@/utils/authTokens'
 
@@ -162,18 +163,134 @@ export async function listFiles(
   return response.data
 }
 
-/**
- * List ALL files across every directory (flat, recursive). Used by the timeline.
- */
-export async function listAllFiles(
-  page: number = 1,
-  pageSize: number = 200,
-  sortBy: string = 'time'
-): Promise<ListResponse> {
-  const response = await http.get('/files/all', {
-    params: { page, page_size: pageSize, sort_by: sortBy },
+// ---------------------------------------------------------------------------
+// Timeline API（时间线专用：按月份分页，搜索与筛选都在服务端执行）
+// ---------------------------------------------------------------------------
+
+/** 时间线的查询条件（标题栏的搜索框与各筛选器）。 */
+export interface TimelineQuery {
+  q?: string
+  devices?: string[]
+  formats?: string[]
+  focals?: string[]
+  dateFrom?: string
+  dateTo?: string
+  tz?: string
+}
+
+export interface TimelineMonth {
+  year: number
+  month: number
+  count: number
+}
+
+export interface TimelineSummary {
+  tz: string
+  total_count: number
+  filtered_count: number
+  months: TimelineMonth[]
+}
+
+export interface TimelineFacets {
+  tz: string
+  devices: string[]
+  formats: string[]
+  focal_buckets: string[]
+  photo_dates: string[]
+}
+
+export interface TimelineFilesPage {
+  month: string
+  files: FileInfo[]
+  has_more: boolean
+}
+
+/** 月份内的一页：向下续页用 keyset（afterTime/afterId），跳转和向上补洞用 offset。 */
+export interface TimelinePageRequest {
+  month: string
+  limit: number
+  offset?: number
+  afterTime?: string
+  afterId?: number
+}
+
+/** 把 TimelineQuery 转成接口参数；空数组、空串、undefined 都不发送。 */
+function timelineParams(query: TimelineQuery): Record<string, string | string[]> {
+  const params: Record<string, string | string[]> = {}
+  if (query.q) params.q = query.q
+  if (query.devices && query.devices.length > 0) params.device = query.devices
+  if (query.formats && query.formats.length > 0) params.format = query.formats
+  if (query.focals && query.focals.length > 0) params.focal = query.focals
+  if (query.dateFrom) params.date_from = query.dateFrom
+  if (query.dateTo) params.date_to = query.dateTo
+  if (query.tz) params.tz = query.tz
+  return params
+}
+
+// axios 默认把数组序列化成 device[]=A，FastAPI 不认；indexes: null 才是 device=A&device=B。
+const REPEAT_KEYS = { indexes: null }
+
+/** 全库的设备 / 格式 / 焦段选项和“有照片的日期”，不受筛选影响。 */
+export async function getTimelineFacets(
+  tz: string | undefined,
+  signal?: AbortSignal
+): Promise<TimelineFacets> {
+  const response = await http.get('/files/timeline/facets', {
+    params: tz ? { tz } : {},
+    paramsSerializer: REPEAT_KEYS,
+    signal,
   })
   return response.data
+}
+
+/** 筛选后的月份计数（时间轴与骨架）以及全库张数。 */
+export async function getTimelineSummary(
+  query: TimelineQuery,
+  signal?: AbortSignal
+): Promise<TimelineSummary> {
+  const response = await http.get('/files/timeline/summary', {
+    params: timelineParams(query),
+    paramsSerializer: REPEAT_KEYS,
+    signal,
+  })
+  return response.data
+}
+
+/** 某个月份里的一页文件，按时间倒序。 */
+export async function listTimelineFiles(
+  query: TimelineQuery,
+  page: TimelinePageRequest,
+  signal?: AbortSignal
+): Promise<TimelineFilesPage> {
+  const params: Record<string, string | string[] | number> = {
+    ...timelineParams(query),
+    month: page.month,
+    limit: page.limit,
+  }
+  if (page.afterTime !== undefined && page.afterId !== undefined) {
+    params.after_time = page.afterTime
+    params.after_id = page.afterId
+  } else {
+    params.offset = page.offset ?? 0
+  }
+  const response = await http.get('/files/timeline/files', {
+    params,
+    paramsSerializer: REPEAT_KEYS,
+    signal,
+  })
+  return response.data
+}
+
+/** 服务端不认识浏览器上报的时区（422 invalid_tz）。 */
+export function isInvalidTzError(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false
+  if (error.response?.status !== 422) return false
+  const detail = (error.response.data as { detail?: unknown } | undefined)?.detail
+  return (
+    typeof detail === 'object' &&
+    detail !== null &&
+    (detail as { code?: unknown }).code === 'invalid_tz'
+  )
 }
 
 function buildAuthenticatedMediaUrl(

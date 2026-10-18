@@ -51,7 +51,7 @@
             <template #subtitle>
               <span v-if="hasActiveFilters" class="filter-badge">
                 <el-icon><Filter /></el-icon>
-                已筛选 {{ activeFilterCount }} 项 · {{ totalPhotos }}/{{ allFiles.length }} 张
+                已筛选 {{ activeFilterCount }} 项 · {{ totalPhotos }}/{{ libraryTotal }} 张
               </span>
               <span v-else-if="totalPhotos > 0" class="pv-muted">共 {{ totalPhotos }} 张照片</span>
             </template>
@@ -66,6 +66,23 @@
               >
                 清除筛选
               </el-button>
+              <!-- 文件名模糊搜索，放在设备筛选框前面。只有按回车才搜索（打字过程中不访问服务端），
+                   点输入框的清除按钮立即恢复全部结果。搜索在服务端执行，长度上限与服务端一致。
+                   “搜索文件名，回车搜索”在 200px 宽的输入框里放不下（需 140px，只有 134px），
+                   所以占位文字保持简短，回车提示放在 title 里。 -->
+              <el-input
+                v-model="searchInput"
+                :prefix-icon="Search"
+                clearable
+                maxlength="200"
+                placeholder="搜索文件名"
+                title="输入文件名后按回车搜索"
+                aria-label="搜索文件名"
+                :class="['filename-search', { 'is-active': searchQuery !== '' }]"
+                size="default"
+                @clear="applySearchNow"
+                @keydown.enter="handleSearchEnter"
+              />
               <el-select
                 v-model="selectedDevices"
                 multiple
@@ -147,60 +164,80 @@
           </PageHeader>
         </div>
 
-        <div class="pv-page-body">
+        <!-- 滚动容器。它不在任何 v-if 里，尺寸测量（ResizeObserver）和滚动监听都挂在它上面。 -->
+        <div ref="pageBodyRef" class="pv-page-body">
+          <!-- 测量分组标题高度用，不可见；放在 v-if 链外面，保证任何状态下都存在 -->
+          <div ref="headerProbeRef" class="group-header header-probe" aria-hidden="true">
+            <h3 class="pv-group-title">2000年12月</h3>
+            <span class="pv-muted">0 张</span>
+          </div>
+
           <!-- Loading state -->
-          <div v-if="loading && allFiles.length === 0" class="pv-loading">
+          <div v-if="loading && !loaded" class="pv-loading">
             <el-icon class="is-loading" :size="32"><Loading /></el-icon>
             <span>加载中...</span>
           </div>
 
+          <!-- 首次加载失败：没有任何内容可显示时给出重试入口，而不是空白 -->
+          <el-empty v-else-if="!loaded && loadFailed" description="加载时间线失败">
+            <el-button type="primary" @click="retryLoad">重试</el-button>
+          </el-empty>
+
           <!-- Empty state -->
           <el-empty
-            v-else-if="groupedPhotos.length === 0"
-            description="暂无备份图片"
+            v-else-if="months.length === 0"
+            :description="hasActiveFilters ? '没有符合筛选条件的照片' : '暂无备份图片'"
           />
 
-          <!-- Grouped photos by year/month -->
-          <div v-else class="photos-content" ref="photosContentRef">
+          <!-- 按年月分组的时间线。高度由布局算出，只渲染视口上下各一屏内的行。 -->
+          <div
+            v-else
+            ref="photosContentRef"
+            class="photos-content"
+            :style="{ height: layout.totalHeight + 'px' }"
+          >
             <div
-              v-for="group in groupedPhotos"
-              :key="`${group.year}-${group.month}`"
-              :ref="(el) => setSectionRef(group.year, group.month, el as HTMLElement)"
+              v-for="section in renderedSections"
+              :key="section.entry.key"
               class="photo-group"
+              :style="{ top: section.top + 'px', height: section.height + 'px' }"
             >
               <div class="group-header">
-                <h3 class="pv-group-title">{{ group.year }}年{{ group.month }}月</h3>
-                <span class="pv-muted">{{ group.files.length }} 张</span>
+                <h3 class="pv-group-title">{{ section.entry.year }}年{{ section.entry.month }}月</h3>
+                <span class="pv-muted">{{ section.entry.count }} 张</span>
               </div>
-              <div class="pv-photo-grid">
-                <div
-                  v-for="(file, fileIndex) in group.files"
-                  :key="file.id"
-                  class="pv-tile"
-                  @click="openPreview(group, fileIndex)"
-                  @contextmenu="showContextMenu($event, file)"
-                >
-                  <div class="pv-tile__media">
-                    <img
-                      :src="getThumbnailUrl(file.id, 'small')"
-                      :alt="file.file_name"
-                      loading="lazy"
-                      @error="handleThumbnailError"
-                    />
-                    <div v-if="isVideo(file)" class="pv-tile__video">
-                      <el-icon :size="28"><VideoPlay /></el-icon>
+              <div class="pv-photo-grid" :style="{ top: section.gridTop + 'px' }">
+                <template v-for="tile in section.tiles" :key="tile.key">
+                  <div
+                    v-if="tile.file"
+                    class="pv-tile"
+                    @click="openPreview(section.entry, tile.index)"
+                    @contextmenu="onTileContextMenu($event, tile, section.entry.key)"
+                  >
+                    <div class="pv-tile__media">
+                      <img
+                        :src="getThumbnailUrl(tile.file.id, 'small')"
+                        :alt="tile.file.file_name"
+                        loading="lazy"
+                        @error="handleThumbnailError"
+                      />
+                      <div v-if="isVideo(tile.file)" class="pv-tile__video">
+                        <el-icon :size="28"><VideoPlay /></el-icon>
+                      </div>
+                      <div v-else-if="isMotionPhoto(tile.file)" class="pv-tile__live">
+                        <LivePhotoIcon class="pv-tile__live-icon" />
+                        <span>LIVE</span>
+                      </div>
+                      <div v-if="tile.file.is_ultra_hdr" class="pv-tile__hdr" title="Ultra HDR">HDR</div>
                     </div>
-                    <div v-else-if="isMotionPhoto(file)" class="pv-tile__live">
-                      <LivePhotoIcon class="pv-tile__live-icon" />
-                      <span>LIVE</span>
+                    <div class="pv-tile__overlay">
+                      <span class="pv-tile__name">{{ tile.file.file_name }}</span>
+                      <span class="pv-tile__meta">{{ formatShortDate(tile.file.exif_time || tile.file.created_at) }}</span>
                     </div>
-                    <div v-if="file.is_ultra_hdr" class="pv-tile__hdr" title="Ultra HDR">HDR</div>
                   </div>
-                  <div class="pv-tile__overlay">
-                    <span class="pv-tile__name">{{ file.file_name }}</span>
-                    <span class="pv-tile__meta">{{ formatShortDate(file.exif_time || file.created_at) }}</span>
-                  </div>
-                </div>
+                  <!-- 还没加载到的位置：占位瓦片，不可点击、没有右键菜单 -->
+                  <div v-else class="pv-tile is-placeholder" aria-hidden="true" />
+                </template>
               </div>
             </div>
           </div>
@@ -233,55 +270,109 @@
       v-model:visible="previewVisible"
       :files="previewFiles"
       :initial-index="previewIndex"
+      @index-change="handlePreviewIndexChange"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { Timer, ArrowRight, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay } from '@element-plus/icons-vue'
+import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import axios from 'axios'
+import { Timer, ArrowRight, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listAllFiles,
   getThumbnailUrl,
   downloadFile,
   deleteFile,
   normalizeTimestamp,
+  getTimelineFacets,
+  getTimelineSummary,
+  listTimelineFiles,
+  isInvalidTzError,
 } from '@/api/files'
-import type { FileInfo } from '@/api/files'
+import type { FileInfo, TimelineFacets, TimelineFilesPage, TimelinePageRequest, TimelineQuery } from '@/api/files'
 import ImagePreview from '@/components/ImagePreview.vue'
 import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { isVideo, isMotionPhoto, handleThumbnailError } from '@/utils/media'
+import { buildLayout, findVisibleSections, missingRuns } from '@/utils/timelineLayout'
+import type { SectionLayout, TimelineLayout } from '@/utils/timelineLayout'
 import { useTrashStore } from '@/stores/trash'
 import { useConfigStore } from '@/stores/config'
 
 const trashStore = useTrashStore()
 const configStore = useConfigStore()
 
-// --- Types ---
-interface MonthGroup {
-  year: number
-  month: number
-  files: FileInfo[]
-}
+// 为什么按月份请求：照片很容易上万张，整库拉到浏览器里既慢又占内存。服务端先给出
+// 每个月的张数（summary），页面据此铺出整条时间线的骨架；某个月滚进视口附近时，
+// 再按月份分页请求这一段的文件（files）。搜索与筛选都由服务端执行。
 
+// --- Types ---
 interface YearNavItem {
   year: number
   totalCount: number
   months: { month: number; count: number }[]
 }
 
-// --- State ---
-const loading = ref(false)
-const allFiles = ref<FileInfo[]>([])
+/**
+ * 一个月份区块。不可变：任何改动都生成新对象，并替换 months.value。
+ * 布局、时间轴、计数、可见瓦片、预览数组都只从 months 派生，所以只要所有改动都
+ * 经过 commitMonth，就不会出现“数据改了、高度或计数没跟着重算”的情况。
+ */
+interface MonthEntry {
+  readonly key: string // 'YYYY-MM'
+  readonly year: number
+  readonly month: number
+  readonly count: number // 本月行数，恒等于 items.length
+  readonly items: ReadonlyArray<FileInfo | undefined> // 未加载的位置是空洞
+}
+
+/** 每个月的加载调度状态。不参与渲染，放普通 Map。 */
+interface MonthLoadState {
+  inflight: AbortController | null
+  epoch: number // 本地删除时 +1；响应回来时不一致就丢弃
+  failedAt: number // 最近一次加载失败的时间戳，0 = 无
+  keysetResets: number // 本次查询里因 keyset 冲突整月清空的次数（有上限，见 applyPage）
+}
+
+/** 一次 files 请求发出时的上下文，响应回来时据此判断是否过期。 */
+interface PageRequestContext {
+  generation: number
+  epoch: number
+  s: number
+  keyset: boolean // 以前一格为游标续页（否则是月内 offset）
+}
+
+interface WantedRange {
+  key: string
+  from: number
+  to: number
+  priority: 0 | 1
+  distance: number
+}
+
+interface RenderedTile {
+  key: number | string
+  index: number
+  file: FileInfo | undefined
+}
+
+// --- 查询状态（标题栏控件） ---
 const dateRange = ref<[string, string] | null>(null)
 const selectedDevices = ref<string[]>([])
 const selectedFormats = ref<string[]>([])
 const selectedFocals = ref<string[]>([])
+// 文件名搜索：searchInput 绑定输入框，按回车（或点清除按钮）时才写入 searchQuery；
+// 请求、描边和“已筛选”徽标都只读 searchQuery，打字过程中不请求服务端。
+const searchInput = ref('')
+const searchQuery = ref('')
 const expandedYears = ref<Set<number>>(new Set())
 const activeYear = ref<number | null>(null)
 const activeMonth = ref<number | null>(null)
+
+// 浏览器时区随请求发给服务端，月份归属与页面显示一致；服务端不认识时回退一次（不带 tz）
+let timeZone: string | undefined = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined
+let tzFallbackDone = false
 
 // Focal-length buckets (焦段). Ordered from wide to tele; "unknown" last.
 const FOCAL_BUCKETS = [
@@ -293,25 +384,63 @@ const FOCAL_BUCKETS = [
   { key: 'unknown', label: '未知焦段' },
 ]
 
-function focalBucketKey(focal?: number | null): string {
-  if (focal == null || focal <= 0) return 'unknown'
-  if (focal <= 20) return 'ultrawide'
-  if (focal <= 35) return 'wide'
-  if (focal <= 70) return 'standard'
-  if (focal <= 135) return 'tele'
-  return 'supertele'
-}
+// --- 服务端数据 ---
+const facets = shallowRef<TimelineFacets | null>(null)
+const libraryTotal = ref(0) // 徽标里的 y（summary.total_count，本地删除/对账时增减）
+const loading = ref(true) // 首个 summary 返回前为 true；初值就是 true，避免挂载前一帧落到空白分支
+const loadFailed = ref(false) // 首次 summary 失败、没有任何内容可显示
+const loaded = ref(false) // 至少装入过一次 summary（区分“加载中”和“空”）
 
-function fileExt(name: string): string {
-  const i = name.lastIndexOf('.')
-  if (i < 0 || i === name.length - 1) return ''
-  return name.slice(i + 1).toUpperCase()
-}
+const months = shallowRef<readonly MonthEntry[]>([]) // 年月倒序
+let monthsGeneration = 0 // months 属于哪一次查询
+const loadStates = new Map<string, MonthLoadState>()
+let queryGeneration = 0 // 每次重新查询 +1；所有响应回来时比对，不等就丢弃
+let facetsSeq = 0
+let appliedQuery: TimelineQuery = {} // 当前 months 对应的查询，files 请求沿用它
+let summaryController: AbortController | null = null
+let facetsController: AbortController | null = null
+const inflightLoads = new Set<AbortController>()
 
-// Preview state
+const MAX_CONCURRENT_LOADS = 2
+const FAILURE_BACKOFF_MS = 3000
+const PAGE_LIMIT = 200
+const LARGE_PAGE_LIMIT = 500
+const MAX_KEYSET_RESETS = 3 // 见 applyPage：keyset 冲突时整月清空重拉的次数上限
+const GROUP_GAP = 24 // 分组间距（原 .photos-content 的 gap）
+
+// --- 布局测量（全部基于常驻的 .pv-page-body） ---
+const pageBodyRef = ref<HTMLElement | null>(null)
+const headerProbeRef = ref<HTMLElement | null>(null)
+const photosContentRef = ref<HTMLElement | null>(null)
+const contentWidth = ref(0)
+const viewportHeight = ref(0)
+const headerBlock = ref(0)
+const tileMin = ref(180)
+const gridGap = ref(12)
+const bodyPaddingBottom = ref(16)
+const scrollTop = ref(0)
+
+const layout = computed<TimelineLayout>(() =>
+  buildLayout(
+    months.value,
+    contentWidth.value,
+    viewportHeight.value,
+    headerBlock.value,
+    tileMin.value,
+    gridGap.value,
+    GROUP_GAP,
+    bodyPaddingBottom.value
+  )
+)
+
+// Preview state：预览数组就是该月的稀疏 items，月份被 commitMonth 替换时自动更新
 const previewVisible = ref(false)
-const previewFiles = ref<FileInfo[]>([])
+const previewMonthKey = ref<string | null>(null)
 const previewIndex = ref(0)
+const previewFiles = computed<ReadonlyArray<FileInfo | undefined>>(
+  () => months.value.find((m) => m.key === previewMonthKey.value)?.items ?? []
+)
+let previewDemand: { monthKey: string; from: number; to: number } | null = null // 打开预览/翻页时更新，关闭时置 null
 
 // Context menu state
 interface ContextMenuState {
@@ -319,145 +448,46 @@ interface ContextMenuState {
   x: number
   y: number
   file: FileInfo | null
+  monthKey: string | null
+  generation: number // 打开菜单时的 queryGeneration
 }
 const contextMenu = ref<ContextMenuState>({
   visible: false,
   x: 0,
   y: 0,
   file: null,
+  monthKey: null,
+  generation: 0,
 })
-
-// Section refs for scrolling
-const sectionRefs = ref<Map<string, HTMLElement>>(new Map())
-const photosContentRef = ref<HTMLElement | null>(null)
 
 // --- Computed ---
-const deviceOptions = computed<string[]>(() => {
-  const set = new Set<string>()
-  for (const f of allFiles.value) {
-    if (f.device_name) set.add(f.device_name)
-  }
-  return Array.from(set).sort()
-})
-
-const formatOptions = computed<string[]>(() => {
-  const set = new Set<string>()
-  for (const f of allFiles.value) {
-    const ext = fileExt(f.file_name)
-    if (ext) set.add(ext)
-  }
-  return Array.from(set).sort()
-})
-
+const deviceOptions = computed<string[]>(() => [...(facets.value?.devices ?? [])].sort())
+const formatOptions = computed<string[]>(() => [...(facets.value?.formats ?? [])].sort())
 const focalOptions = computed(() => {
-  const present = new Set<string>()
-  for (const f of allFiles.value) {
-    present.add(focalBucketKey(f.focal_length))
-  }
-  return FOCAL_BUCKETS.filter((b) => present.has(b.key))
+  const present = facets.value?.focal_buckets ?? []
+  return FOCAL_BUCKETS.filter((b) => present.includes(b.key))
 })
-
-function parseFileDate(file: FileInfo): Date | null {
-  const dateStr = file.exif_time || file.created_at
-  if (!dateStr) return null
-  const date = new Date(normalizeTimestamp(dateStr))
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
-const filteredFiles = computed(() => {
-  let result = allFiles.value
-
-  // Date range. Compare local calendar keys directly: Date parses a bare
-  // YYYY-MM-DD as UTC, which otherwise selects the previous day in negative
-  // timezones.
-  if (dateRange.value && dateRange.value[0] && dateRange.value[1]) {
-    const [startYmd, endYmd] = dateRange.value
-    result = result.filter((file) => {
-      const fileDate = parseFileDate(file)
-      if (!fileDate) return false
-      const fileYmd = toLocalYmd(fileDate)
-      return fileYmd >= startYmd && fileYmd <= endYmd
-    })
-  }
-
-  // Device
-  if (selectedDevices.value.length > 0) {
-    result = result.filter(
-      (f) => f.device_name != null && selectedDevices.value.includes(f.device_name)
-    )
-  }
-
-  // File format
-  if (selectedFormats.value.length > 0) {
-    result = result.filter((f) => selectedFormats.value.includes(fileExt(f.file_name)))
-  }
-
-  // Focal length bucket
-  if (selectedFocals.value.length > 0) {
-    result = result.filter((f) => selectedFocals.value.includes(focalBucketKey(f.focal_length)))
-  }
-
-  return result
-})
-
-const groupedPhotos = computed<MonthGroup[]>(() => {
-  const groups = new Map<string, MonthGroup>()
-
-  for (const file of filteredFiles.value) {
-    const date = parseFileDate(file)
-    if (!date) continue
-    const year = date.getFullYear()
-    const month = date.getMonth() + 1
-    const key = `${year}-${month}`
-
-    if (!groups.has(key)) {
-      groups.set(key, { year, month, files: [] })
-    }
-    groups.get(key)!.files.push(file)
-  }
-
-  // Sort groups by year desc, month desc
-  return Array.from(groups.values()).sort((a, b) => {
-    if (a.year !== b.year) return b.year - a.year
-    return b.month - a.month
-  })
-})
-
-const timeNavData = computed<YearNavItem[]>(() => {
-  const yearMap = new Map<number, { totalCount: number; months: Map<number, number> }>()
-
-  for (const group of groupedPhotos.value) {
-    if (!yearMap.has(group.year)) {
-      yearMap.set(group.year, { totalCount: 0, months: new Map() })
-    }
-    const yearData = yearMap.get(group.year)!
-    yearData.totalCount += group.files.length
-    yearData.months.set(group.month, group.files.length)
-  }
-
-  return Array.from(yearMap.entries())
-    .sort(([a], [b]) => b - a)
-    .map(([year, data]) => ({
-      year,
-      totalCount: data.totalCount,
-      months: Array.from(data.months.entries())
-        .sort(([a], [b]) => b - a)
-        .map(([month, count]) => ({ month, count })),
-    }))
-})
-
-const totalPhotos = computed(() => filteredFiles.value.length)
 
 // Set of local dates (YYYY-MM-DD) that actually have at least one photo/video.
 // Used to dim (but not disable) empty days in the date picker.
-const photoDates = computed<Set<string>>(() => {
-  const set = new Set<string>()
-  for (const f of allFiles.value) {
-    const d = parseFileDate(f)
-    if (d) set.add(toLocalYmd(d))
+const photoDates = computed<Set<string>>(() => new Set(facets.value?.photo_dates ?? []))
+
+const timeNavData = computed<YearNavItem[]>(() => {
+  const years: YearNavItem[] = []
+  for (const m of months.value) {
+    let last = years[years.length - 1]
+    if (!last || last.year !== m.year) {
+      last = { year: m.year, totalCount: 0, months: [] }
+      years.push(last)
+    }
+    last.totalCount += m.count
+    last.months.push({ month: m.month, count: m.count })
   }
-  return set
+  return years
 })
+
+// 等于 summary.filtered_count；删除、对账后随 months 自动重算
+const totalPhotos = computed(() => months.value.reduce((n, m) => n + m.count, 0))
 
 function toLocalYmd(d: Date): string {
   const y = d.getFullYear()
@@ -490,11 +520,13 @@ const hasActiveFilters = computed(
     selectedDevices.value.length > 0 ||
     selectedFormats.value.length > 0 ||
     selectedFocals.value.length > 0 ||
-    !!(dateRange.value && dateRange.value[0])
+    !!(dateRange.value && dateRange.value[0]) ||
+    searchQuery.value !== ''
 )
 
 const activeFilterCount = computed(() => {
   let n = 0
+  if (searchQuery.value !== '') n++
   if (selectedDevices.value.length > 0) n++
   if (selectedFormats.value.length > 0) n++
   if (selectedFocals.value.length > 0) n++
@@ -502,16 +534,562 @@ const activeFilterCount = computed(() => {
   return n
 })
 
-// --- Methods ---
-function setSectionRef(year: number, month: number, el: HTMLElement | null) {
-  const key = `${year}-${month}`
-  if (el) {
-    sectionRefs.value.set(key, el)
-  } else {
-    sectionRefs.value.delete(key)
+// --- 窗口化渲染 ---
+
+function monthKeyOf(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}`
+}
+
+/** 内容区在滚动容器里的偏移；内容区还没渲染时用滚动容器的上内边距（两者相等）。 */
+function contentOffsetTop(): number {
+  const content = photosContentRef.value
+  if (content) return content.offsetTop
+  const body = pageBodyRef.value
+  return body ? Number.parseFloat(getComputedStyle(body).paddingTop) || 0 : 0
+}
+
+function viewportH(): number {
+  return viewportHeight.value || window.innerHeight
+}
+
+/** 可见窗口：视口本身加上上下各一屏（上方一屏、下方两屏的下沿）。 */
+function currentWindow(top: number = scrollTop.value) {
+  const vh = viewportH()
+  const viewTop = top - contentOffsetTop()
+  return { viewTop, from: viewTop - vh, to: viewTop + 2 * vh }
+}
+
+interface VisibleSlice {
+  entry: MonthEntry
+  sec: SectionLayout
+  a: number // 本月第一个要渲染的下标
+  b: number // 最后一个要渲染的下标 + 1
+  r0: number // 第一行的行号
+}
+
+function visibleSlices(win: { from: number; to: number }): VisibleSlice[] {
+  const L = layout.value
+  if (contentWidth.value === 0 || L.sections.length === 0) return []
+  const [start, end] = findVisibleSections(L, win.from, win.to)
+  const slices: VisibleSlice[] = []
+  for (let i = start; i < end; i++) {
+    const sec = L.sections[i]
+    const entry = months.value[i]
+    if (!entry) continue
+    const gridTop = sec.top + L.headerBlock
+    const r0 = Math.min(sec.rows - 1, Math.max(0, Math.floor((win.from - gridTop) / L.pitch)))
+    const r1 = Math.min(sec.rows - 1, Math.floor((win.to - gridTop) / L.pitch))
+    const a = r0 * L.cols
+    const b = r1 >= r0 ? Math.min(entry.count, (r1 + 1) * L.cols) : a
+    slices.push({ entry, sec, a, b, r0 })
+  }
+  return slices
+}
+
+const renderedSections = computed(() => {
+  const L = layout.value
+  return visibleSlices(currentWindow()).map((slice) => {
+    const tiles: RenderedTile[] = []
+    for (let i = slice.a; i < slice.b; i++) {
+      const file = slice.entry.items[i]
+      tiles.push(file ? { key: file.id, index: i, file } : { key: `ph-${i}`, index: i, file: undefined })
+    }
+    return {
+      entry: slice.entry,
+      top: slice.sec.top,
+      height: slice.sec.height,
+      gridTop: L.headerBlock + slice.r0 * L.pitch,
+      tiles,
+    }
+  })
+})
+
+function measureHeaderBlock() {
+  const probe = headerProbeRef.value
+  if (!probe) return
+  headerBlock.value =
+    probe.getBoundingClientRect().height + (Number.parseFloat(getComputedStyle(probe).marginBottom) || 0)
+}
+
+/** 用新数组替换 months.value；这是修改月份的唯一入口。next 为 null 或 count 为 0 时移除该月。 */
+function commitMonth(key: string, next: MonthEntry | null) {
+  const list = months.value
+  const i = list.findIndex((m) => m.key === key)
+  if (i < 0) return
+  if (import.meta.env.DEV && next) {
+    console.assert(next.items.length === next.count, 'timeline: items.length !== count', key)
+  }
+  const body = pageBodyRef.value
+  const viewTop = (body ? body.scrollTop : scrollTop.value) - contentOffsetTop()
+  const oldLayout = layout.value
+  const oldSec = oldLayout.sections[i]
+  const removed = !next || next.count === 0
+  const copy = list.slice()
+  if (removed) copy.splice(i, 1)
+  else copy[i] = next
+  months.value = copy
+
+  // 位置锚定：整个在视口顶部之上的月份高度变化时，scrollTop 同步平移，视口里的内容不跳
+  if (contentWidth.value > 0 && oldSec && oldSec.top + oldSec.height <= viewTop) {
+    // 被移除时连同分组间距一起消失
+    const newHeight = removed ? -oldLayout.groupGap : layout.value.sections[i].height
+    const delta = newHeight - oldSec.height
+    if (delta !== 0) {
+      pendingScrollAdjust += delta
+      queueScrollAdjust()
+    }
   }
 }
 
+let pendingScrollAdjust = 0
+let scrollAdjustQueued = false
+
+/** DOM 更新之后、绘制之前再改 scrollTop，否则内容高度还没变，浏览器会按旧的 scrollHeight 截断。 */
+function queueScrollAdjust() {
+  if (scrollAdjustQueued) return
+  scrollAdjustQueued = true
+  void nextTick(() => {
+    scrollAdjustQueued = false
+    const body = pageBodyRef.value
+    const delta = pendingScrollAdjust
+    pendingScrollAdjust = 0
+    if (!body || delta === 0) return
+    body.scrollTop += delta
+    scrollTop.value = body.scrollTop
+  })
+}
+
+/** 列数变化前记下视口顶部所在的（月份、该行第一个下标）。 */
+function captureAnchor(): { key: string; index: number } | null {
+  const body = pageBodyRef.value
+  const L = layout.value
+  if (!body || contentWidth.value === 0 || L.sections.length === 0) return null
+  const viewTop = body.scrollTop - contentOffsetTop()
+  if (viewTop <= 0) return null
+  const sec = L.sections[Math.max(0, lastSectionAtOrAbove(viewTop))]
+  const gridTop = sec.top + L.headerBlock
+  if (viewTop < gridTop) return { key: sec.key, index: -1 }
+  const row = Math.min(sec.rows - 1, Math.floor((viewTop - gridTop) / L.pitch))
+  return { key: sec.key, index: row * L.cols }
+}
+
+/** 重算布局后，把 scrollTop 设到锚点下标所在行的新位置。 */
+function restoreAnchor(anchor: { key: string; index: number }) {
+  const body = pageBodyRef.value
+  const L = layout.value
+  const i = months.value.findIndex((m) => m.key === anchor.key)
+  if (!body || i < 0) return
+  const sec = L.sections[i]
+  const top = anchor.index < 0 ? sec.top : sec.top + L.headerBlock + Math.floor(anchor.index / L.cols) * L.pitch
+  body.scrollTop = contentOffsetTop() + top
+  scrollTop.value = body.scrollTop
+}
+
+/** 最后一个 top ≤ y 的月份下标；y 在第一个月之上时返回 -1。 */
+function lastSectionAtOrAbove(y: number): number {
+  const s = layout.value.sections
+  let lo = 0
+  let hi = s.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (s[mid].top <= y) lo = mid + 1
+    else hi = mid
+  }
+  return lo - 1
+}
+
+/** 时间轴高亮跟随视口顶部所在的月份（只在变化时赋值）。 */
+function updateActiveFromScroll() {
+  if (months.value.length === 0 || contentWidth.value === 0) return
+  // 视口顶部还在第一个月之上（页面最顶端）时保持现状
+  const entry = months.value[lastSectionAtOrAbove(scrollTop.value - contentOffsetTop() + 1)]
+  if (!entry) return
+  if (activeYear.value !== entry.year) activeYear.value = entry.year
+  if (activeMonth.value !== entry.month) activeMonth.value = entry.month
+}
+
+// --- 滚动与时间轴跳转 ---
+
+let scrollRaf = 0
+
+function handleScroll() {
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0
+    const body = pageBodyRef.value
+    if (!body) return
+    scrollTop.value = body.scrollTop
+    if (pendingJump) checkJumpArrival()
+    else updateActiveFromScroll()
+    scheduleEnsureVisible()
+  })
+}
+
+/** 正在进行的时间轴跳转：只存月份 key，“是否到达”每次按当前布局重算目标位置。 */
+let pendingJump: { key: string; startedAt: number; timer: ReturnType<typeof setTimeout> } | null = null
+const JUMP_TIMEOUT_MS = 1500
+const JUMP_CANCEL_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
+
+function sectionTargetTop(key: string): number | null {
+  const i = months.value.findIndex((m) => m.key === key)
+  if (i < 0) return null
+  return contentOffsetTop() + layout.value.sections[i].top
+}
+
+function checkJumpArrival() {
+  if (!pendingJump) return
+  const body = pageBodyRef.value
+  const target = sectionTargetTop(pendingJump.key)
+  // 该月已被移除时视为到达
+  if (!body || target === null) {
+    clearPendingJump()
+    return
+  }
+  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight)
+  if (Math.abs(scrollTop.value - Math.min(target, maxScrollTop)) <= 2) {
+    clearPendingJump(true)
+  } else if (performance.now() - pendingJump.startedAt > JUMP_TIMEOUT_MS) {
+    clearPendingJump()
+  }
+}
+
+/**
+ * 结束跳转（到达、用户接管或超时），并立即补齐可见数据。
+ * 正常到达时高亮就是被点的月份（到达判定有 2px 容差，不能再按位置重算，否则会闪回上一个月）；
+ * 其余情况按当前位置重算一次高亮。
+ */
+function clearPendingJump(arrived = false) {
+  if (!pendingJump) return
+  clearTimeout(pendingJump.timer)
+  const key = pendingJump.key
+  pendingJump = null
+  const entry = arrived ? months.value.find((m) => m.key === key) : undefined
+  if (entry) {
+    activeYear.value = entry.year
+    activeMonth.value = entry.month
+  } else {
+    updateActiveFromScroll()
+  }
+  ensureVisible()
+}
+
+function scrollToSection(year: number, month: number) {
+  activeYear.value = year
+  activeMonth.value = month
+  const body = pageBodyRef.value
+  const key = monthKeyOf(year, month)
+  const target = sectionTargetTop(key)
+  if (!body || target === null) return
+  if (pendingJump) clearTimeout(pendingJump.timer)
+  pendingJump = {
+    key,
+    startedAt: performance.now(),
+    // 平滑滚动被浏览器中断时的兜底
+    timer: setTimeout(clearPendingJump, JUMP_TIMEOUT_MS),
+  }
+  // 近距离保留平滑滚动的手感；远跳瞬时到达，不让滚动途经几十个月触发加载和缩略图请求
+  const smooth = Math.abs(target - body.scrollTop) <= 3 * viewportH()
+  body.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' })
+  scrollTop.value = body.scrollTop
+  checkJumpArrival()
+}
+
+// --- 按需加载（统一调度） ---
+
+let ensureTimer: ReturnType<typeof setTimeout> | null = null
+let ensureWaitStartedAt = 0
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+const ENSURE_DEBOUNCE_MS = 80
+const ENSURE_MAX_WAIT_MS = 250
+
+/** 滚动中使用：尾随防抖 80ms、最长等待 250ms，快速拖滚动条时不为路过的月份发请求。 */
+function scheduleEnsureVisible() {
+  const now = performance.now()
+  if (ensureTimer === null) ensureWaitStartedAt = now
+  else clearTimeout(ensureTimer)
+  const wait = Math.max(0, Math.min(ENSURE_DEBOUNCE_MS, ensureWaitStartedAt + ENSURE_MAX_WAIT_MS - now))
+  ensureTimer = setTimeout(() => {
+    ensureTimer = null
+    ensureVisible()
+  }, wait)
+}
+
+function getLoadState(key: string): MonthLoadState {
+  let state = loadStates.get(key)
+  if (!state) {
+    state = { inflight: null, epoch: 0, failedAt: 0, keysetResets: 0 }
+    loadStates.set(key, state)
+  }
+  return state
+}
+
+/** 所有“需要哪些数据”：预览需求优先，其次是可见窗口内各月的下标区间（按与视口的距离排序）。 */
+function wantedRanges(): WantedRange[] {
+  const ranges: WantedRange[] = []
+  if (previewDemand) {
+    ranges.push({ key: previewDemand.monthKey, from: previewDemand.from, to: previewDemand.to, priority: 0, distance: 0 })
+  }
+  const L = layout.value
+  const win = currentWindow()
+  const viewBottom = win.viewTop + viewportH()
+  for (const slice of visibleSlices(win)) {
+    if (slice.b <= slice.a) continue
+    const gridTop = slice.sec.top + L.headerBlock
+    const rowTop = gridTop + slice.r0 * L.pitch
+    const rowBottom = gridTop + Math.ceil(slice.b / L.cols) * L.pitch - L.gap
+    const distance = rowBottom < win.viewTop ? win.viewTop - rowBottom : rowTop > viewBottom ? rowTop - viewBottom : 0
+    ranges.push({ key: slice.entry.key, from: slice.a, to: slice.b, priority: 1, distance })
+  }
+  return ranges.sort((x, y) => x.priority - y.priority || x.distance - y.distance)
+}
+
+/** 同步补齐可见数据（不经过防抖）。 */
+function ensureVisible() {
+  if (ensureTimer !== null) {
+    clearTimeout(ensureTimer)
+    ensureTimer = null
+  }
+  // 新的 summary 还没回来，或还没量到宽度：什么都不做
+  if (monthsGeneration !== queryGeneration || contentWidth.value === 0) return
+  const now = Date.now()
+  let needRetry = false
+  for (const range of wantedRanges()) {
+    if (inflightLoads.size >= MAX_CONCURRENT_LOADS) break
+    const entry = months.value.find((m) => m.key === range.key)
+    if (!entry) continue
+    const state = getLoadState(range.key)
+    // 同一个月同时只有一个请求；排不上的不排队，下一次 ensureVisible 重新计算
+    if (state.inflight) continue
+    if (state.failedAt && now - state.failedAt < FAILURE_BACKOFF_MS) {
+      needRetry = true
+      continue
+    }
+    const run = missingRuns(entry.items, range.from, range.to)[0]
+    if (!run) continue
+    startMonthLoad(entry, state, run[0], run[1])
+  }
+  if (needRetry && retryTimer === null) {
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      scheduleEnsureVisible()
+    }, FAILURE_BACKOFF_MS)
+  }
+}
+
+/**
+ * 请求某月 [s, e) 这段空洞。前一格已加载就用 keyset 顺序续页（游标取自行本身，
+ * 不受插入/删除影响）；否则（跳转、向上补洞）用月份内 offset。
+ */
+function startMonthLoad(entry: MonthEntry, state: MonthLoadState, s: number, e: number) {
+  const controller = new AbortController()
+  state.inflight = controller
+  inflightLoads.add(controller)
+  const page: TimelinePageRequest = { month: entry.key, limit: e - s > PAGE_LIMIT ? LARGE_PAGE_LIMIT : PAGE_LIMIT }
+  const prev = s > 0 ? entry.items[s - 1] : undefined
+  const req: PageRequestContext = { generation: queryGeneration, epoch: state.epoch, s, keyset: !!prev }
+  if (prev) {
+    page.afterTime = prev.exif_time ?? prev.created_at
+    page.afterId = prev.id
+  } else {
+    page.offset = s
+  }
+  const key = entry.key
+  listTimelineFiles(appliedQuery, page, controller.signal)
+    .then((result) => applyPage(key, req, controller, result))
+    .catch((error) => {
+      if (axios.isCancel(error) || controller.signal.aborted || req.generation !== queryGeneration) return
+      if (isInvalidTzError(error) && fallbackTimeZone()) return
+      console.error('Failed to load timeline month:', key, error)
+      state.failedAt = Date.now()
+    })
+    .finally(() => {
+      if (state.inflight === controller) state.inflight = null
+      inflightLoads.delete(controller)
+      // 空出来的并发名额立即被用上
+      ensureVisible()
+    })
+}
+
+/** 把一页响应写进该月；顺带用 has_more 对账本月计数，并防止同一个月里出现重复的文件。 */
+function applyPage(key: string, req: PageRequestContext, controller: AbortController, page: TimelineFilesPage) {
+  if (controller.signal.aborted || req.generation !== queryGeneration) return
+  const state = loadStates.get(key)
+  if (!state || req.epoch !== state.epoch) return
+  const entry = months.value.find((m) => m.key === key)
+  if (!entry) return
+  state.failedAt = 0
+
+  const { s } = req
+  const files = page.files
+  const newCount = page.has_more ? Math.max(entry.count, s + files.length + 1) : s + files.length
+
+  // 返回的 id 已经出现在别的槽位上：请求之间服务端插入/删除了行，下标错位。
+  // keyset 段的内容由游标决定、不会错，只有起点 s 可能过时，所以它与任何一格重复都算冲突。
+  const ids = new Set(files.map((f) => f.id))
+  const scanEnd = req.keyset ? entry.items.length : Math.min(entry.items.length, newCount)
+  let conflict = false
+  for (let i = 0; i < scanEnd; i++) {
+    if (i >= s && i < s + files.length) continue
+    const f = entry.items[i]
+    if (f && ids.has(f.id)) {
+      conflict = true
+      break
+    }
+  }
+
+  // keyset 请求冲突：游标行是在服务端变化之前加载的，起点 s 按旧状态算，整段偏了插入/删除的行数。
+  // 保留它会让同月几张原有照片被跳过、计数退回旧值，所以连返回段一起丢掉：整月变成空洞，
+  // 计数不动，由 ensureVisible 用 offset 按服务端当前状态重拉（彼此一致，服务端不再变化就不会再冲突）。
+  // 服务端持续写入时每次清空都可能再遇到冲突，所以每月每次查询最多清空 MAX_KEYSET_RESETS 次，
+  // 之后退回下面“只保留本次返回段”的做法，保证每个响应都有进展。
+  if (conflict && req.keyset && state.keysetResets < MAX_KEYSET_RESETS) {
+    state.keysetResets++
+    commitMonth(key, { ...entry, items: new Array<FileInfo | undefined>(entry.count) })
+    return
+  }
+
+  // 别处的删除/新上传导致的变化
+  libraryTotal.value += newCount - entry.count
+
+  // offset 请求冲突：返回段就是服务端当前状态。不做精确对齐，整月作废只保留本次返回段，
+  // 保证同一个月里没有重复的 file.id。
+  let items: (FileInfo | undefined)[]
+  if (conflict) {
+    items = new Array<FileInfo | undefined>(newCount)
+  } else {
+    items = entry.items.slice(0, newCount)
+    items.length = newCount
+  }
+  // limit 向上取整，可能覆盖到空洞后面已加载的槽位：是同一批行，直接覆盖
+  for (let j = 0; j < files.length && s + j < newCount; j++) items[s + j] = files[j]
+  commitMonth(key, { ...entry, count: newCount, items })
+}
+
+function abortAllLoads() {
+  for (const controller of inflightLoads) controller.abort()
+  inflightLoads.clear()
+  loadStates.clear()
+}
+
+/** 本地删除后，该月在途响应的下标按删除前算，必须丢弃。 */
+function abortAndBumpEpoch(key: string) {
+  const state = getLoadState(key)
+  if (state.inflight) {
+    state.inflight.abort()
+    inflightLoads.delete(state.inflight)
+    state.inflight = null
+  }
+  state.epoch++
+}
+
+// --- 筛选、搜索与时区回退 ---
+
+function currentQuery(): TimelineQuery {
+  const query: TimelineQuery = { tz: timeZone }
+  if (searchQuery.value) query.q = searchQuery.value
+  if (selectedDevices.value.length > 0) query.devices = [...selectedDevices.value]
+  if (selectedFormats.value.length > 0) query.formats = [...selectedFormats.value]
+  if (selectedFocals.value.length > 0) query.focals = [...selectedFocals.value]
+  if (dateRange.value && dateRange.value[0] && dateRange.value[1]) {
+    query.dateFrom = dateRange.value[0]
+    query.dateTo = dateRange.value[1]
+  }
+  return query
+}
+
+/** 按当前筛选重新请求 summary，装入新的月份骨架。旧内容保留到新结果回来，不闪加载态。 */
+async function reloadTimeline() {
+  const generation = ++queryGeneration
+  summaryController?.abort()
+  abortAllLoads()
+  if (!loaded.value) {
+    loading.value = true
+    loadFailed.value = false
+  }
+  const query = currentQuery()
+  const controller = new AbortController()
+  summaryController = controller
+  try {
+    const summary = await getTimelineSummary(query, controller.signal)
+    if (generation !== queryGeneration) return
+    appliedQuery = query
+    months.value = summary.months.map((m) => ({
+      key: monthKeyOf(m.year, m.month),
+      year: m.year,
+      month: m.month,
+      count: m.count,
+      items: new Array<FileInfo | undefined>(m.count),
+    }))
+    monthsGeneration = generation
+    libraryTotal.value = summary.total_count
+    pendingScrollAdjust = 0
+    if (pendingJump) {
+      clearTimeout(pendingJump.timer)
+      pendingJump = null
+    }
+    const body = pageBodyRef.value
+    if (body) body.scrollTop = 0
+    scrollTop.value = 0
+    activeYear.value = null
+    activeMonth.value = null
+    // Auto-expand the first year as soon as the navigation is ready.
+    expandedYears.value = new Set(months.value.length > 0 ? [months.value[0].year] : [])
+    previewVisible.value = false
+    previewDemand = null
+    loading.value = false
+    loaded.value = true
+    loadFailed.value = false
+    ensureVisible()
+  } catch (error) {
+    // 被取消的 summary 不改 loading，由更新的那次请求负责收尾
+    if (generation !== queryGeneration || axios.isCancel(error)) return
+    if (isInvalidTzError(error) && fallbackTimeZone()) return
+    console.error('Failed to load timeline summary:', error)
+    ElMessage.error('加载时间线失败')
+    loading.value = false
+    if (!loaded.value) loadFailed.value = true
+  } finally {
+    if (summaryController === controller) summaryController = null
+  }
+}
+
+async function loadFacets() {
+  const seq = ++facetsSeq
+  facetsController?.abort()
+  const controller = new AbortController()
+  facetsController = controller
+  try {
+    const result = await getTimelineFacets(timeZone, controller.signal)
+    // 挂载时一次、每次删除后一次，可能并发；旧响应不能覆盖新的
+    if (seq !== facetsSeq) return
+    facets.value = result
+  } catch (error) {
+    if (seq !== facetsSeq || axios.isCancel(error)) return
+    if (isInvalidTzError(error) && fallbackTimeZone()) return
+    // 选项为空、日期全部淡化，页面仍可用
+    console.error('Failed to load timeline facets:', error)
+  } finally {
+    if (facetsController === controller) facetsController = null
+  }
+}
+
+/** 服务端不认识浏览器时区：去掉 tz 重新开始（只做一次）。返回是否已处理。 */
+function fallbackTimeZone(): boolean {
+  if (tzFallbackDone || timeZone === undefined) return false
+  console.warn('Server does not recognise browser time zone, falling back to server default:', timeZone)
+  timeZone = undefined
+  tzFallbackDone = true
+  void loadFacets()
+  void reloadTimeline()
+  return true
+}
+
+function retryLoad() {
+  if (!facets.value) void loadFacets()
+  void reloadTimeline()
+}
+
+// --- Methods ---
 function toggleYear(year: number) {
   if (expandedYears.value.has(year)) {
     expandedYears.value.delete(year)
@@ -522,29 +1100,31 @@ function toggleYear(year: number) {
   expandedYears.value = new Set(expandedYears.value)
 }
 
-function scrollToSection(year: number, month: number) {
-  activeYear.value = year
-  activeMonth.value = month
-  const key = `${year}-${month}`
-  const el = sectionRefs.value.get(key)
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+function handleFilterChange() {
+  void reloadTimeline()
+}
+
+// 搜索只在按回车时执行：每次生效服务端执行一次 summary，再加最新月份的 files 第 1 页。
+// 打字、手动删空输入框都不会触发；点输入框的清除按钮清空并立即恢复全部结果。
+
+/** 把搜索框内容（去掉首尾空白）应用为搜索词；与当前搜索词相同时不重新请求。空串即取消搜索。 */
+function applySearchNow() {
+  const q = searchInput.value.trim()
+  if (searchQuery.value !== q) {
+    searchQuery.value = q
+    handleFilterChange()
   }
 }
 
-function handleFilterChange() {
-  // Reset navigation state when any filter changes
-  activeYear.value = null
-  activeMonth.value = null
-  // Auto-expand first year if data exists
-  nextTick(() => {
-    if (timeNavData.value.length > 0) {
-      expandedYears.value = new Set([timeNavData.value[0].year])
-    }
-  })
+function handleSearchEnter(event: Event | KeyboardEvent) {
+  // 输入法组字时按回车是确认候选词，不是搜索（Safari 在 compositionend 之后才发 keydown，只能看 keyCode 229）
+  if (event instanceof KeyboardEvent && (event.isComposing || event.keyCode === 229)) return
+  applySearchNow()
 }
 
 function resetFilters() {
+  searchInput.value = ''
+  searchQuery.value = ''
   selectedDevices.value = []
   selectedFormats.value = []
   selectedFocals.value = []
@@ -552,12 +1132,26 @@ function resetFilters() {
   handleFilterChange()
 }
 
-function openPreview(group: MonthGroup, fileIndex: number) {
-  // Collect all files for preview navigation
-  previewFiles.value = group.files
-  previewIndex.value = fileIndex
+// --- 大图预览（在同一个月内翻页，跨分页边界时按需加载） ---
+function openPreview(entry: MonthEntry, index: number) {
+  previewMonthKey.value = entry.key
+  previewIndex.value = index
   previewVisible.value = true
 }
+
+function handlePreviewIndexChange(index: number) {
+  const entry = months.value.find((m) => m.key === previewMonthKey.value)
+  if (!entry) return
+  previewDemand = { monthKey: entry.key, from: Math.max(0, index - 50), to: Math.min(entry.count, index + 51) }
+  ensureVisible()
+}
+
+watch(previewVisible, (visible) => {
+  if (!visible) {
+    previewDemand = null
+    ensureVisible()
+  }
+})
 
 function formatShortDate(dateStr: string | undefined | null): string {
   if (!dateStr) return '-'
@@ -566,7 +1160,11 @@ function formatShortDate(dateStr: string | undefined | null): string {
   return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
-function showContextMenu(event: MouseEvent, file: FileInfo) {
+function onTileContextMenu(event: MouseEvent, tile: RenderedTile, monthKey: string) {
+  if (tile.file) showContextMenu(event, tile.file, monthKey)
+}
+
+function showContextMenu(event: MouseEvent, file: FileInfo, monthKey: string) {
   event.preventDefault()
   event.stopPropagation()
   contextMenu.value = {
@@ -574,12 +1172,15 @@ function showContextMenu(event: MouseEvent, file: FileInfo) {
     x: event.clientX,
     y: event.clientY,
     file,
+    monthKey,
+    generation: queryGeneration,
   }
 }
 
 function closeContextMenu() {
   contextMenu.value.visible = false
   contextMenu.value.file = null
+  contextMenu.value.monthKey = null
 }
 
 function handleContextDownload() {
@@ -591,8 +1192,10 @@ function handleContextDownload() {
 
 async function handleContextDelete() {
   const file = contextMenu.value.file
+  const key = contextMenu.value.monthKey
+  const openedGeneration = contextMenu.value.generation
   closeContextMenu()
-  if (!file) return
+  if (!file || !key) return
   try {
     await ElMessageBox.confirm(
       `确定要将文件 "${file.file_name}" 移入回收站吗？\n可在回收站中恢复，${configStore.trashRetentionDays} 天后自动彻底删除。`,
@@ -606,8 +1209,10 @@ async function handleContextDelete() {
     const result = await deleteFile(file.id)
     ElMessage.success(result.message)
     // Remove from local state so the timeline updates without a full reload
-    allFiles.value = allFiles.value.filter((f) => f.id !== file.id)
+    removeDeletedFile(file, key, openedGeneration)
     trashStore.refresh()
+    // 选项与“有照片的日期”在后台刷新
+    void loadFacets()
   } catch (error: any) {
     if (error !== 'cancel') {
       ElMessage.error('移入回收站失败')
@@ -615,52 +1220,106 @@ async function handleContextDelete() {
   }
 }
 
-let loadGeneration = 0
-
-async function loadAllFiles() {
-  const generation = ++loadGeneration
-  loading.value = true
-  allFiles.value = []
-  try {
-    // Load all files sorted by time and publish each page immediately.
-    const allLoaded: FileInfo[] = []
-    let page = 1
-    const pageSize = 200
-    let hasMore = true
-
-    while (hasMore && generation === loadGeneration) {
-      const response = await listAllFiles(page, pageSize, 'time')
-      if (generation !== loadGeneration) return
-      allLoaded.push(...response.files)
-      allFiles.value = [...allLoaded]
-      if (allLoaded.length >= response.total_files || response.files.length < pageSize) {
-        hasMore = false
-      } else {
-        page++
-      }
+/**
+ * 删除成功后从本地数据里移除这张照片。确认框打开期间该月的在途请求可能已经改写过
+ * 槽位，甚至重新查询过，所以按 id 找真正装着它的槽位；找不到就整月作废重拉，
+ * 绝不按下标猜（splice(-1, 1) 会删掉该月最后一张另一张照片）。
+ */
+function removeDeletedFile(file: FileInfo, key: string, openedGeneration: number) {
+  // 先找真正装着这张照片的月份（优先传入的 key），再退回到只按 key 找
+  const holder =
+    months.value.find((m) => m.key === key && m.items.some((f) => f?.id === file.id)) ??
+    months.value.find((m) => m.items.some((f) => f?.id === file.id))
+  // 没找到槽位时，只有“右键菜单打开后没有重新查询过”才能确定它属于 key 这个月
+  const target =
+    holder ?? (openedGeneration === queryGeneration ? months.value.find((m) => m.key === key) : undefined)
+  if (!target) {
+    // 确认框打开期间重新筛选过，且新结果里没有已加载的这张照片：
+    // 不知道它是否属于某个月，月份计数交给后续分页的对账，只调整全库计数
+    libraryTotal.value--
+  } else {
+    abortAndBumpEpoch(target.key)
+    const idx = target.items.findIndex((f) => f?.id === file.id)
+    let items: (FileInfo | undefined)[]
+    if (idx >= 0) {
+      items = target.items.slice()
+      items.splice(idx, 1)
+    } else {
+      // 照片已不在任何已加载槽位上，不知道它原来在哪：整月作废重拉，长度减 1
+      items = new Array<FileInfo | undefined>(target.count - 1)
     }
-
-    if (generation !== loadGeneration) return
-    // Auto-expand the first year as soon as the complete navigation is ready.
-    if (timeNavData.value.length > 0) {
-      expandedYears.value = new Set([timeNavData.value[0].year])
-    }
-  } catch (error) {
-    if (generation !== loadGeneration) return
-    console.error('Failed to load timeline files:', error)
-  } finally {
-    if (generation === loadGeneration) loading.value = false
+    commitMonth(target.key, { ...target, count: target.count - 1, items }) // 为 0 则移除该月
+    libraryTotal.value--
   }
+  ensureVisible()
 }
 
 // --- Lifecycle ---
+let resizeObserver: ResizeObserver | null = null
+
+function handleUserTakeover() {
+  if (pendingJump) clearPendingJump()
+}
+
 onMounted(() => {
   configStore.ensureLoaded()
-  void loadAllFiles()
+  loading.value = true
+  const body = pageBodyRef.value!
+  const style = getComputedStyle(body)
+  // 两者定义在 :root，会继承下来
+  tileMin.value = Number.parseFloat(style.getPropertyValue('--pv-tile-min')) || 180
+  gridGap.value = Number.parseFloat(style.getPropertyValue('--pv-gap')) || 12
+  bodyPaddingBottom.value = Number.parseFloat(style.paddingBottom) || 0
+  measureHeaderBlock()
+
+  // 宽度和视口高度都取自常驻的 .pv-page-body（它不在 v-if 里）
+  resizeObserver = new ResizeObserver(([entry]) => {
+    const oldCols = layout.value.cols
+    const anchor = captureAnchor()
+    // 视口高度不超过窗口高度：滚动容器没有被限高时（例如测试夹具），底部垫高不会反过来把它越撑越高
+    viewportHeight.value = Math.min(body.clientHeight, window.innerHeight)
+    // .photos-content 是 pageBody 的块级子元素、没有外边距，宽度 = pageBody 内容盒宽度（不含内边距和滚动条）。
+    // contentRect.width 是小数宽度，与 CSS grid 的轨道宽度一致。
+    contentWidth.value = entry.contentRect.width
+    measureHeaderBlock()
+    if (anchor && layout.value.cols !== oldCols) {
+      void nextTick(() => restoreAnchor(anchor))
+    }
+    ensureVisible()
+  })
+  resizeObserver.observe(body)
+  body.addEventListener('scroll', handleScroll, { passive: true })
+  for (const name of JUMP_CANCEL_EVENTS) body.addEventListener(name, handleUserTakeover, { passive: true })
+
+  // 开发构建下把布局挂到 window 上供 Playwright 读取；生产构建里整段被去掉
+  if (import.meta.env.DEV) {
+    Object.defineProperty(window, '__pvTimelineLayout', { get: () => layout.value, configurable: true })
+  }
+
+  void loadFacets()
+  void reloadTimeline()
 })
 
 onBeforeUnmount(() => {
-  loadGeneration++
+  queryGeneration++
+  facetsSeq++
+  summaryController?.abort()
+  facetsController?.abort()
+  abortAllLoads()
+  if (ensureTimer !== null) clearTimeout(ensureTimer)
+  if (retryTimer !== null) clearTimeout(retryTimer)
+  if (pendingJump) clearTimeout(pendingJump.timer)
+  pendingJump = null
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
+  resizeObserver?.disconnect()
+  const body = pageBodyRef.value
+  if (body) {
+    body.removeEventListener('scroll', handleScroll)
+    for (const name of JUMP_CANCEL_EVENTS) body.removeEventListener(name, handleUserTakeover)
+  }
+  if (import.meta.env.DEV) {
+    delete (window as unknown as Record<string, unknown>).__pvTimelineLayout
+  }
 })
 </script>
 
@@ -802,10 +1461,21 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-/* Filters：宽度取到「1400px 视口下标题栏仍是一行」的上限，
-   更窄的窗口再靠 flex-wrap 换行降级。 */
+/* Filters：加上文件名搜索框后，约 1600px 以上视口标题栏仍是一行，
+   更窄的窗口靠 flex-wrap 换行降级。 */
 .filter-select {
   width: 140px;
+}
+
+/* 文件名搜索框：固定宽度，避免 el-input 在 flex 容器里被拉伸。 */
+.filename-search {
+  flex: 0 0 auto;
+  width: 200px;
+}
+
+/* 有搜索词时和其它筛选器一样加品牌红描边 */
+.filename-search.is-active :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
 }
 
 /* Brand-red selected tags inside the filter dropdowns */
@@ -832,7 +1502,7 @@ onBeforeUnmount(() => {
 }
 
 /* 日期区间控件：Element 的 .el-input__wrapper 带 flex-grow:1，在标题栏的
-   flex 容器里会被拉满整行，这里固定宽度让四个筛选器排成一行。 */
+   flex 容器里会被拉满整行，这里固定宽度，宽屏下搜索框和各筛选器排成一行。 */
 .date-filter {
   flex: 0 0 auto;
   width: 280px;
@@ -881,15 +1551,44 @@ onBeforeUnmount(() => {
   border-radius: 12px;
 }
 
-/* Photo groups */
+/* Photo groups：窗口化渲染，区块和网格都绝对定位，位置由 timelineLayout 算出；
+   .photos-content 的高度（含底部垫高）由内联样式给出。 */
 .photos-content {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  position: relative;
 }
 
 .photo-group {
-  scroll-margin-top: var(--pv-page-gutter);
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.photo-group .pv-photo-grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+/* 未加载位置的占位瓦片：浅灰底，没有悬停描边 */
+.pv-tile.is-placeholder {
+  cursor: default;
+  background: var(--el-fill-color-light);
+}
+
+.pv-tile.is-placeholder:hover {
+  border-color: var(--pv-divider-color);
+  box-shadow: none;
+}
+
+/* 测量分组标题高度的探针：.pv-page-body 是 position: relative，左右各缩进一个
+   gutter 后与内容区等宽 */
+.header-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: var(--pv-page-gutter);
+  right: var(--pv-page-gutter);
 }
 
 .group-header {

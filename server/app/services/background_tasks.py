@@ -4,6 +4,7 @@ Provides periodic background tasks that run during the application lifecycle:
 - Expired upload session cleanup (every 6 hours)
 - Disk space monitoring (every hour)
 - Statistics metadata backfill (every hour, ``metadata_backfill``)
+- File name search key backfill (every hour, ``filename_key_backfill``)
 - File version maintenance (every 6 hours, ``cleanup_expired_versions``) and
   holding the server presence lock (``hold_server_presence``)
 
@@ -681,7 +682,9 @@ async def start_background_tasks() -> list[asyncio.Task]:
     Returns:
         List of asyncio.Task objects that should be cancelled on shutdown.
     """
-    # Imported here: metadata_backfill imports _database_ready from this module.
+    # Imported here: metadata_backfill and filename_key_backfill import
+    # _database_ready from this module.
+    from app.services.filename_key_backfill import filename_key_backfill_task
     from app.services.metadata_backfill import metadata_backfill_task
 
     tasks = [
@@ -708,6 +711,10 @@ async def start_background_tasks() -> list[asyncio.Task]:
         asyncio.create_task(
             metadata_backfill_task(),
             name="metadata_backfill",
+        ),
+        asyncio.create_task(
+            filename_key_backfill_task(),
+            name="filename_key_backfill",
         ),
         asyncio.create_task(
             cleanup_expired_versions_task(),

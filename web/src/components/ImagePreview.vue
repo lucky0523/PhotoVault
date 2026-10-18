@@ -18,8 +18,9 @@
 
       <!-- Main image / video -->
       <div class="lightbox-content">
+        <!-- currentFile 为空：时间线里这一张还没加载到，只显示下面的加载转圈 -->
         <video
-          v-if="isVideo"
+          v-if="currentFile && isVideo"
           :key="currentFile?.id"
           :src="currentVideoUrl"
           class="lightbox-video"
@@ -28,7 +29,7 @@
           playsinline
           @loadeddata="onImageLoad"
         />
-        <template v-else>
+        <template v-else-if="currentFile">
           <img
             :src="currentImageUrl"
             :alt="currentFile?.file_name"
@@ -78,7 +79,7 @@
 
       <!-- Bottom toolbar -->
       <div class="lightbox-toolbar">
-        <span class="lightbox-filename">{{ currentFile?.file_name }}</span>
+        <span v-if="currentFile" class="lightbox-filename">{{ currentFile.file_name }}</span>
         <span class="lightbox-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
         <div class="lightbox-actions">
           <el-button
@@ -100,6 +101,7 @@
             title="缩小"
           />
           <el-button
+            v-if="currentFile"
             type="primary"
             :icon="Download"
             circle
@@ -122,12 +124,15 @@ import type { FileInfo } from '@/api/files'
 
 const props = defineProps<{
   visible: boolean
-  files: FileInfo[]
+  // 时间线传入的是本月的稀疏数组：长度是本月总数，未加载的位置为 undefined
+  files: ReadonlyArray<FileInfo | undefined>
   initialIndex: number
 }>()
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void
+  // 打开时和每次翻页后发出，时间线据此按需加载当前位置附近的数据
+  (e: 'index-change', index: number): void
 }>()
 
 const currentIndex = ref(0)
@@ -192,10 +197,25 @@ watch(
       loading.value = true
       motionPlaying.value = false
       document.body.style.overflow = 'hidden'
+      emit('index-change', currentIndex.value)
     } else {
       motionPlaying.value = false
       document.body.style.overflow = ''
     }
+  }
+)
+
+watch(currentIndex, (index) => {
+  if (props.visible) emit('index-change', index)
+})
+
+// 预览打开期间 files 变短（时间线对账）：越界就退到最后一张，空了就关闭
+watch(
+  () => props.files.length,
+  (len) => {
+    if (!props.visible) return
+    if (len === 0) close()
+    else if (currentIndex.value > len - 1) currentIndex.value = len - 1
   }
 )
 
@@ -242,9 +262,9 @@ function onImageLoad() {
 }
 
 function handleDownload() {
-  if (currentFile.value) {
-    downloadFile(currentFile.value.id, currentFile.value.file_name)
-  }
+  const file = currentFile.value
+  if (!file) return
+  downloadFile(file.id, file.file_name)
 }
 
 function handleKeydown(e: KeyboardEvent) {

@@ -207,6 +207,8 @@ class TestFileRecordsSchema:
                 "meta_version",
                 "meta_status",
                 "meta_scanned_at",
+                "file_name_key",
+                "file_ext",
             ]
             assert col_names == expected
 
@@ -315,7 +317,7 @@ class TestMediaMetadataMigration:
             upgraded = tuple(rows[0])
             # Legacy columns keep their values; the new ones are all NULL.
             assert upgraded[: len(legacy_row)] == legacy_row
-            assert upgraded[len(legacy_row):] == (None,) * len(_MEDIA_METADATA_COLUMNS)
+            assert upgraded[len(legacy_row):] == (None,) * (len(_MEDIA_METADATA_COLUMNS) + 2)
 
     async def test_file_records_user_id_not_null(self, db_path):
         await init_db(db_path)

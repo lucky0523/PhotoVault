@@ -286,9 +286,10 @@ class TestBackgroundTaskLifecycle:
             mock_settings.return_value.database_url = "/tmp/test.db"
 
             tasks = await start_background_tasks()
-            assert len(tasks) == 8
+            assert len(tasks) == 9
             names = {t.get_name() for t in tasks}
             assert "metadata_backfill" in names
+            assert "filename_key_backfill" in names
             assert {"cleanup_expired_versions", "hold_server_presence"} <= names
             assert all(not t.done() for t in tasks)
 

@@ -205,3 +205,152 @@ photovault://connect?v=1&public=https%3A%2F%2Fphotos.example.com%3A8443&lan=http
 
 - 客户端遇到不认识的 `status` 时应当继续调用 `/backup/init`，以 `/backup/init` 返回的 `is_duplicate` 为准。
 - `replaced` 是新增字段，旧客户端忽略它即可（Android 用 Gson，未知字段不报错）。旧客户端按 check → init → 分块 → complete 的顺序调用时，得到的结果与新客户端完全相同。
+
+---
+
+# 时间线浏览接口（Web）
+
+服务端实现：`server/app/api/files.py`（参数、响应模型），查询在 `server/app/services/timeline_service.py`，文件名搜索规则在 `server/app/services/filename_search.py`。
+
+## 1. 适用范围
+
+- Web 时间线专用：`GET /api/v1/files/timeline/facets`、`/summary`、`/files`，都需要 `Authorization: Bearer <access_token>`。
+- 只返回当前用户、未进回收站（`deleted_at` 为空）、未彻底删除（`purged_at` 为空）的文件，与 `/api/v1/files/all` 的范围相同。
+- 只统计和列出“有日期”的文件：`COALESCE(exif_time, created_at)` 换算后的本地时间在 `1000-01-01` 到 `9998-12-31` 之间（换算规则见第 6 节）。没有可解析时间的文件不出现在任何计数、列表和日期里。
+- `/api/v1/files/all` 保持不变，作为公开接口继续可用（见第 10 节）。
+
+## 2. 公共参数
+
+`summary` 与 `files` 共用下表全部参数；`facets` 只接受 `tz`。多值参数用重复键发送，例如 `device=A&device=B`。
+
+| 参数 | 类型 / 约束 | 必填 | 说明 |
+|---|---|---|---|
+| `tz` | string，≤ 64，IANA 时区名 | 否 | 浏览器时区（`Intl.DateTimeFormat().resolvedOptions().timeZone`）。缺省时用服务端默认时区（配置 > `TZ` 环境变量 > 服务器偏移） |
+| `q` | string，≤ 200 | 否 | 文件名模糊搜索（第 7 节）；全是空白等于不搜索 |
+| `device` | 重复键，≤ 50 个，单值不限长度 | 否 | 设备名，精确匹配 `device_name` |
+| `format` | 重复键，≤ 50 个，单值不限长度 | 否 | 文件格式，按原样比较（取值由 `facets.formats` 给出，见第 8 节） |
+| `focal` | 重复键，取值 `ultrawide` / `wide` / `standard` / `tele` / `supertele` / `unknown` | 否 | 焦段桶（第 8 节） |
+| `date_from` / `date_to` | `YYYY-MM-DD`，两者要么都给、要么都不给 | 否 | 本地日期区间，含两端；`date_from > date_to` 不报错，结果为空 |
+
+各筛选之间取交集；同一参数的多个值之间取并集。
+
+## 3. `GET /api/v1/files/timeline/facets`
+
+该用户全部可显示文件的筛选选项，与筛选参数无关。
+
+```json
+{
+  "tz": "Asia/Shanghai",
+  "devices": ["Pixel 8 Pro", "iPhone 15 Pro"],
+  "formats": ["HEIC", "JPG", "MP4"],
+  "focal_buckets": ["wide", "standard", "unknown"],
+  "photo_dates": ["2018-01-02", "2018-01-05"]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `tz` | 实际使用的时区名 |
+| `devices` | 非空的 `device_name` 去重 |
+| `formats` | 非空的扩展名去重（大写） |
+| `focal_buckets` | 出现过的焦段桶，按 `ultrawide, wide, standard, tele, supertele, unknown` 的顺序 |
+| `photo_dates` | 有照片的本地日期，升序 |
+
+## 4. `GET /api/v1/files/timeline/summary`
+
+按当前筛选统计每个本地月份的张数。
+
+```json
+{
+  "tz": "Asia/Shanghai",
+  "total_count": 50000,
+  "filtered_count": 1234,
+  "months": [ { "year": 2025, "month": 12, "count": 37 }, { "year": 2025, "month": 11, "count": 2 } ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `total_count` | 不考虑筛选时的可显示文件总数 |
+| `filtered_count` | 筛选后的张数，等于 `months` 各项 `count` 之和；没有筛选时等于 `total_count` |
+| `months` | 筛选后至少有 1 张的本地月份，年月倒序 |
+
+## 5. `GET /api/v1/files/timeline/files`
+
+某个本地月份内、满足筛选的一页文件。除第 2 节的参数外：
+
+| 参数 | 约束 | 说明 |
+|---|---|---|
+| `month` | 必填，`YYYY-MM`，年份 1000～9998 | 本地月份 |
+| `limit` | 1～500，默认 200 | 每页条数 |
+| `offset` | 0～1,000,000，默认 0 | 月份内偏移 |
+| `after_time` + `after_id` | `after_time` ≤ 64 字符，`after_id` ≥ 1；两者要么都给、要么都不给；不能与 `offset > 0` 同时使用 | keyset 游标：上一页最后一行的 `exif_time ?? created_at` 原值和 `id` |
+
+```json
+{ "month": "2025-12", "files": [ { "id": 1, "file_name": "IMG_0001.JPG", "...": "..." } ], "has_more": true }
+```
+
+- `files` 的元素与 `/api/v1/files/all` 的文件项字段完全相同（`id`、`file_name`、`file_size`、`mime_type`、`exif_time`、`media_type`、`is_motion_photo`、`is_ultra_hdr`、`created_at`、`thumbnail_url`、`device_name`、`focal_length`）。
+- 顺序：`COALESCE(exif_time, created_at)` 倒序，相同时 `id` 倒序。
+- `has_more`：本月在这一页之后还有文件。
+
+分页：
+
+- 向下续页用 keyset：`after_time = 最后一行.exif_time ?? 最后一行.created_at`（注意是“为 null 时取后者”，不是“为假值时”），`after_id = 最后一行.id`。每页的代价与游标在月份里的深度无关。
+- 跳到月份中间、向上补洞用月份内 `offset`，代价随 `offset` 增长，上限是该月的张数。
+- 两次请求之间有文件写入或删除时，`offset` 分页可能错位（重复或遗漏），客户端应按 `id` 去重；keyset 不受影响。
+
+## 6. 本地时间换算
+
+时间取 `COALESCE(exif_time, created_at)`，换算规则与浏览器 `new Date(normalizeTimestamp(s))` 一致：
+
+| 原值格式 | 处理 |
+|---|---|
+| `YYYY-MM-DD HH:MM:SS`（可带小数秒，SQLite `created_at` 的格式） | 当作 UTC，换算到 `tz` |
+| `YYYY-MM-DD`（纯日期） | 当作 UTC 零点，换算到 `tz` |
+| 含 `Z`/`z`，或以 `±HH:MM` 结尾 | 当作绝对时刻，换算到 `tz` |
+| 其他（如 Android 的 `YYYY-MM-DDTHH:MM:SS`） | 当作拍摄地墙上时间，不换算 |
+
+- 夏令时按 `tz` 的历史规则逐时刻换算。
+- 已知差异：以 `±HHMM`（无冒号）结尾的值、`2024/05/01 12:00` 这类非 ISO 格式，浏览器能解析，服务端视为无日期。PhotoVault 自己的客户端不会写出这些格式。
+- `exif_time` 为空字符串的行视为无日期（不会退回 `created_at`）。
+- `tz` 不被服务端识别（服务端 tzdata 比浏览器旧）时返回 `invalid_tz`，客户端可以去掉 `tz` 重试一次，这时按服务端默认时区换算，月份归属可能与浏览器显示差几个小时。
+
+## 7. 文件名模糊搜索
+
+1. 查询和文件名都做 NFKC 归一化并转小写（全角字母数字折成半角，大小写不敏感）。
+2. 查询按空白拆成多个关键词，全部命中才算命中（AND）。空白的定义与 JavaScript 正则 `\s` 相同。
+3. 比较时两边都忽略分隔符 `_`、`-`、`.`、`(`、`)` 和空白：`img12`、`img-12`、`img 12`、`ＩＭＧ_１２` 都命中 `IMG_1234.JPG`。
+4. 只由分隔符组成的关键词（例如单独一个 `_`）按原样做子串匹配，只命中包含它的文件名。
+5. 子串比较按字面进行，`%`、`_`、`*`、`?` 没有通配含义。
+
+## 8. 格式与焦段
+
+- 格式：文件名最后一个 `.` 之后的部分转大写；没有 `.` 或以 `.` 结尾的文件没有格式，不会被任何格式筛选命中，也不出现在 `formats` 里。
+- 焦段桶（`focal_length`，单位 mm）：
+
+| key | 范围 |
+|---|---|
+| `ultrawide` | 0 < f ≤ 20 |
+| `wide` | 20 < f ≤ 35 |
+| `standard` | 35 < f ≤ 70 |
+| `tele` | 70 < f ≤ 135 |
+| `supertele` | f > 135 |
+| `unknown` | 为空或 ≤ 0 |
+
+## 9. 错误
+
+| 状态码 | `detail` | 含义 |
+|---|---|---|
+| 422 | `{"code": "invalid_tz", "message": "无效的时区: <tz>"}` | `tz` 不是可识别的 IANA 时区名 |
+| 422 | `{"code": "invalid_month", "message": ...}` | `month` 年份不在 1000～9998 |
+| 422 | `{"code": "invalid_cursor", "message": ...}` | `after_time` / `after_id` 只给了一个，或与 `offset > 0` 同时使用 |
+| 422 | `{"code": "invalid_date_range", "message": ...}` | `date_from` / `date_to` 只给了一个 |
+| 422 | `{"code": "too_many_values", "message": ...}` | `device` 或 `format` 超过 50 个 |
+| 422 | FastAPI 校验错误（`detail` 为列表） | `month` 格式错、`limit` / `offset` 越界、`focal` 取值非法、日期格式错、`q` 超过 200 字符、`tz` / `after_time` 超过 64 字符 |
+| 500 | `"时间线查询失败，请稍后重试"` | 数据库错误，可稍后重试 |
+
+## 10. 兼容说明
+
+- `/api/v1/files/all` 的参数、响应、排序都没有变化，Web 时间线不再使用它。
+- 本组接口是新增的，Android / iOS 客户端不调用，不受影响。

@@ -3,6 +3,10 @@
 Endpoints:
 - GET /api/v1/files/browse
 - GET /api/v1/files/list
+- GET /api/v1/files/all
+- GET /api/v1/files/timeline/facets   (Web timeline: options + photo dates)
+- GET /api/v1/files/timeline/summary  (Web timeline: per-month counts)
+- GET /api/v1/files/timeline/files    (Web timeline: one page of a local month)
 - GET /api/v1/files/thumbnail/{file_id}
 - GET /api/v1/files/download/{file_id}
 - DELETE /api/v1/files/{file_id}
@@ -11,8 +15,11 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import List, Optional
+import sqlite3
+from datetime import date, datetime, timezone
+from typing import List, Literal, Optional
 from urllib.parse import quote
 
 import aiosqlite
@@ -24,7 +31,15 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_user_or_query_token
 from app.models.auth import UserInfo
-from app.services.file_browse_service import FileBrowseService
+from app.services.file_browse_service import FileBrowseInfo, FileBrowseService
+from app.services.filename_search import parse_search_query
+from app.services.stats_buckets import ResolvedTz, is_valid_tz_name, utc_offset_intervals
+from app.services.timeline_service import (
+    TimelineCursor,
+    TimelineFilters,
+    TimelineService,
+    resolve_timeline_tz,
+)
 
 logger = logging.getLogger("photovault.api.files")
 
@@ -180,6 +195,114 @@ class StatusSyncResponse(BaseModel):
     """Response for client status sync."""
 
     items: List[StatusSyncItem]
+
+
+class TimelineFacetsResponse(BaseModel):
+    """Library-wide timeline filter options (independent of the filters)."""
+
+    tz: str
+    devices: List[str]
+    formats: List[str]
+    focal_buckets: List[str]
+    photo_dates: List[str]
+
+
+class TimelineMonthResponse(BaseModel):
+    """Filtered file count of one browser-local month."""
+
+    year: int
+    month: int
+    count: int
+
+
+class TimelineSummaryResponse(BaseModel):
+    """Timeline counts: library total, filtered total, filtered months (newest first)."""
+
+    tz: str
+    total_count: int
+    filtered_count: int
+    months: List[TimelineMonthResponse]
+
+
+class TimelineFilesResponse(BaseModel):
+    """One page of a browser-local month."""
+
+    month: str
+    files: List[FileInfoResponse]
+    has_more: bool
+
+
+# ---------------------------------------------------------------------------
+# Timeline parameters
+# ---------------------------------------------------------------------------
+
+_TIMELINE_MAX_VALUES = 50
+_TIMELINE_QUERY_FAILED = "时间线查询失败，请稍后重试"
+
+FocalBucket = Literal["ultrawide", "wide", "standard", "tele", "supertele", "unknown"]
+
+
+def _timeline_422(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": code, "message": message})
+
+
+def timeline_tz_param(
+    tz: Optional[str] = Query(None, max_length=64, description="Browser IANA time zone"),
+) -> Optional[str]:
+    """Reject a non-IANA ``tz`` with 422 ``invalid_tz`` (same as ``/stats/media``)."""
+    if tz is not None and not is_valid_tz_name(tz):
+        raise _timeline_422("invalid_tz", f"无效的时区: {tz}")
+    return tz
+
+
+def timeline_filter_params(
+    q: Optional[str] = Query(None, max_length=200, description="File name fuzzy search"),
+    device_: List[str] = Query(default=[], alias="device", description="Repeated key"),
+    format_: List[str] = Query(default=[], alias="format", description="Repeated key"),
+    focal: List[FocalBucket] = Query(default=[], description="Repeated key"),
+    date_from: Optional[date] = Query(None, description="Local date, inclusive"),
+    date_to: Optional[date] = Query(None, description="Local date, inclusive"),
+) -> TimelineFilters:
+    """Timeline filters shared by ``summary`` and ``files``."""
+    if len(device_) > _TIMELINE_MAX_VALUES or len(format_) > _TIMELINE_MAX_VALUES:
+        raise _timeline_422(
+            "too_many_values", f"device / format 最多各 {_TIMELINE_MAX_VALUES} 个"
+        )
+    if (date_from is None) != (date_to is None):
+        raise _timeline_422("invalid_date_range", "date_from 与 date_to 必须同时提供")
+    return TimelineFilters(
+        keywords=tuple(parse_search_query(q)),
+        devices=tuple(device_),
+        formats=tuple(format_),
+        focals=tuple(dict.fromkeys(focal)),
+        date_from=date_from.isoformat() if date_from is not None else None,
+        date_to=date_to.isoformat() if date_to is not None else None,
+    )
+
+
+async def _timeline_tz(tz: Optional[str]) -> tuple[ResolvedTz, tuple[tuple[str, str], ...]]:
+    rtz = resolve_timeline_tz(tz, get_settings())
+    last_year = datetime.now(timezone.utc).year + 1
+    intervals = await asyncio.to_thread(utc_offset_intervals, rtz, last_year)
+    return rtz, intervals
+
+
+def _file_info_response(f: FileBrowseInfo) -> FileInfoResponse:
+    """Same fields as the ``/files/all`` items."""
+    return FileInfoResponse(
+        id=f.id,
+        file_name=f.file_name,
+        file_size=f.file_size,
+        mime_type=f.mime_type,
+        exif_time=f.exif_time,
+        media_type=f.media_type,
+        is_motion_photo=f.is_motion_photo,
+        is_ultra_hdr=f.is_ultra_hdr,
+        created_at=f.created_at,
+        thumbnail_url=f"/api/v1/files/thumbnail/{f.id}",
+        device_name=f.device_name,
+        focal_length=f.focal_length,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +541,121 @@ async def list_all_files(
         total_files=listing.total_files,
         page=listing.page,
         page_size=listing.page_size,
+    )
+
+
+@router.get("/files/timeline/facets", response_model=TimelineFacetsResponse)
+async def get_timeline_facets(
+    tz: Optional[str] = Depends(timeline_tz_param),
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> TimelineFacetsResponse:
+    """Web timeline: device / format / focal options and the dates with photos.
+
+    Covers all of the user's active files, independent of any filter.
+    """
+    rtz, intervals = await _timeline_tz(tz)
+    try:
+        facets = await TimelineService(db).facets(current_user.id, intervals)
+    except (aiosqlite.Error, sqlite3.Error):
+        logger.error(
+            "Timeline query failed user_id=%s endpoint=facets",
+            current_user.id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=_TIMELINE_QUERY_FAILED)
+    return TimelineFacetsResponse(
+        tz=rtz.name,
+        devices=facets.devices,
+        formats=facets.formats,
+        focal_buckets=facets.focal_buckets,
+        photo_dates=facets.photo_dates,
+    )
+
+
+@router.get("/files/timeline/summary", response_model=TimelineSummaryResponse)
+async def get_timeline_summary(
+    tz: Optional[str] = Depends(timeline_tz_param),
+    filters: TimelineFilters = Depends(timeline_filter_params),
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> TimelineSummaryResponse:
+    """Web timeline: library total, filtered total and filtered per-month counts."""
+    rtz, intervals = await _timeline_tz(tz)
+    try:
+        summary = await TimelineService(db).summary(current_user.id, filters, intervals)
+    except (aiosqlite.Error, sqlite3.Error):
+        logger.error(
+            "Timeline query failed user_id=%s endpoint=summary",
+            current_user.id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=_TIMELINE_QUERY_FAILED)
+    return TimelineSummaryResponse(
+        tz=rtz.name,
+        total_count=summary.total_count,
+        filtered_count=summary.filtered_count,
+        months=[
+            TimelineMonthResponse(year=m.year, month=m.month, count=m.count)
+            for m in summary.months
+        ],
+    )
+
+
+@router.get("/files/timeline/files", response_model=TimelineFilesResponse)
+async def list_timeline_files(
+    month: str = Query(
+        ..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Local month YYYY-MM"
+    ),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=1_000_000, description="In-month offset"),
+    after_time: Optional[str] = Query(
+        None, max_length=64, description="Keyset: exif_time ?? created_at of the last row"
+    ),
+    after_id: Optional[int] = Query(None, ge=1, description="Keyset: id of the last row"),
+    tz: Optional[str] = Depends(timeline_tz_param),
+    filters: TimelineFilters = Depends(timeline_filter_params),
+    current_user: UserInfo = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> TimelineFilesResponse:
+    """Web timeline: one page of a browser-local month, newest first.
+
+    Continue downwards with the keyset cursor (``after_time`` + ``after_id``);
+    jump into a month with ``offset``. The two are mutually exclusive.
+    """
+    year, mon = int(month[:4]), int(month[5:7])
+    if not 1000 <= year <= 9998:
+        raise _timeline_422("invalid_month", f"月份超出范围: {month}")
+    if (after_time is None) != (after_id is None):
+        raise _timeline_422("invalid_cursor", "after_time 与 after_id 必须同时提供")
+    if after_time is not None and offset > 0:
+        raise _timeline_422("invalid_cursor", "游标与 offset 不能同时使用")
+    after = TimelineCursor(after_time, after_id) if after_time is not None else None
+
+    _rtz, intervals = await _timeline_tz(tz)
+    try:
+        files, has_more = await TimelineService(db).list_month(
+            current_user.id,
+            filters,
+            intervals,
+            year,
+            mon,
+            offset=offset,
+            after=after,
+            limit=limit,
+        )
+    except (aiosqlite.Error, sqlite3.Error):
+        logger.error(
+            "Timeline query failed user_id=%s endpoint=files month=%s",
+            current_user.id,
+            month,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=_TIMELINE_QUERY_FAILED)
+    return TimelineFilesResponse(
+        month=month,
+        files=[_file_info_response(f) for f in files],
+        has_more=has_more,
     )
 
 

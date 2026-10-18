@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS file_records (
     meta_version INTEGER,
     meta_status TEXT,
     meta_scanned_at TIMESTAMP,
+    file_name_key TEXT,
+    file_ext TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (reference_to) REFERENCES file_records(id),
     UNIQUE(user_id, file_hash, file_path)
@@ -271,6 +273,36 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_file_version_journal_path ON file_version_journal(final_path);",
     "CREATE INDEX IF NOT EXISTS idx_file_version_journal_record ON file_version_journal(file_record_id);",
     "CREATE INDEX IF NOT EXISTS idx_file_records_reference_to ON file_records(reference_to);",
+    # Web timeline ordering (app.services.timeline_service). The third WHERE term
+    # isolates the index: no other query compares COALESCE(exif_time, created_at),
+    # so SQLite can never pick it for an existing query and their plans stay put.
+    "CREATE INDEX IF NOT EXISTS idx_file_records_timeline "
+    "ON file_records(user_id, COALESCE(exif_time, created_at) DESC, id DESC) "
+    "WHERE deleted_at IS NULL AND purged_at IS NULL "
+    "AND COALESCE(exif_time, created_at) IS NOT NULL;",
+]
+
+# File-name derived search columns on file_records (app.services.filename_search),
+# in schema order. Written by the upload paths and the filename_key_backfill task.
+_SEARCH_DERIVED_COLUMNS = [
+    ("file_name_key", "TEXT"),
+    ("file_ext", "TEXT"),
+]
+
+# A rename that does not also write the derived columns invalidates them (NULL),
+# so they are never stale-but-non-NULL; queries fall back to computing them.
+_CREATE_TRIGGERS = [
+    """
+CREATE TRIGGER IF NOT EXISTS trg_file_records_name_derived_stale
+AFTER UPDATE OF file_name ON file_records
+FOR EACH ROW
+WHEN NEW.file_name IS NOT OLD.file_name
+ AND NEW.file_name_key IS OLD.file_name_key
+ AND NEW.file_ext IS OLD.file_ext
+BEGIN
+  UPDATE file_records SET file_name_key = NULL, file_ext = NULL WHERE id = NEW.id;
+END;
+""",
 ]
 
 # Media statistics metadata columns on file_records, in schema order. Written
@@ -361,6 +393,14 @@ async def init_db(db_path: str) -> None:
                     f"ALTER TABLE file_records ADD COLUMN {col_name} {col_type};"
                 )
 
+        # File-name search keys. No per-row backfill here: the background
+        # filename_key_backfill task fills them so startup is never blocked.
+        for col_name, col_type in _SEARCH_DERIVED_COLUMNS:
+            if col_name not in existing_cols:
+                await db.execute(
+                    f"ALTER TABLE file_records ADD COLUMN {col_name} {col_type};"
+                )
+
         cursor = await db.execute("PRAGMA table_info(upload_sessions)")
         session_cols = {row[1] for row in await cursor.fetchall()}
         if "exif_time" not in session_cols:
@@ -379,6 +419,9 @@ async def init_db(db_path: str) -> None:
         # Create indexes
         for index_sql in _CREATE_INDEXES:
             await db.execute(index_sql)
+
+        for trigger_sql in _CREATE_TRIGGERS:
+            await db.execute(trigger_sql)
 
         await db.commit()
 
