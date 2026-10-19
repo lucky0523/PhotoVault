@@ -231,8 +231,18 @@ photovault://connect?v=1&public=https%3A%2F%2Fphotos.example.com%3A8443&lan=http
 | `format` | 重复键，≤ 50 个，单值不限长度 | 否 | 文件格式，按原样比较（取值由 `facets.formats` 给出，见第 8 节） |
 | `focal` | 重复键，取值 `ultrawide` / `wide` / `standard` / `tele` / `supertele` / `unknown` | 否 | 焦段桶（第 8 节） |
 | `date_from` / `date_to` | `YYYY-MM-DD`，两者要么都给、要么都不给 | 否 | 本地日期区间，含两端；`date_from > date_to` 不报错，结果为空 |
+| `path` | string，≤ 1024（去掉首尾 `/` 后） | 否 | 虚拟目录，与数据统计的 `path` 相同；缺省或空串 = 全部文件（含自定义路径） |
+| `recursive` | bool，默认 `true` | 否 | 是否包含子目录；`false` 时只含该目录的直接文件。`path` 为空时忽略 |
+| `capture_date` | `YYYY-MM-DD` | 否 | 拍摄日期，按数据统计的口径筛选（见下方说明），与 `date_from` / `date_to` 互不影响 |
 
 各筛选之间取交集；同一参数的多个值之间取并集。
+
+`capture_date` 的口径与 `GET /api/v1/stats/media` 的 `overview.daily` 完全一致，与第 6 节的时间线口径不同：
+
+- 时间取 `capture_time`：`capture_time_kind = 'local'` 原样使用；`'utc'` 换算到数据统计的时区，优先级为 配置 `default_timezone` > 请求 `tz` > `TZ` 环境变量 > 服务器偏移。
+- 只含照片和视频；排除引用记录（`is_reference`）和路径含 `/.trash/` 的文件；没有拍摄时间、格式无效或年份不在 1900～当前年份+1 的文件不会命中任何日期。
+- 只影响哪些文件被选中。命中的文件仍按第 6 节的时间线口径归入月份（`months`、`files` 的 `month`）。
+- 同一目录范围和 `tz` 下，`capture_date=D` 时 `filtered_count` 等于 `overview.daily.days[D]`。
 
 ## 3. `GET /api/v1/files/timeline/facets`
 
@@ -347,10 +357,43 @@ photovault://connect?v=1&public=https%3A%2F%2Fphotos.example.com%3A8443&lan=http
 | 422 | `{"code": "invalid_cursor", "message": ...}` | `after_time` / `after_id` 只给了一个，或与 `offset > 0` 同时使用 |
 | 422 | `{"code": "invalid_date_range", "message": ...}` | `date_from` / `date_to` 只给了一个 |
 | 422 | `{"code": "too_many_values", "message": ...}` | `device` 或 `format` 超过 50 个 |
-| 422 | FastAPI 校验错误（`detail` 为列表） | `month` 格式错、`limit` / `offset` 越界、`focal` 取值非法、日期格式错、`q` 超过 200 字符、`tz` / `after_time` 超过 64 字符 |
+| 422 | `{"code": "invalid_path", "message": "路径过长" / "路径包含非法字符" / "路径格式无效"}` | `path` 超过 1024 字符、含 NUL 或 `\`、或含空段 / `.` / `..` |
+| 422 | FastAPI 校验错误（`detail` 为列表） | `month` 格式错、`limit` / `offset` 越界、`focal` 取值非法、日期格式错（含 `capture_date`）、`recursive` 不是布尔值、`q` 超过 200 字符、`path` 超过 1100 字符、`tz` / `after_time` 超过 64 字符 |
 | 500 | `"时间线查询失败，请稍后重试"` | 数据库错误，可稍后重试 |
 
 ## 10. 兼容说明
 
 - `/api/v1/files/all` 的参数、响应、排序都没有变化，Web 时间线不再使用它。
 - 本组接口是新增的，Android / iOS 客户端不调用，不受影响。
+- `path`、`recursive`、`capture_date` 是后加的可选参数，不传时行为与之前完全相同；`total_count` 与 `facets` 仍是全库口径，不受这些参数影响。
+
+---
+
+# 数据统计接口（Web）
+
+## `GET /api/v1/stats/media` 的 `overview.daily`
+
+每日文件数量（Web 数据统计页的热力图）。与同一响应里的星期 / 小时 / 月度趋势使用同一份数据和同一个时区（`scope.tz`），目录范围同样由 `path` / `recursive` 决定。
+
+```json
+{
+  "kind": "calendar",
+  "today": "2026-10-19",
+  "days": { "2025-01-15": 12, "2025-01-16": 3 },
+  "unknown": 5,
+  "total": 20
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | 固定为 `"calendar"` |
+| `today` | 统计时区下的今天，`YYYY-MM-DD`；客户端据此确定“最近一年”的范围，不需要自己换算时区 |
+| `days` | 本地拍摄日期 → 照片和视频的数量。只列出数量大于 0 的日期，覆盖全部历史，按日期升序 |
+| `unknown` | 没有有效拍摄时间的照片和视频数量（无拍摄时间、格式无效、年份不在 1900～当前年份+1） |
+| `total` | 范围内照片和视频的总数，`= Σ days + unknown`，等于 `overview.categories` 中照片与视频之和 |
+
+- 只统计照片和视频，“其他”类文件不计入；与其他统计一样排除引用记录和路径含 `/.trash/` 的文件。
+- 拍摄日期的换算规则：`capture_time_kind = 'local'` 原样使用，`'utc'` 换算到 `scope.tz`（配置 `default_timezone` > 请求 `tz` > `TZ` 环境变量 > 服务器偏移）。
+- 时间线的 `capture_date` 参数（时间线接口第 2 节）使用同一口径，可用于从某一天跳转到时间线。
+- 新增字段，`schema_version` 仍为 1；旧客户端忽略该字段即可。

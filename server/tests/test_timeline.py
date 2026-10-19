@@ -153,8 +153,9 @@ async def _insert_rows(db_path: str, rows: list[dict], derived: bool = False) ->
                 """INSERT INTO file_records
                    (user_id, file_hash, file_path, original_path, device_name,
                     file_size, file_name, exif_time, created_at, focal_length,
-                    deleted_at, purged_at, media_type, file_name_key, file_ext)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    deleted_at, purged_at, media_type, file_name_key, file_ext,
+                    mime_type, capture_time, capture_time_kind, is_reference)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     r.get("user_id", 1),
                     r.get("file_hash", f"hash{n}"),
@@ -171,6 +172,10 @@ async def _insert_rows(db_path: str, rows: list[dict], derived: bool = False) ->
                     r.get("media_type", "image"),
                     key,
                     ext,
+                    r.get("mime_type"),
+                    r.get("capture_time"),
+                    r.get("capture_time_kind"),
+                    r.get("is_reference", 0),
                 ),
             )
             ids.append(cursor.lastrowid)
@@ -203,6 +208,9 @@ def _filters(
     format: tuple = (),
     focal: tuple = (),
     date: Optional[tuple[str, str]] = None,
+    dir_prefix: Optional[str] = None,
+    recursive: bool = True,
+    capture_date: Optional[str] = None,
 ) -> TimelineFilters:
     return TimelineFilters(
         keywords=tuple(parse_search_query(q)),
@@ -211,6 +219,9 @@ def _filters(
         focals=tuple(focal),
         date_from=date[0] if date else None,
         date_to=date[1] if date else None,
+        dir_prefix=dir_prefix,
+        dir_recursive=recursive,
+        capture_date=capture_date,
     )
 
 
@@ -1167,3 +1178,408 @@ async def test_list_month_requires_timeline_index(db_path):
         db_path, "list_month", 1, TimelineFilters(), _intervals("UTC"), 2024, 6
     )
     assert len(files) == 1 and has_more is False
+
+
+# ---------------------------------------------------------------------------
+# Folder filter (path + recursive, same scope as /stats/media)
+# ---------------------------------------------------------------------------
+
+_T = "2024-06-15T12:00:00"
+
+
+def _folder_rows() -> list[dict]:
+    paths = [
+        "/m/u/a_b/1.jpg",
+        "/m/u/a_b/sub/2.jpg",
+        "/m/u/a_b/sub/deeper/3.jpg",
+        "/m/u/a_b0/4.jpg",       # right after the prefix range
+        "/m/u/axb/5.jpg",
+        "/m/u/a_b.jpg",          # same name without the trailing '/'
+        "/m/u/a_b.x/6.jpg",
+        "/mnt/custom/7.jpg",     # custom path
+    ]
+    return [{"file_path": p, "file_name": p.rsplit("/", 1)[-1], "exif_time": _T}
+            for p in paths]
+
+
+async def test_folder_filter_prefix_boundaries(db_path):
+    rows = _folder_rows()
+    ids = await _insert_rows(db_path, rows)
+    by_path = {r["file_path"]: i for r, i in zip(rows, ids)}
+    intervals = _intervals("UTC")
+
+    async def got(flt: TimelineFilters) -> tuple[list[int], int]:
+        files, _ = await _run(db_path, "list_month", 1, flt, intervals, 2024, 6, limit=500)
+        summary = await _run(db_path, "summary", 1, flt, intervals)
+        assert summary.total_count == len(rows)  # library-wide, unfiltered
+        assert summary.filtered_count == len(files)
+        if files:
+            assert [(m.year, m.month, m.count) for m in summary.months] == [(2024, 6, len(files))]
+        return sorted(f.id for f in files), summary.filtered_count
+
+    rec = sorted(i for p, i in by_path.items() if p.startswith("/m/u/a_b/"))
+    assert (await got(_filters(dir_prefix="/m/u/a_b/")))[0] == rec
+    assert (await got(_filters(dir_prefix="/m/u/a_b/", recursive=False)))[0] == [
+        by_path["/m/u/a_b/1.jpg"]
+    ]
+    assert (await got(_filters(dir_prefix="/m/u/a_b/sub/", recursive=False)))[0] == [
+        by_path["/m/u/a_b/sub/2.jpg"]
+    ]
+    assert (await got(_filters(dir_prefix="/m/u/a_b0/")))[0] == [by_path["/m/u/a_b0/4.jpg"]]
+    assert (await got(_filters(dir_prefix="/m/u/nope/")))[1] == 0
+    # No folder filter: everything, custom paths included.
+    assert (await got(TimelineFilters()))[0] == sorted(ids)
+
+
+def test_folder_filter_sql_params():
+    flt = _filters(q="img", dir_prefix="/m/u/a_b/", recursive=False)
+    sql, params = flt.sql()
+    assert params == ["img", "/m/u/a_b/", "/m/u/a_b0", len("/m/u/a_b/") + 1]
+    assert sql.count("?") == len(params)
+    assert flt.active and _filters(dir_prefix="/m/u/x/").active
+    assert _filters(capture_date="2024-06-15").active
+
+
+@pytest.mark.parametrize("mode", ["keyset", "offset"])
+@pytest.mark.parametrize("recursive", [True, False])
+async def test_folder_filter_paging_no_duplicates_no_gaps(db_path, mode, recursive):
+    rows = []
+    for i in range(120):  # one time key for all: ties broken by id only
+        folder = ("/m/u/A/", "/m/u/A/sub/", "/m/u/B/")[i % 3]
+        rows.append({"file_path": f"{folder}IMG_{i:04d}.JPG", "file_name": f"IMG_{i:04d}.JPG",
+                     "device_name": "A" if i % 2 else "B", "exif_time": _T})
+    for r, row_id in zip(rows, await _insert_rows(db_path, rows)):
+        r["id"] = row_id
+    flt = _filters(dir_prefix="/m/u/A/", recursive=recursive, device=("A",))
+    expected = sorted(
+        (r["id"] for r in rows
+         if r["device_name"] == "A"
+         and (r["file_path"].startswith("/m/u/A/") if recursive
+              else r["file_path"].startswith("/m/u/A/IMG_"))),
+        reverse=True,
+    )
+    db = await _connect(db_path)
+    try:
+        files, pages = await _page_all(db, flt, _intervals("UTC"), 2024, 6, mode)
+    finally:
+        await db.close()
+    assert [f.id for f in files] == expected
+    assert len(pages) > 2 and pages[-1][1] is False
+
+
+# ---------------------------------------------------------------------------
+# capture_date filter (/stats/media rule)
+# ---------------------------------------------------------------------------
+
+
+async def _capture_ids(db_path, flt, capture_tz, tz="UTC", month=None):
+    """(sorted ids from summary-listed months, filtered_count) for one filter."""
+    cap = _intervals(capture_tz)
+    intervals = _intervals(tz)
+    summary = await _run(db_path, "summary", 1, flt, intervals, capture_intervals=cap)
+    ids = []
+    for m in summary.months:
+        files, more = await _run(db_path, "list_month", 1, flt, intervals, m.year, m.month,
+                                 limit=500, capture_intervals=cap)
+        assert more is False
+        ids += [f.id for f in files]
+    return sorted(ids), summary.filtered_count
+
+
+async def test_capture_date_kinds_dst_and_exclusions(db_path):
+    future = datetime.now(timezone.utc).year + 5
+    rows = [
+        {"capture_time": "2025-01-15T23:30:00", "capture_time_kind": "local"},        # 0
+        {"file_name": "v.mp4", "media_type": "video",
+         "capture_time": "2025-01-15T18:30:00", "capture_time_kind": "utc"},          # 1
+        {"capture_time": "1988-07-01T15:30:00", "capture_time_kind": "utc"},          # 2
+        {"capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local",
+         "is_reference": 1},                                                          # 3
+        {"file_path": "/m/u/.trash/D/x.jpg", "file_name": "x.jpg",
+         "capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local"},        # 4
+        {"file_name": "notes.txt",
+         "capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local"},        # 5
+        {"file_name": "blob.bin", "mime_type": "image/jpeg",
+         "capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local"},        # 6
+        {"capture_time": "2025-01-15Tgarbage", "capture_time_kind": "local"},         # 7
+        {"capture_time": "1800-06-01T10:00:00", "capture_time_kind": "local"},        # 8
+        {"capture_time": f"{future}-06-01T10:00:00", "capture_time_kind": "local"},   # 9
+        {"capture_time": "2025-01-15T10:00:00", "capture_time_kind": None},           # 10
+        {"capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local",
+         "deleted_at": "2025-02-01 00:00:00"},                                        # 11
+    ]
+    ids = await _insert_rows(db_path, rows)
+
+    async def day(d, capture_tz="UTC"):
+        got, count = await _capture_ids(db_path, _filters(capture_date=d), capture_tz)
+        assert count == len(got)
+        return got
+
+    assert await day("2025-01-15", "UTC") == sorted([ids[0], ids[1], ids[6]])
+    assert await day("2025-01-15", "Asia/Shanghai") == sorted([ids[0], ids[6]])
+    assert await day("2025-01-16", "Asia/Shanghai") == [ids[1]]
+    assert await day("2025-01-15", "America/New_York") == sorted([ids[0], ids[1], ids[6]])
+    assert await day("1988-07-02", "Asia/Shanghai") == [ids[2]]   # DST: +09:00
+    assert await day("1988-07-01", "Asia/Shanghai") == []
+    assert await day("1800-06-01") == []
+    assert await day(f"{future}-06-01") == []
+
+
+async def test_capture_date_combined_with_other_filters(db_path):
+    rows = [
+        {"file_path": "/m/u/A/1.jpg", "file_name": "IMG_1.jpg", "device_name": "P",
+         "capture_time": "2025-01-15T10:00:00", "capture_time_kind": "local"},
+        {"file_path": "/m/u/A/sub/2.jpg", "file_name": "IMG_2.jpg", "device_name": "P",
+         "capture_time": "2025-01-15T11:00:00", "capture_time_kind": "local"},
+        {"file_path": "/m/u/B/3.jpg", "file_name": "IMG_3.jpg", "device_name": "P",
+         "capture_time": "2025-01-15T12:00:00", "capture_time_kind": "local"},
+        {"file_path": "/m/u/A/4.jpg", "file_name": "DSC_4.jpg", "device_name": "Q",
+         "capture_time": "2025-01-15T13:00:00", "capture_time_kind": "local"},
+        {"file_path": "/m/u/A/5.jpg", "file_name": "IMG_5.jpg", "device_name": "P",
+         "capture_time": "2025-01-16T13:00:00", "capture_time_kind": "local"},
+    ]
+    ids = await _insert_rows(db_path, rows)
+    d = "2025-01-15"
+    cases = [
+        (_filters(capture_date=d, dir_prefix="/m/u/A/"), [0, 1, 3]),
+        (_filters(capture_date=d, dir_prefix="/m/u/A/", recursive=False), [0, 3]),
+        (_filters(capture_date=d, dir_prefix="/m/u/A/", q="img"), [0, 1]),
+        (_filters(capture_date=d, device=("Q",)), [3]),
+        (_filters(capture_date=d, date=("2020-01-01", "2020-01-01")), [0, 1, 2, 3]),
+        (_filters(capture_date=d, date=("2021-01-01", "2021-01-01")), []),
+    ]
+    for flt, expected in cases:
+        got, _ = await _capture_ids(db_path, flt, "UTC")
+        assert got == sorted(ids[i] for i in expected), flt
+
+
+async def test_capture_date_requires_capture_table(db_path):
+    await _insert_rows(db_path, [{"capture_time": "2025-01-15T10:00:00",
+                                  "capture_time_kind": "utc"}])
+    with pytest.raises(sqlite3.OperationalError, match="timeline_capture_tz"):
+        await _run(db_path, "summary", 1, _filters(capture_date="2025-01-15"),
+                   _intervals("UTC"))
+    db = await _connect(db_path)
+    try:
+        svc = TimelineService(db)
+        await svc.summary(1, _filters(capture_date="2025-01-15"), _intervals("UTC"),
+                          capture_intervals=_intervals("UTC"))
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_temp_master WHERE name LIKE 'timeline%'"
+        )
+        assert await cursor.fetchall() == []  # both temp tables dropped
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints: path / recursive / capture_date
+# ---------------------------------------------------------------------------
+
+
+async def test_endpoint_path_and_capture_date(db_path, client):
+    _, token = await _create_user(db_path, "alice")
+    base = f"{get_settings().media_root}/alice"
+    ids = await _insert_rows(db_path, [
+        {"file_path": f"{base}/A/1.jpg", "file_name": "1.jpg", "exif_time": _T},
+        {"file_path": f"{base}/A/sub/2.jpg", "file_name": "2.jpg", "exif_time": _T},
+        {"file_path": f"{base}/B/3.jpg", "file_name": "3.jpg", "exif_time": _T},
+        {"file_path": "/mnt/custom/4.jpg", "file_name": "4.jpg", "exif_time": _T},
+    ])
+    h = _auth(token)
+
+    async def count(**params):
+        r = await client.get(SUMMARY_URL, params={"tz": "UTC", **params}, headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["total_count"] == 4
+        return r.json()["filtered_count"]
+
+    assert await count(path="A") == 2
+    assert await count(path="/A/", recursive="false") == 1
+    assert await count(path="A/sub") == 1
+    assert await count(path="") == 4
+    assert await count(path="", recursive="false") == 4   # root ignores recursive
+    assert await count(path="/") == 4
+    assert await count(path="Nope") == 0
+
+    r = await client.get(FILES_URL, params={"tz": "UTC", "month": "2024-06", "path": "A",
+                                            "recursive": "false"}, headers=h)
+    assert r.status_code == 200
+    assert [f["id"] for f in r.json()["files"]] == [ids[0]]
+
+
+async def test_endpoint_capture_date_follows_config_tz(db_path, client):
+    os.environ["PHOTOVAULT_DEFAULT_TIMEZONE"] = "UTC"
+    reset_settings()
+    _, token = await _create_user(db_path, "alice")
+    # Time key: UTC created_at -> July in Shanghai; capture day by config (UTC).
+    [row_id] = await _insert_rows(db_path, [
+        {"exif_time": None, "created_at": "2024-06-30 17:00:00",
+         "capture_time": "2024-06-30T17:00:00", "capture_time_kind": "utc"},
+    ])
+    h = _auth(token)
+    params = {"tz": "Asia/Shanghai", "capture_date": "2024-06-30"}
+    r = await client.get(SUMMARY_URL, params=params, headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tz"] == "Asia/Shanghai"
+    assert body["filtered_count"] == 1
+    assert body["months"] == [{"year": 2024, "month": 7, "count": 1}]
+    r = await client.get(FILES_URL, params={**params, "month": "2024-07"}, headers=h)
+    assert [f["id"] for f in r.json()["files"]] == [row_id]
+    r = await client.get(SUMMARY_URL, params={**params, "capture_date": "2024-07-01"},
+                         headers=h)
+    assert r.json()["filtered_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("params", "code"),
+    [
+        ({"path": "a/../b"}, "invalid_path"),
+        ({"path": "a//b"}, "invalid_path"),
+        ({"path": "a\\b"}, "invalid_path"),
+        ({"path": "a\x00b"}, "invalid_path"),
+        ({"path": "a" * 1025}, "invalid_path"),
+        ({"path": "a" * 1101}, None),
+        ({"recursive": "abc"}, None),
+        ({"capture_date": "2024-1-1"}, None),
+        ({"capture_date": "2024-02-30"}, None),
+        ({"capture_date": "today"}, None),
+    ],
+)
+@pytest.mark.parametrize("url", [SUMMARY_URL, FILES_URL])
+async def test_endpoint_path_and_capture_date_validation(db_path, client, url, params, code):
+    _, token = await _create_user(db_path, "alice")
+    if url == FILES_URL:
+        params = {**params, "month": "2024-06"}
+    r = await client.get(url, params=params, headers=_auth(token))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    if code is not None:
+        assert detail["code"] == code and detail["message"]
+    else:
+        assert isinstance(detail, list)  # FastAPI request validation
+
+
+# ---------------------------------------------------------------------------
+# Cross-check: timeline capture_date counts == /stats/media overview.daily
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def stats_client(db_path):
+    from app.api.stats import router as stats_router
+
+    app = _make_app(db_path)
+    app.include_router(stats_router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
+
+
+_XC_TIMES = [
+    ("2025-01-15T18:30:00", "utc"),
+    ("2025-01-15T03:30:00", "utc"),
+    ("2025-03-09T06:30:00", "utc"),     # New York DST start (07:00 UTC)
+    ("2025-03-09T07:30:00", "utc"),
+    ("1988-07-01T15:30:00", "utc"),     # Shanghai DST
+    ("2024-12-31T23:30:00", "utc"),
+    ("2025-01-15T23:30:00", "local"),
+    ("2025-01-16T00:10:00", "local"),
+    ("2024-12-31T23:59:59", "local"),
+    ("2025-03-09T02:30:00", "local"),
+    ("2025-01-15Tgarbage", "local"),    # invalid: unknown in the stats
+    ("1800-06-01T10:00:00", "local"),   # out of range
+    ("1800-06-01T10:00:00", "utc"),
+    (None, None),
+]
+_XC_KINDS = [  # (file name suffix, media_type, mime_type)
+    (".jpg", "image", "image/jpeg"),
+    (".mp4", "video", "video/mp4"),
+    (".txt", "image", "text/plain"),    # 'other': not in the heatmap
+    (".bin", "image", "image/heic"),    # photo by mime type
+    (".HEIC", "image", None),           # photo by extension
+]
+
+
+def _cross_check_rows(base: str) -> list[dict]:
+    folders = [f"{base}/A", f"{base}/A/sub", f"{base}/A_x", f"{base}/B", "/mnt/custom/Cam"]
+    rows = []
+    n = 0
+    for folder in folders:
+        for i, (ct, kind) in enumerate(_XC_TIMES):
+            for j, (suffix, media_type, mime) in enumerate(_XC_KINDS):
+                n += 1
+                if (i + j) % 3 == 1:
+                    continue  # thin the grid so days get different counts
+                name = f"F{n:04d}{suffix}"
+                rows.append({
+                    "file_path": f"{folder}/{name}", "file_name": name,
+                    "media_type": media_type, "mime_type": mime,
+                    "capture_time": ct, "capture_time_kind": kind,
+                    "is_reference": 1 if n % 11 == 0 else 0,
+                })
+        # A '/.trash/' path row and a trashed row on a busy day.
+        rows.append({"file_path": f"{folder}/.trash/T{n}.jpg", "file_name": f"T{n}.jpg",
+                     "capture_time": "2025-01-15T23:30:00", "capture_time_kind": "local"})
+        rows.append({"file_path": f"{folder}/D{n}.jpg", "file_name": f"D{n}.jpg",
+                     "capture_time": "2025-01-15T23:30:00", "capture_time_kind": "local",
+                     "deleted_at": "2025-02-01 00:00:00"})
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("tz", "config_tz"),
+    [("Asia/Shanghai", None), ("America/New_York", None), ("UTC", None),
+     ("Asia/Shanghai", "America/New_York")],
+)
+async def test_cross_check_capture_date_matches_stats_daily(
+    db_path, stats_client, tz, config_tz
+):
+    if config_tz:
+        os.environ["PHOTOVAULT_DEFAULT_TIMEZONE"] = config_tz
+        reset_settings()
+    alice, token = await _create_user(db_path, "alice")
+    bob, _ = await _create_user(db_path, "bob")
+    base = f"{get_settings().media_root}/alice"
+    rows = _cross_check_rows(base)
+    for r in rows:
+        r["user_id"] = alice
+    rows.append({"user_id": bob, "file_path": f"{get_settings().media_root}/bob/A/x.jpg",
+                 "file_name": "x.jpg", "capture_time": "2025-01-15T23:30:00",
+                 "capture_time_kind": "local"})
+    await _insert_rows(db_path, rows)
+    h = _auth(token)
+
+    for path, recursive in [("", True), ("A", True), ("A", False), ("A/sub", True),
+                            ("B", True), ("A_x", True)]:
+        scope = {"tz": tz, "path": path, "recursive": "true" if recursive else "false"}
+        r = await stats_client.get("/stats/media", params=scope, headers=h)
+        assert r.status_code == 200, r.text
+        daily = r.json()["overview"]["daily"]
+        assert sum(daily["days"].values()) + daily["unknown"] == daily["total"]
+        assert len(daily["days"]) >= 5 and daily["unknown"] > 0
+        for day, expected in daily["days"].items():
+            r = await stats_client.get(
+                SUMMARY_URL, params={**scope, "capture_date": day}, headers=h
+            )
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["filtered_count"] == expected, (path, recursive, day)
+            # The files pages list exactly those rows.
+            listed = 0
+            for m in body["months"]:
+                r = await stats_client.get(FILES_URL, params={
+                    **scope, "capture_date": day, "month": f"{m['year']:04d}-{m['month']:02d}",
+                    "limit": 500,
+                }, headers=h)
+                assert r.status_code == 200 and r.json()["has_more"] is False
+                listed += len(r.json()["files"])
+            assert listed == expected
+        for absent in ("2000-01-01", "1800-06-01", "2025-01-14"):
+            if absent in daily["days"]:
+                continue
+            r = await stats_client.get(
+                SUMMARY_URL, params={**scope, "capture_date": absent}, headers=h
+            )
+            assert r.json()["filtered_count"] == 0, (path, recursive, absent)

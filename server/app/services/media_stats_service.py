@@ -2,10 +2,11 @@
 
 All counting happens in SQLite. The in-scope rows of the current user are copied
 once into the connection-local temp table ``temp.stats_scope`` together with the
-derived columns (category, extension, local capture time, weekday, hour, month);
-the eleven ``GROUP BY`` queries then run on that table. Python only receives the
-aggregate rows, whose number depends on bucket counts, distinct extensions /
-cameras / lenses and the month span, never on the number of files (AC30).
+derived columns (category, extension, local capture time, weekday, hour, month,
+day); the twelve ``GROUP BY`` queries then run on that table. Python only
+receives the aggregate rows, whose number depends on bucket counts, distinct
+extensions / cameras / lenses, the month span and the number of distinct capture
+days (``overview.daily``), never on the number of files (AC30).
 
 UTC-only capture times are converted with ``temp.stats_tz``, an interval table of
 ``(utc_start, '<±N> seconds')`` rows built by
@@ -52,6 +53,7 @@ from app.services.stats_buckets import (
     allocate_shares,
     bucket_case_sql,
     bucket_distribution,
+    build_daily,
     build_ranking,
     build_trends,
     camera_display_name,
@@ -114,6 +116,7 @@ SELECT cat, ext, is_motion, pending, file_size,
        CAST(strftime('%w', lt) AS INTEGER) AS wd,
        CAST(strftime('%H', lt) AS INTEGER) AS hr,
        substr(lt, 1, 7)                    AS ym,
+       substr(lt, 1, 10)                   AS ymd,
        iso, duration_sec, focal_35mm, focal_35mm_source,
        f_number, exposure_time, camera_make, camera_model, lens_model,
        CASE WHEN cat = 'photo' THEN {SQL_EV100_FUNCTION}(iso, f_number, exposure_time) END AS scene_ev
@@ -144,6 +147,11 @@ _Q_LENS = (
 _Q_TREND = (
     "SELECT cat, ym, COUNT(*) FROM temp.stats_scope "
     "WHERE cat IN ('photo', 'video') AND ym IS NOT NULL GROUP BY cat, ym"
+)
+# 12. per-day photo + video counts (overview.daily heatmap)
+_Q_DAILY = (
+    "SELECT ymd, COUNT(*) FROM temp.stats_scope "
+    "WHERE cat IN ('photo', 'video') AND ymd IS NOT NULL GROUP BY ymd"
 )
 # Scene EV summary: sample count / mean, then the median by LIMIT/OFFSET.
 _Q_SCENE_EV_STATS = (
@@ -388,6 +396,11 @@ class MediaStatsService:
         photo["yearly"] = trends["photo"]["yearly"]
         video["monthly"] = trends["video"]["monthly"]
         video["yearly"] = trends["video"]["yearly"]
+
+        # 12. per-day counts by local capture date (same `lt` as #2, #3, #11)
+        overview["daily"] = build_daily(
+            await self._rows(_Q_DAILY), cat_count["photo"] + cat_count["video"]
+        )
 
         return {
             "pending_metadata_count": pending,

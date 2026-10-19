@@ -17,6 +17,7 @@ import sqlite3
 import statistics
 from datetime import datetime, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 import pytest
@@ -527,6 +528,159 @@ class TestCaptureTime:
             assert [b["key"] for b in hr] == [f"{h:02d}" for h in range(24)]
             assert hr[0]["label"] == "0时" and hr[23]["label"] == "23时"
             assert all(b["count"] == 0 for b in wd + hr)
+
+
+# ---------------------------------------------------------------------------
+# overview.daily (per-day heatmap)
+# ---------------------------------------------------------------------------
+
+
+def _daily(data: dict) -> dict:
+    return data["overview"]["daily"]
+
+
+def _assert_daily_invariant(data: dict) -> None:
+    daily = _daily(data)
+    cats = _counts(data["overview"]["categories"])
+    assert daily["kind"] == "calendar"
+    assert sum(daily["days"].values()) + daily["unknown"] == daily["total"]
+    assert daily["total"] == cats["photo"] + cats["video"]
+    assert list(daily["days"]) == sorted(daily["days"])
+    assert all(n > 0 for n in daily["days"].values())
+
+
+class TestDaily:
+    async def test_local_photo_stays_on_its_day(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert(
+            db_path, uid, "alice", "D/p.jpg",
+            capture_time="2025-01-15T23:30:00", capture_time_kind="local",
+            exif_time="2025-01-15T23:30:00+08:00",
+        )
+        for tz in ("UTC", "Asia/Shanghai", "America/New_York"):
+            data = await _get(client, t, tz=tz)
+            assert _daily(data)["days"] == {"2025-01-15": 1}
+            _assert_daily_invariant(data)
+
+    async def test_utc_video_converted(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        await _insert(
+            db_path, uid, "alice", "D/v.mp4",
+            capture_time="2025-01-15T18:30:00", capture_time_kind="utc",
+        )
+        assert _daily(await _get(client, t, tz="Asia/Shanghai"))["days"] == {"2025-01-16": 1}
+        assert _daily(await _get(client, t, tz="UTC"))["days"] == {"2025-01-15": 1}
+
+    async def test_utc_1988_shanghai_dst(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        # +09:00 (DST) in July 1988: 00:30 on the next day; +08:00 would not cross.
+        await _insert(
+            db_path, uid, "alice", "D/old.mp4",
+            capture_time="1988-07-01T15:30:00", capture_time_kind="utc",
+        )
+        data = await _get(client, t, tz="Asia/Shanghai")
+        assert _daily(data)["days"] == {"1988-07-02": 1}
+
+    async def test_config_default_timezone_wins(self, client, db_path):
+        os.environ["PHOTOVAULT_DEFAULT_TIMEZONE"] = "UTC"
+        reset_settings()
+        uid, t = await _create_user(db_path, "alice")
+        await _insert(
+            db_path, uid, "alice", "D/v.mp4",
+            capture_time="2025-01-15T18:30:00", capture_time_kind="utc",
+        )
+        before = datetime.now(timezone.utc).date().isoformat()
+        data = await _get(client, t, tz="Asia/Shanghai")
+        after = datetime.now(timezone.utc).date().isoformat()
+        assert data["scope"]["tz"] == "UTC"
+        assert _daily(data)["days"] == {"2025-01-15": 1}
+        assert _daily(data)["today"] in (before, after)  # config tz, not the request
+
+    async def test_unknown_times_and_other_files(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        future = datetime.now(timezone.utc).year + 5
+        u = (uid, "alice")
+        await _insert(db_path, *u, "D/ok.jpg", capture_time="2024-05-06T08:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "D/missing.jpg", created_at="2024-05-05T10:00:00")
+        await _insert(db_path, *u, "D/old.jpg", capture_time="1800-06-01T10:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "D/future.jpg", capture_time=f"{future}-06-01T10:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "D/old.mp4", capture_time="1800-06-01T10:00:00",
+                      capture_time_kind="utc")
+        await _insert(db_path, *u, "D/bad.jpg", capture_time="2025-13-45T10:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "D/notes.txt", capture_time="2024-05-06T08:00:00",
+                      capture_time_kind="local")
+        data = await _get(client, t, tz="UTC")
+        daily = _daily(data)
+        assert daily["days"] == {"2024-05-06": 1}
+        assert (daily["unknown"], daily["total"]) == (5, 6)
+        assert _total(data) == 7  # the txt file counts in the overview only
+        _assert_daily_invariant(data)
+
+    async def test_path_and_recursive_scope(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        u = (uid, "alice")
+        await _insert(db_path, *u, "A/a.jpg", capture_time="2024-01-01T10:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "A/sub/b.jpg", capture_time="2024-01-02T10:00:00",
+                      capture_time_kind="local")
+        await _insert(db_path, *u, "B/c.jpg", capture_time="2024-01-03T10:00:00",
+                      capture_time_kind="local")
+        assert _daily(await _get(client, t, tz="UTC"))["days"] == {
+            "2024-01-01": 1, "2024-01-02": 1, "2024-01-03": 1,
+        }
+        assert _daily(await _get(client, t, tz="UTC", path="A"))["days"] == {
+            "2024-01-01": 1, "2024-01-02": 1,
+        }
+        data = await _get(client, t, tz="UTC", path="A", recursive="false")
+        assert _daily(data)["days"] == {"2024-01-01": 1}
+        assert _daily(data)["total"] == 1
+
+    async def test_months_match_monthly_trend(self, client, db_path):
+        uid, t = await _create_user(db_path, "alice")
+        u = (uid, "alice")
+        times = [
+            ("p1.jpg", "2023-11-03T10:00:00", "local"),
+            ("p2.jpg", "2023-11-20T23:59:59", "local"),
+            ("p3.jpg", "2024-02-01T00:00:00", "local"),
+            ("v1.mp4", "2024-01-31T20:00:00", "utc"),   # 2024-02-01 in Shanghai
+            ("v2.mp4", "2023-11-30T16:30:00", "utc"),   # 2023-12-01 in Shanghai
+            ("v3.mp4", None, None),
+        ]
+        for name, ct, kind in times:
+            await _insert(db_path, *u, f"D/{name}", capture_time=ct, capture_time_kind=kind)
+        data = await _get(client, t, tz="Asia/Shanghai")
+        per_month: dict[str, int] = {}
+        for day, n in _daily(data)["days"].items():
+            per_month[day[:7]] = per_month.get(day[:7], 0) + n
+        trend: dict[str, int] = {}
+        for cat in ("photo", "video"):
+            for b in data[cat]["monthly"]["buckets"]:
+                trend[b["key"]] = trend.get(b["key"], 0) + b["count"]
+        assert per_month == {k: v for k, v in trend.items() if v > 0}
+        assert _daily(data)["unknown"] == (
+            data["photo"]["monthly"]["unknown"] + data["video"]["monthly"]["unknown"]
+        ) == 1
+        _assert_daily_invariant(data)
+
+    @pytest.mark.parametrize("tz", ["UTC", "Asia/Shanghai", "Pacific/Kiritimati",
+                                    "Pacific/Pago_Pago"])
+    async def test_today_in_stats_tz(self, client, db_path, tz):
+        _, t = await _create_user(db_path, "alice")
+        before = datetime.now(ZoneInfo(tz)).date().isoformat()
+        data = await _get(client, t, tz=tz)
+        after = datetime.now(ZoneInfo(tz)).date().isoformat()
+        assert _daily(data)["today"] in (before, after)
+
+    async def test_zero_files(self, client, db_path):
+        _, t = await _create_user(db_path, "alice")
+        daily = _daily(await _get(client, t))
+        assert daily["kind"] == "calendar"
+        assert (daily["days"], daily["unknown"], daily["total"]) == ({}, 0, 0)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", daily["today"])
 
 
 # ---------------------------------------------------------------------------

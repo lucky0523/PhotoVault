@@ -19,6 +19,29 @@ _PASSWORD_CHARS_MESSAGE = (
 )
 
 
+_VIRTUAL_DIR_MAX_LENGTH = 1024
+
+
+def normalize_virtual_dir_path(raw: str) -> str:
+    """Validate and normalise a virtual directory path (``''`` = whole library).
+
+    Shared by ``/stats/media`` and the Web timeline folder filter. Strips
+    leading / trailing ``/``; each endpoint maps the error to its own status.
+
+    Raises:
+        ValueError: with a Chinese user-facing message when the path is too
+            long, contains NUL / backslash, or has an empty / '.' / '..' segment.
+    """
+    path = raw.strip("/")
+    if len(path) > _VIRTUAL_DIR_MAX_LENGTH:
+        raise ValueError("路径过长")
+    if "\x00" in path or "\\" in path:
+        raise ValueError("路径包含非法字符")
+    if path and any(seg in ("", ".", "..") for seg in path.split("/")):
+        raise ValueError("路径格式无效")
+    return path
+
+
 def validate_password(password: str) -> str | None:
     """Validate a password against project-wide rules.
 

@@ -29,6 +29,7 @@ from app.services.stats_buckets import (
     allocate_shares,
     bucket_case_sql,
     ev_summary,
+    build_daily,
     build_ranking,
     build_trends,
     camera_display_name,
@@ -586,3 +587,31 @@ class TestBuildTrends:
     def test_cross_year(self):
         t = build_trends([("photo", "2023-12", 1), ("photo", "2024-01", 1)], {"photo": 2, "video": 0})
         assert [b["key"] for b in t["photo"]["monthly"]["buckets"]] == ["2023-12", "2024-01"]
+
+
+class TestBuildDaily:
+    def test_empty(self):
+        assert build_daily([], 0) == {"kind": "calendar", "days": {}, "unknown": 0, "total": 0}
+        assert build_daily([], 3) == {"kind": "calendar", "days": {}, "unknown": 3, "total": 3}
+
+    def test_merge_duplicates_and_skip_falsy(self):
+        d = build_daily(
+            [("2025-01-15", 2), ("2025-01-15", 3), (None, 4), ("", 1), ("2025-01-16", 0)],
+            10,
+        )
+        assert d["days"] == {"2025-01-15": 5}
+        assert (d["unknown"], d["total"]) == (5, 10)
+
+    def test_ascending_order(self):
+        d = build_daily([("2025-03-01", 1), ("1988-07-02", 2), ("2024-12-31", 3)], 6)
+        assert list(d["days"]) == ["1988-07-02", "2024-12-31", "2025-03-01"]
+        assert d["unknown"] == 0
+
+    def test_unknown_arithmetic(self):
+        d = build_daily([("2025-01-01", 7), ("2025-01-02", 1)], 11)
+        assert sum(d["days"].values()) + d["unknown"] == d["total"] == 11
+        assert d["unknown"] == 3
+
+    def test_counts_exceeding_total_assert(self):
+        with pytest.raises(AssertionError):
+            build_daily([("2025-01-01", 3)], 2)

@@ -12,6 +12,7 @@ Single source of truth for:
 - integer per-mille share allocation (:func:`allocate_shares`);
 - camera / lens rankings (:func:`camera_display_name`, :func:`build_ranking`);
 - monthly / yearly trend series on a shared axis (:func:`build_trends`);
+- per-day counts by local capture date (:func:`build_daily`);
 - the default time zone (:func:`resolve_default_tz`) and the UTC -> local
   offset interval table used by the statistics SQL (:func:`utc_offset_intervals`).
 
@@ -544,6 +545,25 @@ def build_trends(
             ),
         }
     return result
+
+
+def build_daily(rows: Iterable[tuple[str, int]], total: int) -> dict[str, Any]:
+    """Per-day photo + video counts by local capture date (heatmap).
+
+    ``rows`` are ``('YYYY-MM-DD', count)``; ``total`` is the photo + video file
+    count. Duplicate keys are merged, falsy keys skipped, days with a zero
+    count dropped. Returns ``{'kind': 'calendar', 'days': {...ascending...},
+    'unknown': total - Σ days, 'total': total}``; ``today`` is added by the API.
+    """
+    days: dict[str, int] = {}
+    for ymd, count in rows:
+        if not ymd:
+            continue
+        days[ymd] = days.get(ymd, 0) + int(count)
+    ordered = {k: days[k] for k in sorted(days) if days[k] > 0}
+    unknown = total - sum(ordered.values())
+    assert unknown >= 0, "daily counts exceed the photo + video total"
+    return {"kind": "calendar", "days": ordered, "unknown": unknown, "total": total}
 
 
 # ---------------------------------------------------------------------------

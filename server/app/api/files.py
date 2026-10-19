@@ -30,10 +30,16 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user, get_current_user_or_query_token
+from app.core.validators import normalize_virtual_dir_path
 from app.models.auth import UserInfo
 from app.services.file_browse_service import FileBrowseInfo, FileBrowseService
 from app.services.filename_search import parse_search_query
-from app.services.stats_buckets import ResolvedTz, is_valid_tz_name, utc_offset_intervals
+from app.services.stats_buckets import (
+    ResolvedTz,
+    is_valid_tz_name,
+    resolve_default_tz,
+    utc_offset_intervals,
+)
 from app.services.timeline_service import (
     TimelineCursor,
     TimelineFilters,
@@ -262,6 +268,14 @@ def timeline_filter_params(
     focal: List[FocalBucket] = Query(default=[], description="Repeated key"),
     date_from: Optional[date] = Query(None, description="Local date, inclusive"),
     date_to: Optional[date] = Query(None, description="Local date, inclusive"),
+    path: str = Query(
+        "", max_length=1100, description="Virtual directory; empty = whole library"
+    ),
+    recursive: bool = Query(True, description="Include subdirectories (ignored at root)"),
+    capture_date: Optional[date] = Query(
+        None, description="Local capture date, /stats/media rule"
+    ),
+    current_user: UserInfo = Depends(get_current_user),
 ) -> TimelineFilters:
     """Timeline filters shared by ``summary`` and ``files``."""
     if len(device_) > _TIMELINE_MAX_VALUES or len(format_) > _TIMELINE_MAX_VALUES:
@@ -270,6 +284,17 @@ def timeline_filter_params(
         )
     if (date_from is None) != (date_to is None):
         raise _timeline_422("invalid_date_range", "date_from 与 date_to 必须同时提供")
+    try:
+        norm_path = normalize_virtual_dir_path(path)
+    except ValueError as e:
+        raise _timeline_422("invalid_path", str(e))
+    # Same scope as /stats/media: root = no folder filter (custom paths
+    # included, recursive ignored).
+    dir_prefix = (
+        f"{get_settings().media_root}/{current_user.username}/{norm_path}/"
+        if norm_path
+        else None
+    )
     return TimelineFilters(
         keywords=tuple(parse_search_query(q)),
         devices=tuple(device_),
@@ -277,6 +302,9 @@ def timeline_filter_params(
         focals=tuple(dict.fromkeys(focal)),
         date_from=date_from.isoformat() if date_from is not None else None,
         date_to=date_to.isoformat() if date_to is not None else None,
+        dir_prefix=dir_prefix,
+        dir_recursive=recursive if dir_prefix is not None else True,
+        capture_date=capture_date.isoformat() if capture_date is not None else None,
     )
 
 
@@ -285,6 +313,17 @@ async def _timeline_tz(tz: Optional[str]) -> tuple[ResolvedTz, tuple[tuple[str, 
     last_year = datetime.now(timezone.utc).year + 1
     intervals = await asyncio.to_thread(utc_offset_intervals, rtz, last_year)
     return rtz, intervals
+
+
+async def _capture_intervals(
+    tz: Optional[str], filters: TimelineFilters
+) -> Optional[tuple[tuple[str, str], ...]]:
+    """Stats-rule intervals (``resolve_default_tz``) when ``capture_date`` is set."""
+    if filters.capture_date is None:
+        return None
+    rtz = resolve_default_tz(tz, get_settings())
+    last_year = datetime.now(timezone.utc).year + 1
+    return await asyncio.to_thread(utc_offset_intervals, rtz, last_year)
 
 
 def _file_info_response(f: FileBrowseInfo) -> FileInfoResponse:
@@ -582,8 +621,11 @@ async def get_timeline_summary(
 ) -> TimelineSummaryResponse:
     """Web timeline: library total, filtered total and filtered per-month counts."""
     rtz, intervals = await _timeline_tz(tz)
+    capture_intervals = await _capture_intervals(tz, filters)
     try:
-        summary = await TimelineService(db).summary(current_user.id, filters, intervals)
+        summary = await TimelineService(db).summary(
+            current_user.id, filters, intervals, capture_intervals=capture_intervals
+        )
     except (aiosqlite.Error, sqlite3.Error):
         logger.error(
             "Timeline query failed user_id=%s endpoint=summary",
@@ -633,6 +675,7 @@ async def list_timeline_files(
     after = TimelineCursor(after_time, after_id) if after_time is not None else None
 
     _rtz, intervals = await _timeline_tz(tz)
+    capture_intervals = await _capture_intervals(tz, filters)
     try:
         files, has_more = await TimelineService(db).list_month(
             current_user.id,
@@ -643,6 +686,7 @@ async def list_timeline_files(
             offset=offset,
             after=after,
             limit=limit,
+            capture_intervals=capture_intervals,
         )
     except (aiosqlite.Error, sqlite3.Error):
         logger.error(

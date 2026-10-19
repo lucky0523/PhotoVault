@@ -17,6 +17,16 @@ the browser; these queries do the same work in SQLite with identical semantics:
   ``file_name_key`` / ``file_ext`` and fall back to the Python functions of
   ``app.services.filename_search`` (registered as SQL functions) for rows the
   backfill has not reached yet, so results never depend on backfill progress.
+- The folder filter (``dir_prefix`` / ``dir_recursive``) is the ``file_path``
+  prefix range of ``/stats/media`` (``MediaStatsService._scope_sql``).
+- The ``capture_date`` filter follows the ``/stats/media`` rule, not the time
+  key above: local capture date from ``capture_time`` / ``capture_time_kind``,
+  ``'utc'`` values converted through ``temp.timeline_capture_tz`` (built from
+  ``resolve_default_tz``: config > request > ``TZ`` > server offset), valid
+  years 1900..now+1, references / ``/.trash/`` paths / non photo-video rows
+  excluded. Months are still grouped by the time key, so ``filtered_count`` for
+  a day equals that day's ``overview.daily`` count (rows whose time key has no
+  displayable date are never listed by the timeline at all).
 
 Invariants owned here: every query starts with ``_ACTIVE_SQL`` (current user,
 not trashed, not purged — the same filter as ``list_all_files``); only ``?``
@@ -28,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
@@ -41,7 +51,12 @@ from app.services.filename_search import (
     file_name_key,
     normalize_for_search,
 )
-from app.services.stats_buckets import ResolvedTz, is_valid_tz_name, resolve_default_tz
+from app.services.stats_buckets import (
+    IMAGE_EXTS,
+    ResolvedTz,
+    is_valid_tz_name,
+    resolve_default_tz,
+)
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -96,6 +111,34 @@ _ACTIVE_SQL = "fr.user_id = ? AND fr.deleted_at IS NULL AND fr.purged_at IS NULL
 # Makes the files query imply the third term of the partial index condition.
 _INDEXED_K_SQL = "{K} IS NOT NULL"
 
+# --- capture_date filter: the /stats/media rule (MediaStatsService) ---------
+# Local capture time: 'local' as stored, 'utc' converted through
+# temp.timeline_capture_tz (stats 'T'-format utc_start, resolve_default_tz).
+_CAPTURE_LOCAL_SQL = (
+    "(CASE fr.capture_time_kind WHEN 'local' THEN fr.capture_time "
+    "WHEN 'utc' THEN datetime(fr.capture_time, "
+    "(SELECT z.modifier FROM temp.timeline_capture_tz AS z "
+    "WHERE z.utc_start <= fr.capture_time ORDER BY z.utc_start DESC LIMIT 1)) END)"
+)
+# Same extension expression as the stats ``raw`` CTE.
+_STATS_EXT_SQL = (
+    "lower(CASE WHEN instr(fr.file_name, '.') = 0 THEN '' "
+    "ELSE substr(fr.file_name, "
+    "length(rtrim(fr.file_name, replace(fr.file_name, '.', ''))) + 1) END)"
+)
+# Stats exclusions (references, '/.trash/' paths) and photo / video category.
+_CAPTURE_DATE_SQL = (
+    "((fr.is_reference IS NULL OR fr.is_reference = 0) "
+    "AND instr(fr.file_path, '/.trash/') = 0 "
+    "AND (COALESCE(fr.media_type, 'image') = 'video' "
+    "OR lower(COALESCE(fr.mime_type, '')) LIKE 'image/%' "
+    f"OR {_STATS_EXT_SQL} IN ({', '.join('?' * len(IMAGE_EXTS))})) "
+    f"AND substr({_CAPTURE_LOCAL_SQL}, 1, 10) = ? "
+    f"AND strftime('%w', {_CAPTURE_LOCAL_SQL}) IS NOT NULL)"
+)
+# Valid capture years of the stats rule: 1900 .. current UTC year + 1.
+_MIN_CAPTURE_YEAR = 1900
+
 FOCAL_BUCKETS = ("ultrawide", "wide", "standard", "tele", "supertele", "unknown")
 
 _MIN_LOCAL_DATE = "1000-01-01"
@@ -140,6 +183,13 @@ class TimelineFilters:
     focals: tuple[str, ...] = ()
     date_from: Optional[str] = None  # 'YYYY-MM-DD', browser-local, inclusive
     date_to: Optional[str] = None
+    # Folder: full '{media_root}/{username}/{path}/' prefix (bound by the API);
+    # None = no folder filter (whole library, custom paths included).
+    dir_prefix: Optional[str] = None
+    dir_recursive: bool = True       # False: direct children only
+    # 'YYYY-MM-DD' local capture date by the /stats/media rule (needs the
+    # temp.timeline_capture_tz table, see TimelineService._prepare).
+    capture_date: Optional[str] = None
 
     @property
     def active(self) -> bool:
@@ -149,6 +199,8 @@ class TimelineFilters:
             or self.formats
             or self.focals
             or (self.date_from is not None and self.date_to is not None)
+            or self.dir_prefix is not None
+            or self.capture_date is not None
         )
 
     def sql(self) -> tuple[str, list]:
@@ -173,6 +225,22 @@ class TimelineFilters:
         if self.date_from is not None and self.date_to is not None:
             parts.append(_sql("substr({LOCAL}, 1, 10) BETWEEN ? AND ?"))
             params.extend([self.date_from, self.date_to])
+        if self.dir_prefix is not None:
+            # Same prefix range as MediaStatsService._scope_sql.
+            assert self.dir_prefix.endswith("/")
+            hi = self.dir_prefix[:-1] + "0"  # '0' is the character right after '/'
+            parts.append("fr.file_path >= ? AND fr.file_path < ?")
+            params.extend([self.dir_prefix, hi])
+            if not self.dir_recursive:
+                parts.append("instr(substr(fr.file_path, ?), '/') = 0")
+                params.append(len(self.dir_prefix) + 1)
+        if self.capture_date is not None:
+            year = int(self.capture_date[:4])
+            if not _MIN_CAPTURE_YEAR <= year <= datetime.now(timezone.utc).year + 1:
+                parts.append("0")  # the stats count such dates as unknown
+            else:
+                parts.append(_CAPTURE_DATE_SQL)
+                params.extend([*IMAGE_EXTS, self.capture_date])
         if not parts:
             return "1", []
         return " AND ".join(parts), params
@@ -285,7 +353,16 @@ class TimelineService:
     def __init__(self, db: aiosqlite.Connection):
         self._db = db
 
-    async def _prepare(self, intervals: Sequence[tuple[str, str]]) -> None:
+    async def _prepare(
+        self,
+        intervals: Sequence[tuple[str, str]],
+        capture_intervals: Optional[Sequence[tuple[str, str]]] = None,
+    ) -> None:
+        """Create the temp time-zone tables and SQL functions.
+
+        ``capture_intervals`` (``resolve_default_tz`` intervals, stats rule)
+        fills ``temp.timeline_capture_tz`` for the ``capture_date`` filter.
+        """
         db = self._db
         await db.execute("PRAGMA temp_store = MEMORY")
         await db.create_function("pv_name_key", 1, _pv_name_key, deterministic=True)
@@ -301,15 +378,28 @@ class TimelineService:
             "INSERT INTO temp.timeline_tz (utc_start, modifier) VALUES (?, ?)",
             [(start.replace("T", " "), modifier) for start, modifier in intervals],
         )
+        await db.execute("DROP TABLE IF EXISTS temp.timeline_capture_tz")
+        if capture_intervals is not None:
+            await db.execute(
+                "CREATE TEMP TABLE timeline_capture_tz ("
+                "utc_start TEXT PRIMARY KEY, modifier TEXT NOT NULL) WITHOUT ROWID"
+            )
+            # 'T'-separated like temp.stats_tz: compared with the raw
+            # capture_time, exactly as the statistics do.
+            await db.executemany(
+                "INSERT INTO temp.timeline_capture_tz (utc_start, modifier) VALUES (?, ?)",
+                list(capture_intervals),
+            )
         # End the implicit transaction so no read snapshot is held afterwards.
         await db.commit()
 
     async def _cleanup(self) -> None:
         try:
             await self._db.execute("DROP TABLE IF EXISTS temp.timeline_tz")
+            await self._db.execute("DROP TABLE IF EXISTS temp.timeline_capture_tz")
             await self._db.commit()
         except Exception:  # noqa: BLE001 - the connection is closed right after
-            logger.debug("Dropping temp.timeline_tz failed", exc_info=True)
+            logger.debug("Dropping the timeline temp tables failed", exc_info=True)
 
     async def _fetchall(self, sql: str, params: list) -> list:
         cursor = await self._db.execute(sql, params)
@@ -365,9 +455,14 @@ class TimelineService:
         user_id: int,
         filters: TimelineFilters,
         intervals: Sequence[tuple[str, str]],
+        *,
+        capture_intervals: Optional[Sequence[tuple[str, str]]] = None,
     ) -> TimelineSummary:
-        """Library total plus filtered per-month counts, in one scan."""
-        await self._prepare(intervals)
+        """Library total plus filtered per-month counts, in one scan.
+
+        ``capture_intervals`` is required when ``filters.capture_date`` is set.
+        """
+        await self._prepare(intervals, capture_intervals)
         try:
             filter_sql, filter_params = filters.sql()
             sql = _sql(
@@ -459,10 +554,15 @@ class TimelineService:
         offset: int = 0,
         after: Optional[TimelineCursor] = None,
         limit: int = 200,
+        *,
+        capture_intervals: Optional[Sequence[tuple[str, str]]] = None,
     ) -> tuple[list[FileBrowseInfo], bool]:
-        """One page of a local month, ``K DESC, id DESC``; returns ``(files, has_more)``."""
+        """One page of a local month, ``K DESC, id DESC``; returns ``(files, has_more)``.
+
+        ``capture_intervals`` is required when ``filters.capture_date`` is set.
+        """
         sql, params = self._list_month_sql(user_id, filters, year, month, offset, after, limit)
-        await self._prepare(intervals)
+        await self._prepare(intervals, capture_intervals)
         try:
             rows = await self._fetchall(sql, params)
         finally:

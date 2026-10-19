@@ -137,7 +137,7 @@ docker compose up -d
 | `PHOTOVAULT_LOG_LEVEL` | `INFO` | 日志级别 |
 | `PHOTOVAULT_DEFAULT_TIMEZONE` | 空 | 数据统计换算当地时间用的默认时区（IANA 名称，如 `Asia/Shanghai`；config.yaml 中为 `stats.default_timezone`）。设置后优先于浏览器时区，无效值会被忽略并记一条 WARNING |
 
-数据统计页的拍摄时间一律按当地时间统计，时区按以下顺序确定：文件自带的时区偏移（照片 EXIF 时间、带偏移的视频时间按原样使用）→ `PHOTOVAULT_DEFAULT_TIMEZONE` → 浏览器时区 → 服务端 `TZ` 环境变量（未设置时用服务器本机偏移）。
+数据统计页的拍摄时间一律按当地时间统计，时区按以下顺序确定：文件自带的时区偏移（照片 EXIF 时间、带偏移的视频时间按原样使用）→ `PHOTOVAULT_DEFAULT_TIMEZONE` → 浏览器时区 → 服务端 `TZ` 环境变量（未设置时用服务器本机偏移）。「每日文件数量」热力图，以及从热力图点击日期后时间线上的「拍摄日期」筛选，也按同一规则确定日期。
 
 #### 存储目录相互独立
 

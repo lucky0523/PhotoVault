@@ -2,6 +2,9 @@
 
     GET /stats/media   overview / photo / video statistics of one directory
 
+``overview.daily`` holds the per-day photo + video counts by local capture
+date (Web heatmap); ``today`` is filled in here from the resolved time zone.
+
 The current user is the only scope owner: ``user_id`` comes from the token and
 the API accepts no user parameter. The path is validated and normalised here
 (the single entry point); all aggregation happens in SQL inside
@@ -23,6 +26,7 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.validators import normalize_virtual_dir_path
 from app.models.auth import UserInfo
 from app.services import media_metadata
 from app.services.media_stats_service import MediaStatsService
@@ -35,8 +39,6 @@ from app.services.stats_buckets import (
 logger = logging.getLogger("photovault.api.stats")
 
 router = APIRouter()
-
-_MAX_PATH_LENGTH = 1024
 
 FFPROBE_MISSING_NOTICE = {
     "code": "ffprobe_missing",
@@ -91,11 +93,22 @@ class OverviewTotal(BaseModel):
     bytes: int
 
 
+class DailyCounts(BaseModel):
+    """Photo + video counts per local capture date (heatmap)."""
+
+    kind: str                  # "calendar"
+    today: str                 # 'YYYY-MM-DD' in the resolved stats time zone
+    days: dict[str, int]       # 'YYYY-MM-DD' -> count, count > 0 only, ascending
+    unknown: int               # photos / videos without a valid capture time
+    total: int                 # = Σ days + unknown = photo + video count
+
+
 class Overview(BaseModel):
     total: OverviewTotal
     motion_photo_count: int
     categories: Distribution
     formats: Distribution
+    daily: DailyCounts
 
 
 class MediaStatsResponse(BaseModel):
@@ -116,14 +129,10 @@ class MediaStatsResponse(BaseModel):
 
 def _normalize_stats_path(raw: str) -> str:
     """Validate and normalise the virtual directory path (400 on failure)."""
-    path = raw.strip("/")
-    if len(path) > _MAX_PATH_LENGTH:
-        raise HTTPException(status_code=400, detail="路径过长")
-    if "\x00" in path or "\\" in path:
-        raise HTTPException(status_code=400, detail="路径包含非法字符")
-    if path and any(seg in ("", ".", "..") for seg in path.split("/")):
-        raise HTTPException(status_code=400, detail="路径格式无效")
-    return path
+    try:
+        return normalize_virtual_dir_path(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _validate_tz(tz: Optional[str]) -> Optional[str]:
@@ -195,6 +204,8 @@ async def get_media_stats(
     notices = []
     if not has_ffprobe and video_count > 0:
         notices.append(FFPROBE_MISSING_NOTICE)
+    # "Today" in the stats time zone, so the client never does tz math.
+    stats["overview"]["daily"]["today"] = datetime.now(rtz.tzinfo).date().isoformat()
 
     return MediaStatsResponse(
         scope=StatsScope(
