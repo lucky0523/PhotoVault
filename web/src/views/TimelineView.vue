@@ -46,7 +46,8 @@
       <!-- Right content area -->
       <el-main class="content-area">
         <div class="pv-page-head">
-          <!-- Top toolbar: Date range filter -->
+          <!-- 标题栏：右侧是两行筛选栏。第 1 行：文件名搜索、目录、包含子目录、清除筛选；
+               第 2 行：设备、文件格式、焦段、日期范围、拍摄日期标签。全部筛选状态都在 URL 里。 -->
           <PageHeader title="时间线" :icon="Timer">
             <template #subtitle>
               <span v-if="hasActiveFilters" class="filter-badge">
@@ -56,109 +57,152 @@
               <span v-else-if="totalPhotos > 0" class="pv-muted">共 {{ totalPhotos }} 张照片</span>
             </template>
             <template #extra>
-              <el-button
-                v-if="hasActiveFilters"
-                type="primary"
-                :icon="RefreshLeft"
-                text
-                class="clear-filter-btn"
-                @click="resetFilters"
-              >
-                清除筛选
-              </el-button>
-              <!-- 文件名模糊搜索，放在设备筛选框前面。只有按回车才搜索（打字过程中不访问服务端），
-                   点输入框的清除按钮立即恢复全部结果。搜索在服务端执行，长度上限与服务端一致。
-                   “搜索文件名，回车搜索”在 200px 宽的输入框里放不下（需 140px，只有 134px），
-                   所以占位文字保持简短，回车提示放在 title 里。 -->
-              <el-input
-                v-model="searchInput"
-                :prefix-icon="Search"
-                clearable
-                maxlength="200"
-                placeholder="搜索文件名"
-                title="输入文件名后按回车搜索"
-                aria-label="搜索文件名"
-                :class="['filename-search', { 'is-active': searchQuery !== '' }]"
-                size="default"
-                @clear="applySearchNow"
-                @keydown.enter="handleSearchEnter"
-              />
-              <el-select
-                v-model="selectedDevices"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                clearable
-                placeholder="设备"
-                :class="['filter-select', { 'filter-active': selectedDevices.length > 0 }]"
-                size="default"
-                @change="handleFilterChange"
-              >
-                <el-option
-                  v-for="d in deviceOptions"
-                  :key="d"
-                  :label="d"
-                  :value="d"
-                />
-              </el-select>
-              <el-select
-                v-model="selectedFormats"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                clearable
-                placeholder="文件格式"
-                :class="['filter-select', { 'filter-active': selectedFormats.length > 0 }]"
-                size="default"
-                @change="handleFilterChange"
-              >
-                <el-option
-                  v-for="fmt in formatOptions"
-                  :key="fmt"
-                  :label="fmt"
-                  :value="fmt"
-                />
-              </el-select>
-              <el-select
-                v-model="selectedFocals"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                clearable
-                placeholder="焦段"
-                :class="['filter-select', { 'filter-active': selectedFocals.length > 0 }]"
-                size="default"
-                @change="handleFilterChange"
-              >
-                <el-option
-                  v-for="b in focalOptions"
-                  :key="b.key"
-                  :label="b.label"
-                  :value="b.key"
-                />
-              </el-select>
-              <!-- el-date-picker 的根元素是它内部 el-tooltip 渲染出来的，拿不到
-                   本组件的 scoped 属性（所以此前直接写 .el-date-editor 的样式一直
-                   没生效）。这里套一层自己的 div，再用 :deep() 定宽和加高亮，
-                   否则 Element 的 flex-grow 会把控件拉满整行。 -->
-              <div
-                class="date-filter"
-                :class="{ 'is-active': !!(dateRange && dateRange[0]) }"
-              >
-                <el-date-picker
-                  v-model="dateRange"
-                  type="daterange"
-                  range-separator="至"
-                  start-placeholder="开始日期"
-                  end-placeholder="结束日期"
-                  format="YYYY-MM-DD"
-                  value-format="YYYY-MM-DD"
-                  :clearable="true"
-                  size="default"
-                  popper-class="tl-date-popper"
-                  :cell-class-name="dateCellClass"
-                  @change="handleFilterChange"
-                />
+              <div class="tl-filters">
+                <!-- 第 1 行：文件名搜索、目录、包含子目录、清除筛选 -->
+                <div class="tl-filter-row tl-filter-row--primary">
+                  <!-- 文件名模糊搜索。只有按回车才搜索（打字过程中不访问服务端），
+                       点输入框的清除按钮立即恢复全部结果。搜索在服务端执行，长度上限与服务端一致。
+                       “搜索文件名，回车搜索”在 200px 宽的输入框里放不下（需 140px，只有 134px），
+                       所以占位文字保持简短，回车提示放在 title 里。 -->
+                  <el-input
+                    v-model="searchInput"
+                    :prefix-icon="Search"
+                    clearable
+                    maxlength="200"
+                    placeholder="搜索文件名"
+                    title="输入文件名后按回车搜索"
+                    aria-label="搜索文件名"
+                    :class="['filename-search', { 'is-active': searchQuery !== '' }]"
+                    size="default"
+                    @clear="applySearchNow"
+                    @keydown.enter="handleSearchEnter"
+                  />
+                  <!-- 目录筛选：与数据统计的目录范围同语义，'' = 全部（含自定义存储路径） -->
+                  <div class="dir-filter" :class="{ 'is-active': dirPath !== '' }">
+                    <DirectoryTreeSelect aria-label="选择目录" :path="dirPath" @update:path="onDirPathChange" />
+                  </div>
+                  <el-tooltip
+                    content="根目录始终包含全部文件"
+                    placement="bottom"
+                    :disabled="dirPath !== ''"
+                  >
+                    <span class="recursive-switch">
+                      <el-switch
+                        :model-value="dirPath === '' ? true : dirRecursive"
+                        :disabled="dirPath === ''"
+                        active-text="包含子目录"
+                        aria-label="包含子目录"
+                        @update:model-value="onDirRecursiveChange"
+                      />
+                    </span>
+                  </el-tooltip>
+                  <el-button
+                    v-if="hasActiveFilters"
+                    type="primary"
+                    :icon="RefreshLeft"
+                    text
+                    class="clear-filter-btn"
+                    @click="resetFilters"
+                  >
+                    清除筛选
+                  </el-button>
+                </div>
+                <!-- 第 2 行：设备、文件格式、焦段、日期范围、拍摄日期 -->
+                <div class="tl-filter-row tl-filter-row--secondary">
+                  <el-select
+                    v-model="selectedDevices"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    clearable
+                    placeholder="设备"
+                    :class="['filter-select', { 'filter-active': selectedDevices.length > 0 }]"
+                    size="default"
+                    @change="handleFilterChange"
+                  >
+                    <el-option
+                      v-for="d in deviceOptions"
+                      :key="d"
+                      :label="d"
+                      :value="d"
+                    />
+                  </el-select>
+                  <el-select
+                    v-model="selectedFormats"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    clearable
+                    placeholder="文件格式"
+                    :class="['filter-select', { 'filter-active': selectedFormats.length > 0 }]"
+                    size="default"
+                    @change="handleFilterChange"
+                  >
+                    <el-option
+                      v-for="fmt in formatOptions"
+                      :key="fmt"
+                      :label="fmt"
+                      :value="fmt"
+                    />
+                  </el-select>
+                  <el-select
+                    v-model="selectedFocals"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    clearable
+                    placeholder="焦段"
+                    :class="['filter-select', { 'filter-active': selectedFocals.length > 0 }]"
+                    size="default"
+                    @change="handleFilterChange"
+                  >
+                    <el-option
+                      v-for="b in focalOptions"
+                      :key="b.key"
+                      :label="b.label"
+                      :value="b.key"
+                    />
+                  </el-select>
+                  <!-- el-date-picker 的根元素是它内部 el-tooltip 渲染出来的，拿不到
+                       本组件的 scoped 属性（所以此前直接写 .el-date-editor 的样式一直
+                       没生效）。这里套一层自己的 div，再用 :deep() 定宽和加高亮，
+                       否则 Element 的 flex-grow 会把控件拉满整行。 -->
+                  <div
+                    class="date-filter"
+                    :class="{ 'is-active': !!(dateRange && dateRange[0]) }"
+                  >
+                    <el-date-picker
+                      v-model="dateRange"
+                      type="daterange"
+                      range-separator="至"
+                      start-placeholder="开始日期"
+                      end-placeholder="结束日期"
+                      format="YYYY-MM-DD"
+                      value-format="YYYY-MM-DD"
+                      :clearable="true"
+                      size="default"
+                      popper-class="tl-date-popper"
+                      :cell-class-name="dateCellClass"
+                      @change="handleFilterChange"
+                    />
+                  </div>
+                  <!-- 单日拍摄日期：只能经 URL 的 day 设置（数据统计热力图点击日期跳转过来），可关闭 -->
+                  <el-tooltip
+                    v-if="captureDay"
+                    content="按数据统计口径（拍摄时间、当地时间）筛选"
+                    placement="bottom"
+                  >
+                    <el-tag
+                      class="capture-day-tag"
+                      closable
+                      disable-transitions
+                      size="large"
+                      @close="clearCaptureDay"
+                    >
+                      拍摄日期：{{ formatCaptureDay(captureDay) }}
+                    </el-tag>
+                  </el-tooltip>
+                </div>
               </div>
             </template>
           </PageHeader>
@@ -277,6 +321,8 @@
 
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import type { LocationQuery, LocationQueryRaw } from 'vue-router'
 import axios from 'axios'
 import { Timer, ArrowRight, Loading, Download, Delete, Filter, RefreshLeft, VideoPlay, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -294,6 +340,7 @@ import type { FileInfo, TimelineFacets, TimelineFilesPage, TimelinePageRequest, 
 import ImagePreview from '@/components/ImagePreview.vue'
 import LivePhotoIcon from '@/components/LivePhotoIcon.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import DirectoryTreeSelect from '@/components/DirectoryTreeSelect.vue'
 import { isVideo, isMotionPhoto, handleThumbnailError } from '@/utils/media'
 import { buildLayout, findVisibleSections, missingRuns } from '@/utils/timelineLayout'
 import type { SectionLayout, TimelineLayout } from '@/utils/timelineLayout'
@@ -302,10 +349,19 @@ import { useConfigStore } from '@/stores/config'
 
 const trashStore = useTrashStore()
 const configStore = useConfigStore()
+const route = useRoute()
+const router = useRouter()
 
 // 为什么按月份请求：照片很容易上万张，整库拉到浏览器里既慢又占内存。服务端先给出
 // 每个月的张数（summary），页面据此铺出整条时间线的骨架；某个月滚进视口附近时，
-// 再按月份分页请求这一段的文件（files）。搜索与筛选都由服务端执行。
+// 再按月份分页请求这一段的文件（files）。搜索与筛选（含目录、单日拍摄日期）都由服务端执行。
+//
+// 全部筛选状态都写在 URL 里（可分享的深链接、浏览器前进 / 后退）：
+//   q、device / format / focal（可重复）、from + to（日期范围）、day（拍摄日期）、
+//   path（目录）、recursive=0（不含子目录，只在 path 非空时出现）。
+// timelineFiltersFromRoute 是 URL → 筛选状态的唯一归一化入口（宽松：非法值直接丢弃）；
+// 控件变化时 router.replace 写回 URL（不堆历史）并立即重新请求一次；
+// watch(route.query) 只在归一化后的状态与当前不同时（深链接、前进 / 后退）才应用并重新请求。
 
 // --- Types ---
 interface YearNavItem {
@@ -366,6 +422,11 @@ const selectedFocals = ref<string[]>([])
 // 请求、描边和“已筛选”徽标都只读 searchQuery，打字过程中不请求服务端。
 const searchInput = ref('')
 const searchQuery = ref('')
+// 单日拍摄日期 YYYY-MM-DD（'' = 不筛选），只能经 URL 的 day 设置，标签可关闭
+const captureDay = ref('')
+// 目录筛选：'' = 全部；根目录时包含子目录恒为 true
+const dirPath = ref('')
+const dirRecursive = ref(true)
 const expandedYears = ref<Set<number>>(new Set())
 const activeYear = ref<number | null>(null)
 const activeMonth = ref<number | null>(null)
@@ -521,16 +582,20 @@ const hasActiveFilters = computed(
     selectedFormats.value.length > 0 ||
     selectedFocals.value.length > 0 ||
     !!(dateRange.value && dateRange.value[0]) ||
-    searchQuery.value !== ''
+    searchQuery.value !== '' ||
+    dirPath.value !== '' ||
+    captureDay.value !== ''
 )
 
 const activeFilterCount = computed(() => {
   let n = 0
   if (searchQuery.value !== '') n++
+  if (dirPath.value !== '') n++ // 目录 + 是否包含子目录算一项
   if (selectedDevices.value.length > 0) n++
   if (selectedFormats.value.length > 0) n++
   if (selectedFocals.value.length > 0) n++
   if (dateRange.value && dateRange.value[0]) n++
+  if (captureDay.value !== '') n++
   return n
 })
 
@@ -994,7 +1059,164 @@ function currentQuery(): TimelineQuery {
     query.dateFrom = dateRange.value[0]
     query.dateTo = dateRange.value[1]
   }
+  if (dirPath.value) {
+    query.path = dirPath.value
+    query.recursive = dirRecursive.value
+  }
+  if (captureDay.value) query.captureDate = captureDay.value
   return query
+}
+
+// --- URL ↔ 筛选状态 ---
+
+interface TimelineFilterState {
+  q: string
+  devices: string[]
+  formats: string[]
+  focals: string[]
+  dateFrom: string // 与 dateTo 同时为空或同时有值
+  dateTo: string
+  day: string
+  path: string
+  recursive: boolean // path 为空时恒为 true
+}
+
+const FOCAL_KEYS = new Set(FOCAL_BUCKETS.map((b) => b.key))
+const SEARCH_MAX_LENGTH = 200
+const PATH_MAX_LENGTH = 1024
+
+/** URL 里某个键的全部非空字符串值（重复键 → 多个值）。 */
+function queryValues(value: LocationQuery[string] | undefined): string[] {
+  const list = Array.isArray(value) ? value : [value]
+  return list.filter((v): v is string => typeof v === 'string' && v !== '')
+}
+
+/** 重复键取第一个值，与数据统计页 scopeFromRoute 一致。 */
+function firstQueryValue(value: LocationQuery[string] | undefined): string {
+  const v = Array.isArray(value) ? value[0] : value
+  return typeof v === 'string' ? v : ''
+}
+
+/** 合法的公历日期 YYYY-MM-DD（2026-13-45 之类的会被服务端 422，这里先丢掉）。 */
+function isValidYmd(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false
+  const d = new Date(`${s}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
+}
+
+/** 与服务端 normalize_virtual_dir_path 同规则；不合法时返回 ''（全部），不让页面落到错误态。 */
+function normalizeDirPath(raw: string): string {
+  const path = raw.replace(/^\/+|\/+$/g, '')
+  if (path === '') return ''
+  if (path.length > PATH_MAX_LENGTH || /[\\\0]/.test(path)) return ''
+  if (path.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return ''
+  return path
+}
+
+/**
+ * URL → 筛选状态的唯一归一化入口（宽松处理，非法值直接丢弃）：
+ * - 日期不是合法 YYYY-MM-DD、from / to 只给了一个、from 晚于 to：日期范围作废；
+ * - focal 只保留已知焦段；重复值去重；
+ * - path 去掉首尾 '/'，不合法时当作全部；recursive 除 '0' 以外一律为 true，path 为空时恒为 true。
+ */
+function timelineFiltersFromRoute(query: LocationQuery): TimelineFilterState {
+  const unique = (values: string[]) => [...new Set(values)]
+  let dateFrom = firstQueryValue(query.from)
+  let dateTo = firstQueryValue(query.to)
+  if (!isValidYmd(dateFrom) || !isValidYmd(dateTo) || dateFrom > dateTo) {
+    dateFrom = ''
+    dateTo = ''
+  }
+  const day = firstQueryValue(query.day)
+  const path = normalizeDirPath(firstQueryValue(query.path))
+  return {
+    q: firstQueryValue(query.q).trim().slice(0, SEARCH_MAX_LENGTH),
+    devices: unique(queryValues(query.device)),
+    formats: unique(queryValues(query.format)),
+    focals: unique(queryValues(query.focal).filter((k) => FOCAL_KEYS.has(k))),
+    dateFrom,
+    dateTo,
+    day: isValidYmd(day) ? day : '',
+    path,
+    recursive: path === '' || firstQueryValue(query.recursive) !== '0',
+  }
+}
+
+/** 筛选状态 → URL：只写非默认值（recursive=0 只在选了目录且不含子目录时出现）。 */
+function timelineQueryToRoute(state: TimelineFilterState): LocationQueryRaw {
+  const query: LocationQueryRaw = {}
+  if (state.q) query.q = state.q
+  if (state.devices.length > 0) query.device = [...state.devices]
+  if (state.formats.length > 0) query.format = [...state.formats]
+  if (state.focals.length > 0) query.focal = [...state.focals]
+  if (state.dateFrom && state.dateTo) {
+    query.from = state.dateFrom
+    query.to = state.dateTo
+  }
+  if (state.day) query.day = state.day
+  if (state.path) {
+    query.path = state.path
+    if (!state.recursive) query.recursive = '0'
+  }
+  return query
+}
+
+/** 当前控件所代表的筛选状态（搜索词取已生效的 searchQuery，不是输入框里正在打的字）。 */
+function currentFilterState(): TimelineFilterState {
+  const range = dateRange.value
+  const hasRange = !!(range && range[0] && range[1])
+  return {
+    q: searchQuery.value,
+    devices: [...selectedDevices.value],
+    formats: [...selectedFormats.value],
+    focals: [...selectedFocals.value],
+    dateFrom: hasRange ? range![0] : '',
+    dateTo: hasRange ? range![1] : '',
+    day: captureDay.value,
+    path: dirPath.value,
+    recursive: dirPath.value === '' || dirRecursive.value,
+  }
+}
+
+function applyFilterState(state: TimelineFilterState) {
+  searchInput.value = state.q
+  searchQuery.value = state.q
+  selectedDevices.value = [...state.devices]
+  selectedFormats.value = [...state.formats]
+  selectedFocals.value = [...state.focals]
+  dateRange.value = state.dateFrom && state.dateTo ? [state.dateFrom, state.dateTo] : null
+  captureDay.value = state.day
+  dirPath.value = state.path
+  dirRecursive.value = state.recursive
+}
+
+const filterKey = (state: TimelineFilterState) => JSON.stringify(state)
+
+/** 把当前筛选写回 URL。replace 而不是 push：切换筛选不算导航，不堆历史。 */
+function syncRouteQuery() {
+  router
+    .replace({ name: 'Timeline', query: timelineQueryToRoute(currentFilterState()) })
+    .catch((error) => console.error('Failed to update timeline URL:', error))
+}
+
+// 深链接以外的 URL 变化（浏览器前进 / 后退、从别的页面带参数跳过来）：
+// 归一化后与当前状态相同（包括控件变化后自己写回的 URL）就什么都不做，不会重复请求。
+watch(
+  () => route.query,
+  (query) => {
+    // 离开页面时 query 也会变化，不能因此多发一次请求
+    if (route.name !== 'Timeline') return
+    const next = timelineFiltersFromRoute(query)
+    if (filterKey(next) === filterKey(currentFilterState())) return
+    applyFilterState(next)
+    void reloadTimeline()
+  }
+)
+
+/** 'YYYY-MM-DD' → 'YYYY年M月D日' */
+function formatCaptureDay(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return `${y}年${m}月${d}日`
 }
 
 /** 按当前筛选重新请求 summary，装入新的月份骨架。旧内容保留到新结果回来，不闪加载态。 */
@@ -1100,8 +1322,28 @@ function toggleYear(year: number) {
   expandedYears.value = new Set(expandedYears.value)
 }
 
+/** 所有控件变化的唯一出口：先写回 URL，再按新筛选请求一次（URL 回写触发的 watch 不会再请求）。 */
 function handleFilterChange() {
+  syncRouteQuery()
   void reloadTimeline()
+}
+
+function onDirPathChange(path: string) {
+  if (path === dirPath.value) return
+  dirPath.value = path
+  // 回到根目录时“包含子目录”恒为开；之后再选目录从默认（包含）开始
+  if (path === '') dirRecursive.value = true
+  handleFilterChange()
+}
+
+function onDirRecursiveChange(value: string | number | boolean) {
+  dirRecursive.value = value === true
+  handleFilterChange()
+}
+
+function clearCaptureDay() {
+  captureDay.value = ''
+  handleFilterChange()
 }
 
 // 搜索只在按回车时执行：每次生效服务端执行一次 summary，再加最新月份的 files 第 1 页。
@@ -1129,6 +1371,9 @@ function resetFilters() {
   selectedFormats.value = []
   selectedFocals.value = []
   dateRange.value = null
+  captureDay.value = ''
+  dirPath.value = ''
+  dirRecursive.value = true
   handleFilterChange()
 }
 
@@ -1296,6 +1541,8 @@ onMounted(() => {
     Object.defineProperty(window, '__pvTimelineLayout', { get: () => layout.value, configurable: true })
   }
 
+  // 第一次请求之前先从 URL 恢复筛选（深链接、刷新页面）
+  applyFilterState(timelineFiltersFromRoute(route.query))
   void loadFacets()
   void reloadTimeline()
 })
@@ -1461,8 +1708,71 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-/* Filters：加上文件名搜索框后，约 1600px 以上视口标题栏仍是一行，
-   更窄的窗口靠 flex-wrap 换行降级。 */
+/* 筛选栏：标题右侧两行，每行靠右对齐、放不下时自行换行。第 1 行是搜索 / 目录 /
+   包含子目录 / 清除筛选，第 2 行是设备 / 格式 / 焦段 / 日期范围 / 拍摄日期标签。
+   宽屏下两行各自一行排开、标题在左侧；窄窗口整块换到标题下面（见下方 .pv-page-header 降级）。 */
+.tl-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.tl-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 标题栏卡片背景跟随 Element 的主题变量（浅色下与 .pv-panel 的 #fff 相同），
+   html.dark 下与暗色控件一致。只作用于时间线页，不改共享的 PageHeader / layout.css。 */
+.pv-page-head :deep(.pv-page-header) {
+  background-color: var(--el-bg-color-overlay);
+}
+
+/* 目录选择器：固定宽度，窄到放不下时不超过所在行 */
+.dir-filter {
+  flex: 0 0 auto;
+  width: 220px;
+  max-width: 100%;
+}
+
+.dir-filter :deep(.directory-tree-select) {
+  width: 100%;
+}
+
+.dir-filter.is-active :deep(.el-select__wrapper) {
+  box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
+  background-color: var(--el-fill-color-blank);
+}
+
+.recursive-switch {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+
+/* 拍摄日期标签：与控件等高；品牌深红字配浅红底（对比度 ≥ 4.5:1，同“已筛选”徽标） */
+.capture-day-tag {
+  max-width: 100%;
+  height: 32px;
+  font-size: 14px;
+  color: var(--pv-brand-ink);
+  background-color: var(--pv-brand-container);
+  border-color: var(--el-color-primary-light-5);
+}
+
+.capture-day-tag :deep(.el-tag__close) {
+  color: var(--pv-brand-ink);
+}
+
+.capture-day-tag :deep(.el-tag__close:hover) {
+  color: #fff;
+  background-color: var(--el-color-primary);
+}
+
 .filter-select {
   width: 140px;
 }
@@ -1498,11 +1808,11 @@ onBeforeUnmount(() => {
 .filter-select.filter-active :deep(.el-select__wrapper),
 .filter-select.filter-active :deep(.el-input__wrapper) {
   box-shadow: 0 0 0 1.5px var(--el-color-primary) inset;
-  background-color: #fff;
+  background-color: var(--el-fill-color-blank);
 }
 
 /* 日期区间控件：Element 的 .el-input__wrapper 带 flex-grow:1，在标题栏的
-   flex 容器里会被拉满整行，这里固定宽度，宽屏下搜索框和各筛选器排成一行。 */
+   flex 容器里会被拉满整行，这里固定宽度，宽屏下第 2 行的各筛选器排成一行。 */
 .date-filter {
   flex: 0 0 auto;
   width: 280px;
@@ -1515,15 +1825,17 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
-/* 窄窗口降级：标题 + 280px 日期框放不下时，整组筛选器换到标题下一行，
-   而不是溢出卡片。flex-basis 0 让筛选区只在真放不下时才换行，
+/* 窄窗口降级：标题 + 最宽的单个控件（280px 日期框）放不下时，整块两行筛选栏换到
+   标题下一行，而不是溢出卡片。flex-basis 0 让筛选区只在真放不下时才换行，
    宽屏布局保持不变。只作用于时间线页，不改共享的 PageHeader。 */
 .pv-page-head :deep(.pv-page-header) {
   flex-wrap: wrap;
 }
 
+/* 两行筛选栏的第 1 行（搜索 200 + 目录 220 + 开关约 120 + 间距）约 556px：标题右侧
+   放不下这一行时整块换到标题下面，而不是挤成窄窄一列、控件错落成五六行。 */
 .pv-page-head :deep(.pv-page-header__extra) {
-  flex: 1 1 0;
+  flex: 1 1 560px;
 }
 
 /* Highlight the date range picker when a range is set */

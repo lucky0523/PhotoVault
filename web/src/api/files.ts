@@ -175,6 +175,12 @@ export interface TimelineQuery {
   focals?: string[]
   dateFrom?: string
   dateTo?: string
+  /** 虚拟目录，'' / undefined 表示全部（含自定义存储路径），与数据统计的目录范围同语义 */
+  path?: string
+  /** 是否包含子目录，默认 true；只在 path 非空时生效 */
+  recursive?: boolean
+  /** 单日拍摄日期 YYYY-MM-DD，按数据统计口径（拍摄时间、当地时间）筛选 */
+  captureDate?: string
   tz?: string
 }
 
@@ -223,6 +229,12 @@ function timelineParams(query: TimelineQuery): Record<string, string | string[]>
   if (query.focals && query.focals.length > 0) params.focal = query.focals
   if (query.dateFrom) params.date_from = query.dateFrom
   if (query.dateTo) params.date_to = query.dateTo
+  // 根目录不发 path；recursive 默认为 true，只在选了目录且不含子目录时发 false
+  if (query.path) {
+    params.path = query.path
+    if (query.recursive === false) params.recursive = 'false'
+  }
+  if (query.captureDate) params.capture_date = query.captureDate
   if (query.tz) params.tz = query.tz
   return params
 }

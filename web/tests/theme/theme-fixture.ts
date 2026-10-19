@@ -1,5 +1,6 @@
 import { createApp, defineComponent, h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { createPinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import ElementPlus, {
   ElButton,
   ElCheckbox,
@@ -114,7 +115,19 @@ const ThemeFixture = defineComponent({
   },
 })
 
+// TimelineView 把筛选状态写进 URL（useRoute / router.replace({ name: 'Timeline' })）。
+// 夹具页不渲染 RouterView，只提供一个内存路由，让真实的 TimelineView 能挂载、能回写 query。
+const Empty = defineComponent({ render: () => null })
+const router = createRouter({
+  history: createMemoryHistory(),
+  routes: [
+    { path: '/', name: 'Fixture', component: Empty },
+    { path: '/timeline', name: 'Timeline', component: Empty },
+  ],
+})
+
 const app = createApp(ThemeFixture)
+app.use(router)
 app.use(createPinia())
 app.use(ElementPlus)
 app.mount('#app')

@@ -191,6 +191,10 @@ type MockFile = {
   created_at: string
   device_name?: string
   focal_length?: number | null
+  /** 所在虚拟目录（目录筛选 path / recursive 用），默认 'Pixel 8' */
+  dir?: string
+  /** 按数据统计口径的拍摄日期（capture_date 筛选用），默认取 exif_time ?? created_at 的日期部分 */
+  capture_date?: string
   [key: string]: unknown
 }
 
@@ -217,6 +221,8 @@ interface ApiMockOptions {
   failSummary?: (callIndex: number) => boolean
   /** 服务端不认识浏览器时区：带 tz 的时间线请求一律 422 invalid_tz */
   rejectTz?: boolean
+  /** GET /files/browse 返回的子目录（DirectoryTreeSelect 用），键是父目录虚拟路径（'' = 根）；默认没有目录 */
+  browseDirs?: Record<string, { name: string; path: string }[]>
 }
 
 // ---- 时间线服务端语义的 mock 实现 ----
@@ -260,13 +266,20 @@ function filterTimeline(files: MockFile[], params: URLSearchParams): MockFile[] 
   const focals = params.getAll('focal')
   const dateFrom = params.get('date_from')
   const dateTo = params.get('date_to')
+  const path = params.get('path') ?? ''
+  const recursive = params.get('recursive') !== 'false'
+  const captureDate = params.get('capture_date')
   return files.filter((f) =>
     matchesFilename(f.file_name, keywords) &&
     (devices.length === 0 || devices.includes(f.device_name ?? '')) &&
     (formats.length === 0 || formats.includes(mockFileExt(f.file_name))) &&
     (focals.length === 0 || focals.includes(mockFocalBucket(f.focal_length))) &&
-    (!dateFrom || !dateTo || (mockLocalDate(f) >= dateFrom && mockLocalDate(f) <= dateTo)))
+    (!dateFrom || !dateTo || (mockLocalDate(f) >= dateFrom && mockLocalDate(f) <= dateTo)) &&
+    (path === '' || mockDir(f) === path || (recursive && mockDir(f).startsWith(`${path}/`))) &&
+    (!captureDate || (f.capture_date ?? mockLocalDate(f)) === captureDate))
 }
+
+const mockDir = (f: MockFile) => f.dir ?? 'Pixel 8'
 
 /** (exif_time ?? created_at) DESC, id DESC */
 function sortTimeline(files: MockFile[]): MockFile[] {
@@ -353,7 +366,13 @@ async function installApiMock(page: Page, options: ApiMockOptions = {}) {
     if (key === 'GET /api/v1/files/trash') return json({ items: trashItems, total: trashItems.length, page: 1, page_size: Number(url.searchParams.get('page_size') ?? 50) })
     if (key === 'GET /api/v1/admin/client-versions') return json(options.clientVersions ?? [])
     if (key === 'GET /api/v1/files/list') return json(listResponse)
-    if (key === 'GET /api/v1/files/browse') return json({ ...listResponse, files: [] })
+    if (key === 'GET /api/v1/files/browse') {
+      const parent = url.searchParams.get('path') ?? ''
+      const directories = (options.browseDirs?.[parent] ?? []).map((d) => ({
+        ...d, file_count: 1, size: 0, backed_up_count: 1, trashed_count: 0, purged_count: 0,
+      }))
+      return json({ ...listResponse, current_path: parent, directories, files: [] })
+    }
     if (key === 'GET /api/v1/stats/media') return json(statsResponse)
     if (key.startsWith('GET /api/v1/files/thumbnail/')) {
       log.status = 200
@@ -672,7 +691,10 @@ test('Timeline date range picker stays inside the header card', async ({ page })
         wrapper: rect(document.querySelector('.timeline-view .date-filter')),
         editor: rect(editor),
         editorScroll: { scrollWidth: editor.scrollWidth, clientWidth: editor.clientWidth },
-        extra: [...document.querySelectorAll('.timeline-view .pv-page-header__extra > *')].map(rect),
+        filters: rect(document.querySelector('.timeline-view .tl-filters')),
+        // 两行筛选栏里的每个控件
+        extra: [...document.querySelectorAll('.timeline-view .tl-filter-row > *')].map(rect),
+        rows: [...document.querySelectorAll('.timeline-view .tl-filter-row')].map((row) => [...row.children].map(rect)),
       }
     })
   }
@@ -715,14 +737,24 @@ test('Timeline date range picker stays inside the header card', async ({ page })
         expect.soft(child.right, `${label} extra[${index}] right`).toBeLessThanOrEqual(inner.right + tolerance)
       }
 
-      // Wide layouts: a single 48px row at 1920, and the title still beside
-      // the filters at 1280.
-      // 加入 200px 文件名搜索框后，1440 下筛选器在标题右侧折成两行（实测剩余宽度仅约 81px）。
-      if (!filtered && width === 1920) {
-        expect.soft(m.card.height, `${label} card height`).toBeCloseTo(48, 0)
+      for (const [index, child] of m.extra.entries()) {
+        expect.soft(child.top, `${label} extra[${index}] top`).toBeGreaterThanOrEqual(inner.top - tolerance)
+        expect.soft(child.bottom, `${label} extra[${index}] bottom`).toBeLessThanOrEqual(inner.bottom + tolerance)
       }
-      if (!filtered && width >= 1280) {
-        expect.soft(m.left.right, `${label} title beside filters`).toBeLessThan(m.extra[0].left)
+
+      // 筛选栏有意改成两行：>= 1440 时两行各自排成一行（同一行的控件垂直居中对齐），
+      // >= 1280 时标题仍在整块筛选栏左侧。
+      expect.soft(m.rows.length, `${label} filter rows`).toBe(2)
+      if (width >= 1440) {
+        for (const [r, row] of m.rows.entries()) {
+          const center = (b: { top: number; height: number }) => b.top + b.height / 2
+          for (const [index, child] of row.entries()) {
+            expect.soft(Math.abs(center(child) - center(row[0])), `${label} row ${r + 1} child ${index} on one line`).toBeLessThanOrEqual(1)
+          }
+        }
+      }
+      if (width >= 1280) {
+        expect.soft(m.left.right, `${label} title beside filters`).toBeLessThan(m.filters.left)
       }
     }
   }
@@ -787,9 +819,11 @@ test('Timeline filename search matches fuzzily across the whole library', async 
     expect(dataRequestCount(), label).toBe(before)
   }
 
-  // 1. 搜索框紧挨在设备筛选框前面，宽约 200px；占位文字完整显示不截断，回车提示在 title 里
+  // 1. 两行筛选栏：搜索框是第 1 行的第一个控件，设备筛选框是第 2 行的第一个控件（在搜索框下方）；
+  //    搜索框宽约 200px；占位文字完整显示不截断，回车提示在 title 里
   //    （“搜索文件名，回车搜索”需要 140px，输入框只有 134px，放不下）。
-  const device = page.locator('.timeline-view .pv-page-header__extra > .filename-search + .filter-select')
+  await expect(page.locator('.timeline-view .tl-filter-row--primary > .filename-search:first-child')).toHaveCount(1)
+  const device = page.locator('.timeline-view .tl-filter-row--secondary > .filter-select:first-child')
   await expect(device).toHaveCount(1)
   await expect(device).toContainText('设备')
   await expect(searchInput).toHaveAttribute('placeholder', '搜索文件名')
@@ -798,7 +832,7 @@ test('Timeline filename search matches fuzzily across the whole library', async 
   await expect(searchInput).toHaveAttribute('maxlength', '200')
   const searchBox = (await search.boundingBox())!
   const deviceBox = (await device.boundingBox())!
-  expect(searchBox.x + searchBox.width).toBeLessThan(deviceBox.x)
+  expect(searchBox.y + searchBox.height).toBeLessThanOrEqual(deviceBox.y)
   expect(Math.abs(searchBox.width - 200)).toBeLessThanOrEqual(0.5)
   const placeholderFit = await searchInput.evaluate((input: HTMLInputElement) => {
     const style = getComputedStyle(input)
@@ -1704,5 +1738,338 @@ test('Timeline count reconciliation above the viewport does not shift visible ph
   expect(filesRequests(requests, '2025-08').some((r) => Number(r.params.get('offset') ?? 0) > 0)).toBe(true)
 
   expect(consoleIssues.duplicateKeys).toEqual([])
+  expect(unknown).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// 时间线：目录筛选、单日拍摄日期筛选、筛选状态写入 URL、两行筛选栏
+// ---------------------------------------------------------------------------
+
+const statsHeatmapScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-heatmap-2026-10-19/screenshots'
+
+/** 两个目录 + 子目录 + 另一个顶层目录；UTC_SHIFT 的拍摄日期（数据统计口径）与时间线日期不同。 */
+const folderDayFiles: MockFile[] = [
+  { ...galleryFile, id: 3001, file_name: 'DCIM_DAY_A.JPG', dir: 'Pixel 8/DCIM', exif_time: '2026-10-19T09:00:00', device_name: '测试手机' },
+  { ...galleryFile, id: 3002, file_name: 'DCIM_DAY_B.JPG', dir: 'Pixel 8/DCIM', exif_time: '2026-10-19T18:00:00', device_name: '另一台手机' },
+  { ...galleryFile, id: 3003, file_name: 'DCIM_OTHER_DAY.JPG', dir: 'Pixel 8/DCIM', exif_time: '2026-10-18T09:00:00', device_name: '测试手机' },
+  { ...galleryFile, id: 3004, file_name: 'SUB_DAY.JPG', dir: 'Pixel 8/DCIM/Camera', exif_time: '2026-10-19T10:00:00', device_name: '测试手机' },
+  { ...galleryFile, id: 3005, file_name: 'ROOT_DAY.JPG', dir: 'Pixel 8', exif_time: '2026-10-19T11:00:00', device_name: '测试手机' },
+  { ...galleryFile, id: 3006, file_name: 'OTHER_DIR.JPG', dir: 'iPhone', exif_time: '2026-09-01T11:00:00', device_name: '测试手机' },
+  { ...galleryFile, id: 3007, file_name: 'UTC_SHIFT.JPG', dir: 'Pixel 8/DCIM', exif_time: '2026-10-18T23:30:00', capture_date: '2026-10-19', device_name: '测试手机' },
+]
+
+const folderBrowseDirs = {
+  '': [{ name: 'Pixel 8', path: 'Pixel 8' }, { name: 'iPhone', path: 'iPhone' }],
+  'Pixel 8': [{ name: 'DCIM', path: 'Pixel 8/DCIM' }],
+  'Pixel 8/DCIM': [{ name: 'Camera', path: 'Pixel 8/DCIM/Camera' }],
+}
+
+const summaryRequests = (requests: MockRequest[]) => requests.filter((r) => r.path.endsWith('/timeline/summary'))
+const urlQuery = (page: Page) => new URL(page.url()).searchParams
+
+function timelineFilterLocators(page: Page) {
+  const view = page.locator('.timeline-view')
+  return {
+    names: view.locator('.pv-tile__name'),
+    badge: view.locator('.filter-badge'),
+    tag: view.locator('.capture-day-tag'),
+    dir: view.locator('.dir-filter'),
+    recursive: view.locator('.recursive-switch .el-switch'),
+    device: view.locator('.filter-select').first(),
+  }
+}
+
+/** 等 500ms，期间 summary 请求数不再变化，并返回该数量。 */
+async function stableSummaryCount(page: Page, requests: MockRequest[]): Promise<number> {
+  const before = summaryRequests(requests).length
+  await page.waitForTimeout(500)
+  expect(summaryRequests(requests).length).toBe(before)
+  return before
+}
+
+test('Timeline deep link restores folder, capture-day and device filters and sends them to the server', async ({ page }) => {
+  test.setTimeout(60_000)
+  const { unknown, requests } = await installApiMock(page, { timelineFiles: folderDayFiles, browseDirs: folderBrowseDirs })
+  const consoleIssues = collectConsoleIssues(page)
+  await authenticate(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/timeline?day=2026-10-19&path=Pixel%208/DCIM&recursive=0&device=测试手机')
+  const ui = timelineFilterLocators(page)
+
+  // 控件从 URL 恢复
+  await expect(ui.tag).toHaveText('拍摄日期：2026年10月19日')
+  await expect(ui.dir).toContainText('DCIM')
+  await expect(ui.dir.locator('input')).toHaveAttribute('aria-label', '选择目录')
+  await expect(ui.recursive).not.toHaveClass(/is-checked/)
+  await expect(ui.recursive).not.toHaveClass(/is-disabled/)
+  await expect(ui.device).toContainText('测试手机')
+  await expect(ui.badge).toContainText('已筛选 3 项 · 2/7 张')
+  // 只有 DCIM 目录本身（不含 Camera 子目录）、测试手机、拍摄日期 10 月 19 日（UTC_SHIFT 按统计口径属于 19 日）
+  await expect(ui.names).toHaveText(['DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG'])
+
+  // 第一次 summary 就带上全部条件，没有先发一次不带筛选的请求
+  expect(await stableSummaryCount(page, requests)).toBe(1)
+  const dataRequests = requests.filter((r) => /\/timeline\/(summary|files)$/.test(r.path))
+  expect(dataRequests.length).toBeGreaterThanOrEqual(2)
+  for (const r of dataRequests) {
+    expect(r.params.get('capture_date'), r.search).toBe('2026-10-19')
+    expect(r.params.get('path'), r.search).toBe('Pixel 8/DCIM')
+    expect(r.params.get('recursive'), r.search).toBe('false')
+    expect(r.params.getAll('device'), r.search).toEqual(['测试手机'])
+  }
+
+  // 拍摄日期标签的提示说明筛选口径
+  await ui.tag.hover()
+  await expect(page.getByText('按数据统计口径（拍摄时间、当地时间）筛选')).toBeVisible()
+
+  // 关闭标签：URL 去掉 day，下一次请求不再带 capture_date，其余条件保留；只重新请求一次
+  const before = summaryRequests(requests).length
+  await ui.tag.locator('.el-tag__close').click()
+  await expect(ui.tag).toHaveCount(0)
+  await expect.poll(() => urlQuery(page).has('day')).toBe(false)
+  expect(urlQuery(page).get('path')).toBe('Pixel 8/DCIM')
+  expect(urlQuery(page).get('recursive')).toBe('0')
+  expect(urlQuery(page).getAll('device')).toEqual(['测试手机'])
+  await expect(ui.badge).toContainText('已筛选 2 项 · 3/7 张')
+  await expect(ui.names).toHaveText(['DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG', 'DCIM_OTHER_DAY.JPG'])
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  const last = summaryRequests(requests).at(-1)!
+  expect(last.params.has('capture_date')).toBe(false)
+  expect(last.params.get('path')).toBe('Pixel 8/DCIM')
+  expect(last.params.get('recursive')).toBe('false')
+  expect(filesRequests(requests).at(-1)!.params.has('capture_date')).toBe(false)
+
+  // 刷新页面：同样的筛选从 URL 恢复
+  await page.reload()
+  await expect(ui.names).toHaveText(['DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG', 'DCIM_OTHER_DAY.JPG'])
+  await expect(ui.tag).toHaveCount(0)
+  await expect(ui.recursive).not.toHaveClass(/is-checked/)
+
+  expect(consoleIssues.duplicateKeys).toEqual([])
+  expect(unknown).toEqual([])
+})
+
+test('Timeline folder select and 包含子目录 switch update the URL and requests; 清除筛选 empties the URL', async ({ page }) => {
+  test.setTimeout(60_000)
+  const { unknown, requests } = await installApiMock(page, { timelineFiles: folderDayFiles, browseDirs: folderBrowseDirs })
+  const consoleIssues = collectConsoleIssues(page)
+  await authenticate(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/timeline')
+  const ui = timelineFilterLocators(page)
+  await expect(ui.names).toHaveCount(7)
+
+  // 根目录：包含子目录恒为开且不可切换
+  await expect(ui.dir).toContainText('全部')
+  await expect(ui.recursive).toHaveClass(/is-checked/)
+  await expect(ui.recursive).toHaveClass(/is-disabled/)
+  await ui.recursive.hover()
+  await expect(page.getByText('根目录始终包含全部文件')).toBeVisible()
+
+  // 选择目录 Pixel 8：URL 写入 path（replace，不新增历史），请求带 path、不带 recursive
+  const historyLength = await page.evaluate(() => history.length)
+  let before = await stableSummaryCount(page, requests)
+  await ui.dir.locator('.el-select__wrapper').click()
+  await page.locator('.el-tree-node__content').filter({ hasText: /^Pixel 8$/ }).click()
+  await expect.poll(() => urlQuery(page).get('path')).toBe('Pixel 8')
+  expect(urlQuery(page).has('recursive')).toBe(false)
+  await expect(ui.dir).toContainText('Pixel 8')
+  await expect(ui.badge).toContainText('已筛选 1 项 · 6/7 张')
+  await expect(ui.recursive).toHaveClass(/is-checked/)
+  await expect(ui.recursive).not.toHaveClass(/is-disabled/)
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  expect(summaryRequests(requests).at(-1)!.params.get('path')).toBe('Pixel 8')
+  expect(summaryRequests(requests).at(-1)!.params.has('recursive')).toBe(false)
+  expect(await page.evaluate(() => history.length)).toBe(historyLength)
+
+  // 关掉包含子目录：URL recursive=0，请求 recursive=false，只剩目录本身的文件
+  before = summaryRequests(requests).length
+  await ui.recursive.click()
+  await expect.poll(() => urlQuery(page).get('recursive')).toBe('0')
+  await expect(ui.names).toHaveText(['ROOT_DAY.JPG'])
+  await expect(ui.badge).toContainText('已筛选 1 项 · 1/7 张')
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  expect(summaryRequests(requests).at(-1)!.params.get('recursive')).toBe('false')
+  expect(filesRequests(requests).at(-1)!.params.get('path')).toBe('Pixel 8')
+  expect(filesRequests(requests).at(-1)!.params.get('recursive')).toBe('false')
+
+  // 再选一个子目录（展开 Pixel 8 → DCIM）：保留不含子目录
+  before = summaryRequests(requests).length
+  await ui.dir.locator('.el-select__wrapper').click()
+  const pixelNode = page.locator('.el-tree-node').filter({ has: page.locator('> .el-tree-node__content', { hasText: /^Pixel 8$/ }) })
+  await pixelNode.locator('> .el-tree-node__content .el-tree-node__expand-icon').click()
+  await page.locator('.el-tree-node__content').filter({ hasText: /^DCIM$/ }).click()
+  await expect.poll(() => urlQuery(page).get('path')).toBe('Pixel 8/DCIM')
+  expect(urlQuery(page).get('recursive')).toBe('0')
+  await expect(ui.names).toHaveText(['DCIM_DAY_B.JPG', 'DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG', 'DCIM_OTHER_DAY.JPG'])
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+
+  // 清除筛选：URL query 清空，回到根目录、包含子目录
+  before = summaryRequests(requests).length
+  await page.getByRole('button', { name: /清除筛选/ }).click()
+  await expect.poll(() => new URL(page.url()).search).toBe('')
+  await expect(ui.names).toHaveCount(7)
+  await expect(ui.badge).toBeHidden()
+  await expect(ui.dir).toContainText('全部')
+  await expect(ui.recursive).toHaveClass(/is-checked/)
+  await expect(ui.recursive).toHaveClass(/is-disabled/)
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  const last = summaryRequests(requests).at(-1)!
+  expect(last.params.has('path')).toBe(false)
+  expect(last.params.has('recursive')).toBe(false)
+
+  expect(consoleIssues.duplicateKeys).toEqual([])
+  expect(unknown).toEqual([])
+})
+
+test('Timeline browser back / forward re-applies the filters stored in the URL', async ({ page }) => {
+  test.setTimeout(60_000)
+  const { unknown, requests } = await installApiMock(page, { timelineFiles: folderDayFiles })
+  await authenticate(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  // 状态 A：深链接
+  await page.goto('/timeline?device=另一台手机')
+  const ui = timelineFilterLocators(page)
+  await expect(ui.names).toHaveText(['DCIM_DAY_B.JPG'])
+
+  // 侧边栏「时间线」是一次 push（新的历史记录），然后在控件上改成状态 B（replace 当前记录）
+  await page.locator('.el-menu-item').filter({ hasText: '时间线' }).click()
+  await expect(ui.names).toHaveCount(7)
+  await expect(ui.badge).toBeHidden()
+  await ui.device.click()
+  await page.locator('.el-select-dropdown__item').filter({ hasText: '测试手机' }).click()
+  await page.keyboard.press('Escape')
+  await expect.poll(() => urlQuery(page).getAll('device')).toEqual(['测试手机'])
+  await expect(ui.names).toHaveCount(6)
+
+  // 后退：回到状态 A，控件和请求都跟着恢复，只请求一次
+  let before = await stableSummaryCount(page, requests)
+  await page.goBack()
+  await expect.poll(() => urlQuery(page).getAll('device')).toEqual(['另一台手机'])
+  await expect(ui.names).toHaveText(['DCIM_DAY_B.JPG'])
+  await expect(ui.device).toContainText('另一台手机')
+  await expect(ui.device).not.toContainText('测试手机')
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  expect(summaryRequests(requests).at(-1)!.params.getAll('device')).toEqual(['另一台手机'])
+
+  // 前进：回到状态 B
+  before = summaryRequests(requests).length
+  await page.goForward()
+  await expect.poll(() => urlQuery(page).getAll('device')).toEqual(['测试手机'])
+  await expect(ui.names).toHaveCount(6)
+  await expect(ui.device).toContainText('测试手机')
+  expect(await stableSummaryCount(page, requests)).toBe(before + 1)
+  expect(summaryRequests(requests).at(-1)!.params.getAll('device')).toEqual(['测试手机'])
+
+  expect(unknown).toEqual([])
+})
+
+/** 两行筛选栏的几何信息：卡片内边距内的区域、每行及其中控件、是否有横向溢出。 */
+async function measureFilterBar(page: Page) {
+  return page.evaluate(() => {
+    const rect = (element: Element) => {
+      const r = element.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+    }
+    const card = document.querySelector('.timeline-view .pv-page-header')!
+    const style = getComputedStyle(card)
+    const r = rect(card)
+    const head = document.querySelector<HTMLElement>('.timeline-view .pv-page-head')!
+    const tag = document.querySelector<HTMLElement>('.timeline-view .capture-day-tag .el-tag__content')
+    return {
+      inner: {
+        left: r.left + Number.parseFloat(style.paddingLeft),
+        right: r.right - Number.parseFloat(style.paddingRight),
+        top: r.top + Number.parseFloat(style.paddingTop),
+        bottom: r.bottom - Number.parseFloat(style.paddingBottom),
+      },
+      title: rect(document.querySelector('.timeline-view .pv-page-header__left')!),
+      filters: rect(document.querySelector('.timeline-view .tl-filters')!),
+      rows: [...document.querySelectorAll('.timeline-view .tl-filter-row')].map((row) => ({
+        box: rect(row),
+        children: [...row.children].map(rect),
+      })),
+      overflow: {
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        head: head.scrollWidth - head.clientWidth,
+        card: card.scrollWidth - card.clientWidth,
+      },
+      tagClipped: tag ? tag.scrollWidth > tag.clientWidth : false,
+      bg: getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color').trim(),
+    }
+  })
+}
+
+function expectFilterBarInsideCard(m: Awaited<ReturnType<typeof measureFilterBar>>, label: string) {
+  const tol = 0.5
+  expect.soft(m.rows.length, `${label} rows`).toBe(2)
+  for (const [i, row] of m.rows.entries()) {
+    for (const [j, b] of [row.box, ...row.children].entries()) {
+      const what = j === 0 ? `${label} row ${i + 1}` : `${label} row ${i + 1} child ${j - 1}`
+      expect.soft(b.left, `${what} left`).toBeGreaterThanOrEqual(m.inner.left - tol)
+      expect.soft(b.right, `${what} right`).toBeLessThanOrEqual(m.inner.right + tol)
+      expect.soft(b.top, `${what} top`).toBeGreaterThanOrEqual(m.inner.top - tol)
+      expect.soft(b.bottom, `${what} bottom`).toBeLessThanOrEqual(m.inner.bottom + tol)
+    }
+  }
+  // 第 1 行在第 2 行上方，不重叠
+  expect.soft(m.rows[0].box.bottom, `${label} row order`).toBeLessThanOrEqual(m.rows[1].box.top + tol)
+  expect.soft(m.overflow, `${label} horizontal overflow`).toEqual({ doc: 0, head: 0, card: 0 })
+  expect.soft(m.tagClipped, `${label} capture-day tag clipped`).toBe(false)
+}
+
+test('Timeline two-row filter bar stays inside the header card in light and simulated dark themes', async ({ page }) => {
+  test.setTimeout(120_000)
+  mkdirSync(statsHeatmapScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { timelineFiles: folderDayFiles, browseDirs: folderBrowseDirs })
+  await authenticate(page)
+  const head = page.locator('.timeline-view .pv-page-head')
+  const ui = timelineFilterLocators(page)
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1920, 1440, 1024, 800]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto('/timeline')
+      // 窄视口下标题栏更高，窗口化渲染只画出视口里的瓦片，所以看副标题的总数
+      await expect(page.locator('.timeline-view .pv-page-header .pv-muted')).toHaveText('共 7 张照片')
+      await expect(ui.names.first()).toBeVisible()
+      if (theme === 'dark') {
+        await page.evaluate(() => document.documentElement.classList.add('dark'))
+        await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
+      }
+      await page.waitForTimeout(300)
+      const m = await measureFilterBar(page)
+      const label = `${width} ${theme}`
+      console.log(label, JSON.stringify(m))
+      // 暗色模拟确实生效（Element Plus 暗色变量 --el-bg-color: #141414）
+      if (theme === 'dark') expect(m.bg, `${label} theme variables`).toBe('#141414')
+      else expect(m.bg, `${label} theme variables`).not.toBe('#141414')
+      expectFilterBarInsideCard(m, label)
+      if (width >= 1440) {
+        // 宽屏：标题在左，两行各自排成一行
+        expect.soft(m.title.right, `${label} title beside filters`).toBeLessThan(m.filters.left)
+        for (const [i, row] of m.rows.entries()) {
+          const center = (b: { top: number; height: number }) => b.top + b.height / 2
+          for (const child of row.children) {
+            expect.soft(Math.abs(center(child) - center(row.children[0])), `${label} row ${i + 1} single line`).toBeLessThanOrEqual(1)
+          }
+        }
+      }
+      await head.screenshot({ path: `${statsHeatmapScreenshotDir}/timeline-filters-${width}-${theme}.png` })
+    }
+  }
+
+  // 目录 + 拍摄日期 + 设备同时生效
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/timeline?day=2026-10-19&path=Pixel%208/DCIM&device=测试手机')
+  await expect(ui.tag).toHaveText('拍摄日期：2026年10月19日')
+  await expect(ui.names).toHaveText(['SUB_DAY.JPG', 'DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG'])
+  await page.waitForTimeout(300)
+  const m = await measureFilterBar(page)
+  console.log('1440 active', JSON.stringify(m))
+  expectFilterBarInsideCard(m, '1440 active')
+  expect.soft(m.title.right, '1440 active title beside filters').toBeLessThan(m.filters.left)
+  await head.screenshot({ path: `${statsHeatmapScreenshotDir}/timeline-filters-active-1440-light.png` })
+
   expect(unknown).toEqual([])
 })
