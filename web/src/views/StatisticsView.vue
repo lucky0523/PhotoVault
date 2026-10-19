@@ -7,7 +7,10 @@
     （path + recursive）触发加载；
   - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式占比不受影响；
-  - 总览：数字卡片之后是整行宽的「类型占比」「格式占比」（100% 堆积条形图），再下面是拍摄趋势；
+  - 总览：数字卡片之后是整行宽的「类型占比」「格式占比」（100% 堆积条形图），再下面是拍摄趋势
+    和「每日文件数量」热力图（overview.daily，旧版服务端没有该字段时不显示）；
+  - 热力图不显示没有拍摄时间的文件，「统计时排除未知项」对它没有影响（不传 excludeUnknown）；
+    点击有文件的日子 router.push 到时间线，带上 day 和本页的目录范围（path / recursive=0）；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
   - 卡片由 PHOTO_CARDS / VIDEO_CARDS 配置驱动，只渲染响应里存在且 kind 一致的 key
     （服务端以后新增 key 或 kind 时，旧前端不会误渲染）；
@@ -160,6 +163,16 @@
                   <p>{{ videoUtcNote }}</p>
                 </template>
               </StatTrendCard>
+              <StatHeatmapCard
+                v-if="data.overview.daily?.kind === 'calendar'"
+                class="is-wide"
+                :daily="data.overview.daily"
+                @select-day="openTimelineDay"
+              >
+                <template v-if="videoUtcNote" #note>
+                  <p>{{ videoUtcNote }}</p>
+                </template>
+              </StatHeatmapCard>
             </div>
           </section>
 
@@ -239,6 +252,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import DirectoryTreeSelect from '@/components/DirectoryTreeSelect.vue'
 import StatChartCard from '@/components/stats/StatChartCard.vue'
 import StatTrendCard from '@/components/stats/StatTrendCard.vue'
+import StatHeatmapCard from '@/components/stats/StatHeatmapCard.vue'
 import { STAT_COLORS } from '@/components/stats/chartSetup'
 import { formatBytes, formatEv } from '@/components/stats/format'
 import { getMediaStats } from '@/api/stats'
@@ -337,6 +351,23 @@ function onExcludeUnknownChange(value: string | number | boolean) {
 
 /** 只有 path / recursive 决定请求；「排除未知项」变化不重新请求 */
 const fetchKey = computed(() => `${scope.value.path}\u0000${scope.value.recursive}`)
+
+/**
+ * 热力图点击某一天：打开按当天（数据统计口径的拍摄日期）筛选的时间线，并带上本页的目录范围。
+ * 用 push 而不是 replace，浏览器后退能回到统计页。时间线的 URL 键见 TimelineView：
+ * day、path、recursive='0'（只在选了目录且不含子目录时出现）。
+ */
+function openTimelineDay(day: string) {
+  const { path, recursive } = scope.value
+  router.push({
+    name: 'Timeline',
+    query: {
+      day,
+      path: path || undefined,
+      recursive: path && !recursive ? '0' : undefined,
+    },
+  })
+}
 
 async function resetFilters() {
   const before = fetchKey.value

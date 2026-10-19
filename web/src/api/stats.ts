@@ -5,7 +5,8 @@ import http from './http'
  *
  * 服务端用 response_model_exclude_none，声明了默认值 None 的字段不适用时直接省略，
  * 所以这里一律写成可选字段。kind 用 string 而不是联合类型：以后服务端可能新增
- * kind 取值（例如 "calendar"），前端按卡片配置比对，不认识的直接跳过。
+ * kind 取值，前端按卡片配置比对，不认识的直接跳过。目前已有的 kind：
+ * "distribution" / "ranking" / "series"（Distribution），以及 overview.daily 的 "calendar"。
  */
 export interface StatBucket {
   key: string
@@ -60,11 +61,29 @@ export interface OverviewTotal {
   bytes: number
 }
 
+/**
+ * overview.daily：按当地拍摄日期统计的每日照片 + 视频数（kind = "calendar"）。
+ * days 只包含文件数 > 0 的日子（升序）；Σ days + unknown = total。
+ * today 是统计时区的当地日期，前端不做时区换算。
+ */
+export interface DailyCounts {
+  kind: string
+  /** YYYY-MM-DD */
+  today: string
+  /** { 'YYYY-MM-DD': 文件数 } */
+  days: Record<string, number>
+  /** 没有可用拍摄时间的照片 + 视频数（热力图不显示） */
+  unknown: number
+  total: number
+}
+
 export interface StatsOverview {
   total: OverviewTotal
   motion_photo_count: number
   categories: Distribution
   formats: Distribution
+  /** 旧版服务端没有这个字段 */
+  daily?: DailyCounts
 }
 
 export interface MediaStatsResponse {

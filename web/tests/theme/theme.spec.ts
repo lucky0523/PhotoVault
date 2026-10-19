@@ -1,5 +1,16 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
+import {
+  availableYears,
+  buildHeatmap,
+  computeThresholds,
+  formatDayTooltip,
+  heatmapBounds,
+  levelOf,
+  monthlyRows,
+  parseDay,
+  rangeSummary,
+} from '../../src/components/stats/heatmapModel'
 
 const screenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-theme-yingji-red-2026-10-14/screenshots/web'
 mkdirSync(screenshotDir, { recursive: true })
@@ -223,6 +234,8 @@ interface ApiMockOptions {
   rejectTz?: boolean
   /** GET /files/browse 返回的子目录（DirectoryTreeSelect 用），键是父目录虚拟路径（'' = 根）；默认没有目录 */
   browseDirs?: Record<string, { name: string; path: string }[]>
+  /** GET /stats/media 的响应，默认 statsResponse（没有 overview.daily，模拟旧版服务端） */
+  statsResponse?: unknown
 }
 
 // ---- 时间线服务端语义的 mock 实现 ----
@@ -373,7 +386,7 @@ async function installApiMock(page: Page, options: ApiMockOptions = {}) {
       }))
       return json({ ...listResponse, current_path: parent, directories, files: [] })
     }
-    if (key === 'GET /api/v1/stats/media') return json(statsResponse)
+    if (key === 'GET /api/v1/stats/media') return json(options.statsResponse ?? statsResponse)
     if (key.startsWith('GET /api/v1/files/thumbnail/')) {
       log.status = 200
       return route.fulfill({ status: 200, contentType: 'image/png', body: transparentPng }).catch(() => {})
@@ -2070,6 +2083,371 @@ test('Timeline two-row filter bar stays inside the header card in light and simu
   expectFilterBarInsideCard(m, '1440 active')
   expect.soft(m.title.right, '1440 active title beside filters').toBeLessThan(m.filters.left)
   await head.screenshot({ path: `${statsHeatmapScreenshotDir}/timeline-filters-active-1440-light.png` })
+
+  expect(unknown).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// 数据统计「每日文件数量」热力图
+// ---------------------------------------------------------------------------
+
+/**
+ * 确定性的每日计数：2025-01-01 … 2026-10-17 按公式生成 0–8（0 的日子不出现在 days 里），
+ * 另有离群的一天 2025-07-04 = 300 和 today 2026-10-19 = 12；2026-10-18 没有文件；2024 年没有数据。
+ */
+function buildDailyFixture(): Record<string, number> {
+  const days: Record<string, number> = {}
+  for (let ms = Date.UTC(2025, 0, 1), i = 0; ms <= Date.UTC(2026, 9, 17); ms += 86_400_000, i++) {
+    const v = (i * 7 + (i % 5) * 3) % 11
+    if (v >= 3) days[new Date(ms).toISOString().slice(0, 10)] = v - 2
+  }
+  days['2025-07-04'] = 300
+  days['2026-10-19'] = 12
+  return days
+}
+
+const dailyDays = buildDailyFixture()
+const sumDays = (pick: (day: string) => boolean) =>
+  Object.entries(dailyDays).filter(([day]) => pick(day)).reduce((n, [, c]) => n + c, 0)
+/** 最近一年 = 2025-10-20 … 2026-10-19（直接按字符串比较，不经过 heatmapModel） */
+const recentTotal = sumDays((d) => d >= '2025-10-20' && d <= '2026-10-19')
+const year2025Total = sumDays((d) => d.startsWith('2025-'))
+
+const statsResponseWithDaily = {
+  ...statsResponse,
+  overview: {
+    ...statsResponse.overview,
+    daily: {
+      kind: 'calendar',
+      today: '2026-10-19',
+      days: dailyDays,
+      unknown: 3,
+      total: sumDays(() => true) + 3,
+    },
+  },
+}
+
+test('heatmapModel computes thresholds, grid, month labels and texts (Node side)', () => {
+  // 四分位分界
+  expect(computeThresholds([])).toEqual([0, 0, 0])
+  expect(computeThresholds([0, 0])).toEqual([0, 0, 0])
+  expect(computeThresholds([1, 2, 3, 4, 5, 6, 7, 8])).toEqual([2, 4, 6])
+  const uniform = computeThresholds([5, 5, 5, 5, 0])
+  expect(uniform).toEqual([5, 5, 5])
+  expect(levelOf(5, uniform)).toBe(1)
+  const outlier = computeThresholds([...Array(9).fill(1), 300])
+  expect(outlier).toEqual([1, 1, 1])
+  expect(levelOf(300, outlier)).toBe(4)
+  expect(levelOf(1, outlier)).toBe(1)
+  expect([0, 1, 2, 3, 4, 5, 6, 7, 8].map((c) => levelOf(c, [2, 4, 6]))).toEqual([0, 1, 1, 2, 2, 3, 3, 4, 4])
+
+  // 范围：最近一年 / 闰日 / 公历年
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+  const bounds = (today: string, range: 'recent' | number) => {
+    const b = heatmapBounds(today, range)
+    return [day(b.start), day(b.end)]
+  }
+  expect(bounds('2026-10-19', 'recent')).toEqual(['2025-10-20', '2026-10-19'])
+  expect(bounds('2024-02-29', 'recent')).toEqual(['2023-03-02', '2024-02-29'])
+  expect(bounds('2025-02-28', 'recent')).toEqual(['2024-02-29', '2025-02-28'])
+  expect(bounds('2025-03-01', 'recent')).toEqual(['2024-03-02', '2025-03-01'])
+  expect(bounds('2026-10-19', 2024)).toEqual(['2024-01-01', '2024-12-31'])
+  expect(parseDay('2026-10-19')).toBe(Date.UTC(2026, 9, 19))
+
+  // 最近一年的网格：每列 7 格、53–54 列、范围外为 null、周一在第 0 行
+  for (const today of ['2026-10-19', '2026-10-18', '2024-02-29', '2025-12-31', '2026-01-04']) {
+    const m = buildHeatmap(dailyDays, today, 'recent')
+    expect(m.weeks.length, today).toBeGreaterThanOrEqual(53)
+    expect(m.weeks.length, today).toBeLessThanOrEqual(54)
+    for (const week of m.weeks) expect(week.length).toBe(7)
+    const cells = m.weeks.flat().filter((c) => c !== null)
+    expect(cells[0]!.date, today).toBe(m.start)
+    expect(cells.at(-1)!.date, today).toBe(today)
+    expect(cells.length, today).toBe(Math.round((parseDay(today) - parseDay(m.start)) / 86_400_000) + 1)
+  }
+  const recent = buildHeatmap(dailyDays, '2026-10-19', 'recent')
+  expect(recent.weeks.length).toBe(53)
+  expect(recent.total).toBe(recentTotal)
+  expect(recent.weeks[0][0]!.date).toBe('2025-10-20')
+  expect(recent.weeks[52][0]).toMatchObject({ date: '2026-10-19', count: 12, level: 4, label: '2026年10月19日：12 个文件' })
+  expect(recent.weeks[52].slice(1)).toEqual([null, null, null, null, null, null])
+  expect(recent.weeks[51][6]).toMatchObject({ date: '2026-10-18', count: 0, level: 0, label: '2026年10月18日：无文件' })
+  // 月份标签：每月 1 日所在的列，间隔 ≥ 3 列。起点 2025-10-20 所在的第 0 列离 11 月 1 日（第 1 列）
+  // 不足 3 列，所以第 0 列不标「10月」
+  expect(recent.monthLabels.map((l) => l.label)).toEqual(['11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月'])
+  expect(recent.monthLabels[0].col).toBe(1)
+  for (let i = 1; i < recent.monthLabels.length; i++) {
+    expect(recent.monthLabels[i].col - recent.monthLabels[i - 1].col).toBeGreaterThanOrEqual(3)
+  }
+  // 起点 2025-10-10：11 月 1 日在第 3 列，第 0 列标上起点所在的 10 月
+  expect(buildHeatmap({}, '2026-10-09', 'recent').monthLabels.slice(0, 2)).toEqual([{ col: 0, label: '10月' }, { col: 3, label: '11月' }])
+  // 起点当周就有 1 日：标签就在第 0 列
+  expect(buildHeatmap({}, '2026-10-30', 'recent').monthLabels[0]).toEqual({ col: 0, label: '11月' })
+
+  // 公历年：1 月 1 日 … 12 月 31 日，1月 … 12月 依次出现
+  const y2025 = buildHeatmap(dailyDays, '2026-10-19', 2025)
+  expect(y2025.start).toBe('2025-01-01')
+  expect(y2025.end).toBe('2025-12-31')
+  expect(y2025.total).toBe(year2025Total)
+  expect(y2025.weeks.length).toBe(53)
+  expect(y2025.weeks.flat().filter((c) => c !== null).length).toBe(365)
+  expect(y2025.monthLabels.map((l) => l.label)).toEqual(Array.from({ length: 12 }, (_, i) => `${i + 1}月`))
+  for (let i = 1; i < 12; i++) expect(y2025.monthLabels[i].col).toBeGreaterThan(y2025.monthLabels[i - 1].col + 2)
+  expect(y2025.weeks.flat().find((c) => c?.date === '2025-07-04')).toMatchObject({ count: 300, level: 4 })
+  // 当年：today 之后不画，但网格和月份标签仍覆盖全年
+  const y2026 = buildHeatmap(dailyDays, '2026-10-19', 2026)
+  expect(y2026.drawEnd).toBe('2026-10-19')
+  expect(y2026.weeks.flat().filter((c) => c !== null).at(-1)!.date).toBe('2026-10-19')
+  expect(y2026.monthLabels.map((l) => l.label)).toEqual(Array.from({ length: 12 }, (_, i) => `${i + 1}月`))
+
+  // 文案、年份、按月汇总
+  expect(formatDayTooltip('2026-10-19', 12)).toBe('2026年10月19日：12 个文件')
+  expect(formatDayTooltip('2026-01-05', 1234)).toBe('2026年1月5日：1,234 个文件')
+  expect(formatDayTooltip('2026-10-18', 0)).toBe('2026年10月18日：无文件')
+  expect(rangeSummary('recent', 1234)).toBe('过去一年共 1,234 个文件')
+  expect(rangeSummary(2025, 7)).toBe('2025年共 7 个文件')
+  expect(availableYears(dailyDays)).toEqual([2026, 2025])
+  expect(availableYears({ '2024-01-01': 0, '2023-05-01': 2 })).toEqual([2023])
+  const rows = monthlyRows(recent)
+  expect(rows.map((r) => r.label)).toEqual([
+    '2025年10月', '2025年11月', '2025年12月', '2026年1月', '2026年2月', '2026年3月', '2026年4月',
+    '2026年5月', '2026年6月', '2026年7月', '2026年8月', '2026年9月', '2026年10月',
+  ])
+  expect(rows.reduce((n, r) => n + r.count, 0)).toBe(recentTotal)
+  expect(rows[1].count).toBe(sumDays((d) => d.startsWith('2025-11-')))
+})
+
+const heatmap = (page: Page) => page.locator('.stat-heatmap')
+const heatCell = (page: Page, date: string) => heatmap(page).locator(`rect[data-date="${date}"]`)
+const heatTip = (page: Page) => page.locator('.stat-heatmap-tip')
+
+async function openStatistics(page: Page, url = '/statistics', width = 1440, height = 900) {
+  await authenticate(page)
+  await page.setViewportSize({ width, height })
+  await page.goto(url)
+  await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+}
+
+test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legend and the year selector', async ({ page }) => {
+  test.setTimeout(60_000)
+  mkdirSync(statsHeatmapScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithDaily })
+  await openStatistics(page)
+  const card = heatmap(page)
+  const summary = card.locator('.stat-heatmap__summary')
+
+  await expect(summary).toHaveText(`过去一年共 ${recentTotal.toLocaleString()} 个文件`)
+  const labels = await card.locator('text.stat-heatmap__label').allTextContents()
+  expect(labels.filter((t) => t.startsWith('周'))).toEqual(['周一', '周三', '周五'])
+  expect(labels.filter((t) => t.endsWith('月'))).toEqual(['11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月'])
+  await expect(card.locator('.stat-heatmap__legend')).toHaveText(/^\s*少\s*多\s*$/)
+  await expect(card.locator('.stat-heatmap__swatch')).toHaveCount(5)
+  await expect(card.getByText('按拍摄日期（当地时间）统计照片和视频；点击日期可在时间线中查看')).toBeVisible()
+
+  // 7 行（周一在上）× 53 列
+  const grid = await card.locator('rect[data-date]').evaluateAll((rects) => ({
+    xs: new Set(rects.map((r) => r.getAttribute('x'))).size,
+    ys: new Set(rects.map((r) => r.getAttribute('y'))).size,
+    count: rects.length,
+    levels: [...new Set(rects.map((r) => r.getAttribute('class')!.match(/lv-(\d)/)![1]))].sort(),
+  }))
+  expect(grid).toEqual({ xs: 53, ys: 7, count: 365, levels: ['0', '1', '2', '3', '4'] })
+  const mondayY = await heatCell(page, '2026-10-19').getAttribute('y')
+  expect(await heatCell(page, '2026-10-12').getAttribute('y')).toBe(mondayY)
+  expect(Number(await heatCell(page, '2026-10-18').getAttribute('y'))).toBeGreaterThan(Number(mondayY))
+  // 浅色色板：12 个文件是最深的一级
+  await expect(heatCell(page, '2026-10-19')).toHaveClass(/lv-4/)
+  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#216E39'))
+  expect(await heatCell(page, '2026-10-18').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#EBEDF0'))
+  await expect(heatCell(page, '2026-10-19')).toHaveAttribute('aria-label', '2026年10月19日：12 个文件，按 Enter 在时间线中查看')
+  await expect(heatCell(page, '2026-10-18')).toHaveAttribute('aria-label', '2026年10月18日：无文件')
+  // 最近一年滚到最右（宽屏下不需要滚动时为 0）
+  const scroll = await card.locator('.stat-heatmap__scroll').evaluate((el) => el.scrollWidth - el.clientWidth - el.scrollLeft)
+  expect(scroll).toBeLessThanOrEqual(1)
+  await card.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-light.png` })
+
+  // 悬停提示
+  await heatCell(page, '2026-10-19').hover()
+  await expect(heatTip(page)).toBeVisible()
+  await expect(heatTip(page)).toHaveText('2026年10月19日：12 个文件')
+  await page.waitForTimeout(300)
+  await card.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-light-tooltip.png` })
+  await heatCell(page, '2026-10-18').hover()
+  await expect(heatTip(page)).toHaveText('2026年10月18日：无文件')
+  await page.mouse.move(0, 0)
+  await expect(heatTip(page)).toBeHidden()
+
+  // 「统计时排除未知项」对热力图没有影响，卡片里也没有「未知」
+  const snapshot = () => card.evaluate((el) => ({ text: (el as HTMLElement).innerText, svg: el.querySelector('svg')!.outerHTML }))
+  const before = await snapshot()
+  expect(before.text).not.toContain('未知')
+  const unknownSwitch = page.locator('.unknown-switch .el-switch')
+  await expect(unknownSwitch).toHaveClass(/is-checked/)
+  await unknownSwitch.click()
+  await expect(unknownSwitch).not.toHaveClass(/is-checked/)
+  await expect.poll(() => urlQuery(page).get('unknown')).toBe('1')
+  await page.waitForTimeout(200)
+  expect(await snapshot()).toEqual(before)
+
+  // 年份选择器：最近一年 + 有数据的年份（没有 2024年）
+  const select = card.locator('.stat-heatmap__range')
+  await expect(select.locator('input')).toHaveAttribute('aria-label', '选择统计年份')
+  await select.click()
+  const options = page.locator('.el-select-dropdown__item:visible')
+  await expect(options).toHaveText(['最近一年', '2026年', '2025年'])
+  await options.filter({ hasText: '2025年' }).click()
+  await expect(summary).toHaveText(`2025年共 ${year2025Total.toLocaleString()} 个文件`)
+  await expect(card.locator('rect[data-date]')).toHaveCount(365)
+  await expect(heatCell(page, '2025-01-01')).toHaveCount(1)
+  await expect(heatCell(page, '2026-01-01')).toHaveCount(0)
+  await expect(heatCell(page, '2025-07-04')).toHaveClass(/lv-4/)
+  expect(await card.locator('.stat-heatmap__scroll').evaluate((el) => el.scrollLeft)).toBe(0)
+  const yearLabels = await card.locator('text.stat-heatmap__label').allTextContents()
+  expect(yearLabels.filter((t) => t.endsWith('月'))).toEqual(Array.from({ length: 12 }, (_, i) => `${i + 1}月`))
+  await page.mouse.move(0, 0)
+  await page.waitForTimeout(300)
+  await card.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-year-2025.png` })
+
+  // 「查看数据」：按月汇总 + 合计，没有「未知」行
+  await card.getByRole('button', { name: '查看数据' }).click()
+  const dialog = page.getByRole('dialog', { name: '每日文件数量数据' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('th')).toHaveText(['月份', '文件数'])
+  const body = dialog.locator('tbody tr')
+  await expect(body).toHaveCount(13)
+  await expect(body.first()).toHaveText(/2025年1月\s*\d+/)
+  await expect(body.last()).toHaveText(new RegExp(`合计\\s*${year2025Total}`))
+  await expect(dialog).not.toContainText('未知')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics heatmap uses the dark palette under html.dark and scrolls inside the card at 375px', async ({ page }) => {
+  test.setTimeout(60_000)
+  mkdirSync(statsHeatmapScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithDaily })
+  await openStatistics(page)
+  const card = heatmap(page)
+
+  // 模拟暗色：html.dark + Element Plus 暗色变量
+  await page.evaluate(() => document.documentElement.classList.add('dark'))
+  await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
+  await page.waitForTimeout(300)
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color').trim())).toBe('#141414')
+  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe('rgb(57, 211, 83)')
+  expect(await heatCell(page, '2026-10-18').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#2A2E35'))
+  const darkColors = await card.evaluate((el) => ({
+    background: getComputedStyle(el).backgroundColor,
+    overlay: getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color-overlay').trim(),
+    label: getComputedStyle(el.querySelector('text.stat-heatmap__label')!).fill,
+    regular: getComputedStyle(document.documentElement).getPropertyValue('--el-text-color-regular').trim(),
+  }))
+  expect(darkColors.background).toBe(rgb(darkColors.overlay.toUpperCase()))
+  expect(darkColors.label).toBe(rgb(darkColors.regular.toUpperCase()))
+  await heatCell(page, '2026-10-19').hover()
+  await expect(heatTip(page)).toHaveText('2026年10月19日：12 个文件')
+  await page.waitForTimeout(300)
+  await card.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-dark.png` })
+
+  // 375px：页面不出现横向滚动，网格在自己的容器里滚动（最近一年滚到最右）
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.goto('/statistics')
+  await expect(card.locator('figcaption')).toHaveText('每日文件数量')
+  await card.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
+  const narrow = await page.evaluate(() => {
+    const wrap = document.querySelector<HTMLElement>('.stat-heatmap__scroll')!
+    return {
+      doc: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+      scrollWidth: wrap.scrollWidth,
+      clientWidth: wrap.clientWidth,
+      remaining: wrap.scrollWidth - wrap.clientWidth - wrap.scrollLeft,
+    }
+  })
+  expect(narrow.doc).toBeLessThanOrEqual(narrow.inner)
+  expect(narrow.scrollWidth).toBeGreaterThan(narrow.clientWidth)
+  expect(narrow.remaining).toBeLessThanOrEqual(1)
+  // 今天的格子在可见区域内，图例没有被挤出卡片
+  const cardBox = (await card.boundingBox())!
+  const todayBox = (await heatCell(page, '2026-10-19').boundingBox())!
+  expect(todayBox.x + todayBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width)
+  // 标题不被年份选择器挤成多行
+  expect((await card.locator('figcaption').boundingBox())!.height).toBeLessThan(24)
+  const legendBox = (await card.locator('.stat-heatmap__legend').boundingBox())!
+  expect(legendBox.x + legendBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width)
+  await page.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-narrow-375.png`, fullPage: true })
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics heatmap day opens the timeline filtered to that day and the current folder', async ({ page }) => {
+  test.setTimeout(60_000)
+  mkdirSync(statsHeatmapScreenshotDir, { recursive: true })
+  const { unknown, requests } = await installApiMock(page, {
+    statsResponse: statsResponseWithDaily,
+    timelineFiles: folderDayFiles,
+    browseDirs: folderBrowseDirs,
+  })
+  await openStatistics(page, '/statistics?path=Pixel%208/DCIM&recursive=0')
+
+  // 没有文件的日子不可点击（aria-disabled，Playwright 默认不点 disabled 元素，这里强制点一下）
+  await expect(heatCell(page, '2026-10-18')).toHaveCSS('cursor', 'auto')
+  await expect(heatCell(page, '2026-10-19')).toHaveCSS('cursor', 'pointer')
+  await heatCell(page, '2026-10-18').click({ force: true })
+  await page.waitForTimeout(300)
+  expect(new URL(page.url()).pathname).toBe('/statistics')
+
+  // 点击有文件的日子：跳到时间线，带上日期和目录范围
+  await heatCell(page, '2026-10-19').click()
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/timeline')
+  expect(Object.fromEntries(urlQuery(page))).toEqual({ day: '2026-10-19', path: 'Pixel 8/DCIM', recursive: '0' })
+  const ui = timelineFilterLocators(page)
+  await expect(ui.tag).toHaveText('拍摄日期：2026年10月19日')
+  await expect(ui.dir).toContainText('DCIM')
+  await expect(ui.recursive).not.toHaveClass(/is-checked/)
+  await expect(ui.names).toHaveText(['DCIM_DAY_B.JPG', 'DCIM_DAY_A.JPG', 'UTC_SHIFT.JPG'])
+  const summary = summaryRequests(requests).at(-1)!
+  expect(summary.params.get('capture_date')).toBe('2026-10-19')
+  expect(summary.params.get('path')).toBe('Pixel 8/DCIM')
+  expect(summary.params.get('recursive')).toBe('false')
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${statsHeatmapScreenshotDir}/heatmap-click-timeline.png`, fullPage: true })
+
+  // 后退回到统计页（push 留下了历史），目录范围仍在
+  await page.goBack()
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/statistics')
+  expect(urlQuery(page).get('path')).toBe('Pixel 8/DCIM')
+  await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+
+  // 键盘：只有一个 Tab 停靠点（今天），方向键移动，Enter 打开；没有文件的日子 Enter 不跳转
+  await expect(heatmap(page).locator('rect[tabindex="0"]')).toHaveCount(1)
+  await expect(heatCell(page, '2026-10-19')).toHaveAttribute('tabindex', '0')
+  await heatCell(page, '2026-10-19').focus()
+  await expect(heatTip(page)).toHaveText('2026年10月19日：12 个文件')
+  await page.keyboard.press('ArrowUp')
+  await expect(heatCell(page, '2026-10-18')).toBeFocused()
+  await expect(heatCell(page, '2026-10-18')).toHaveAttribute('tabindex', '0')
+  await expect(heatCell(page, '2026-10-19')).toHaveAttribute('tabindex', '-1')
+  await expect(heatTip(page)).toHaveText('2026年10月18日：无文件')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(300)
+  expect(new URL(page.url()).pathname).toBe('/statistics')
+  await page.keyboard.press('ArrowLeft')
+  await expect(heatCell(page, '2026-10-11')).toBeFocused()
+  await page.keyboard.press('Home')
+  await expect(heatCell(page, '2025-10-20')).toBeFocused()
+  await page.keyboard.press('End')
+  await expect(heatCell(page, '2026-10-19')).toBeFocused()
+  // 已在最后一天：再往后不动
+  await page.keyboard.press('ArrowRight')
+  await expect(heatCell(page, '2026-10-19')).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/timeline')
+  expect(Object.fromEntries(urlQuery(page))).toEqual({ day: '2026-10-19', path: 'Pixel 8/DCIM', recursive: '0' })
+  await expect(ui.tag).toHaveText('拍摄日期：2026年10月19日')
 
   expect(unknown).toEqual([])
 })
