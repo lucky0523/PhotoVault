@@ -290,7 +290,7 @@ const VIDEO_CARDS: CardConfig[] = [
   { key: 'weekday', kind: 'distribution', chart: 'line', title: '拍摄星期分布', xLabel: '星期', yLabel: '视频数', unit: '个' },
   { key: 'hour', kind: 'distribution', chart: 'line', title: '拍摄小时分布', xLabel: '小时', yLabel: '视频数', unit: '个' },
   { key: 'duration', kind: 'distribution', chart: 'bar', title: '拍摄时长分布', xLabel: '时长', yLabel: '视频数', unit: '个' },
-  { key: 'camera', kind: 'ranking', chart: 'hbar', title: '机身排行', xLabel: '视频数', yLabel: '机身', unit: '个', noun: '机身' },
+  // 视频不显示「机身排行」（服务端仍返回 video.camera，前端不渲染）
 ]
 
 // ---- URL ↔ 统计范围 --------------------------------------------------------
