@@ -11,6 +11,7 @@ import {
   parseDay,
   rangeSummary,
 } from '../../src/components/stats/heatmapModel'
+import { formatBytes } from '../../src/components/stats/format'
 
 const screenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-theme-yingji-red-2026-10-14/screenshots/web'
 mkdirSync(screenshotDir, { recursive: true })
@@ -2530,8 +2531,8 @@ test('Statistics 总览 and 每日文件数量 share one row, wrap on narrow scr
       if (m.row.width >= m.svgWidth + 32) {
         expect.soft(Math.abs(m.heat.width - (m.svgWidth + 32)), `${at} card = grid + padding`).toBeLessThanOrEqual(1)
       }
-      // 类型占比 / 格式占比（拍摄趋势同样是 is-wide，本 fixture 没有月度数据所以不显示）仍然整行宽
-      expect.soft(m.otherWide.length, `${at} other wide cards`).toBe(2)
+      // 类型占比 / 格式占比所在的并排行（拍摄趋势同样是 is-wide，本 fixture 没有月度数据所以不显示）仍然整行宽
+      expect.soft(m.otherWide.length, `${at} other wide cards`).toBe(1)
       for (const w of m.otherWide) expect.soft(Math.abs(w - m.grid.width), `${at} other card full width`).toBeLessThanOrEqual(1)
 
       if (width >= 1440) {
@@ -2587,5 +2588,272 @@ test('Statistics without daily keeps the number cards in one line', async ({ pag
   await expect(page.locator('.stat-heatmap')).toHaveCount(0)
   const lefts = await row.locator('.stat-number').evaluateAll((els) => new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size)
   expect(lefts).toBe(4)
+  expect(unknown).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// 数据统计：「类型占比」「格式占比」同一行，图例在卡片右下角与「查看数据」同一行
+// ---------------------------------------------------------------------------
+
+const statsShareScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-type-format-row-2026-10-19'
+
+/** 1000 个文件、每个 10 MiB；格式占比有 11 种格式（key 与服务端 FORMAT_GROUPS 一致），图例必然换行 */
+const shareBucket = (key: string, label: string, count: number) => ({
+  key, label, count, share: count / 10, bytes: count * 10485760, bytes_share: count / 10,
+})
+const statsResponseManyFormats = {
+  ...statsResponseWithDaily,
+  overview: {
+    ...statsResponseWithDaily.overview,
+    total: { count: 1000, bytes: 10485760000 },
+    categories: {
+      kind: 'distribution',
+      buckets: [shareBucket('photo', '照片', 812), shareBucket('video', '视频', 170), shareBucket('other', '其他', 18)],
+      unknown: 0, unknown_share: 0, total: 1000, total_bytes: 10485760000,
+    },
+    formats: {
+      kind: 'distribution',
+      buckets: [
+        shareBucket('jpeg', 'JPEG', 412), shareBucket('heic', 'HEIC/HEIF', 203), shareBucket('png', 'PNG', 96),
+        shareBucket('webp', 'WebP', 31), shareBucket('gif', 'GIF', 12), shareBucket('raw', 'RAW', 58),
+        shareBucket('mp4', 'MP4', 117), shareBucket('mov', 'MOV', 44), shareBucket('video_other', '其他视频', 9),
+        shareBucket('no_ext', '无扩展名', 7), shareBucket('misc', '其他格式', 11),
+      ],
+      unknown: 0, unknown_share: 0, total: 1000, total_bytes: 10485760000,
+    },
+  },
+}
+
+const shareCard = (page: Page, title: string) =>
+  page.locator('.stat-share-row > .stat-card').filter({ has: page.locator('figcaption', { hasText: title }) })
+
+async function measureShareRow(page: Page) {
+  return page.evaluate(() => {
+    const box = (el: Element | null) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+    }
+    const row = document.querySelector('.stat-share-row')!
+    const body = document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!
+    const cards = [...row.querySelectorAll(':scope > .stat-card')].map((card) => ({
+      title: card.querySelector('figcaption')!.textContent!.trim(),
+      box: box(card)!,
+      data: box(card.querySelector('.stat-card__data')),
+      button: box(card.querySelector('.stat-card__data .el-button')),
+      legend: box(card.querySelector('.stat-card__legend')),
+      items: [...card.querySelectorAll('.stat-card__legend li')].map((li) => box(li)!),
+      canvasWidth: card.querySelector('canvas')!.clientWidth,
+      plotWidth: card.querySelector<HTMLElement>('.stat-chart__plot')!.clientWidth,
+      background: getComputedStyle(card).backgroundColor,
+      legendColor: getComputedStyle(card.querySelector('.stat-card__legend') ?? card).color,
+    }))
+    return {
+      row: box(row)!,
+      grid: box(row.parentElement)!,
+      cards,
+      doc: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+      body: { scrollWidth: body.scrollWidth, clientWidth: body.clientWidth },
+    }
+  })
+}
+
+type ShareMeasure = Awaited<ReturnType<typeof measureShareRow>>
+
+/** 并排 / 换行、不溢出、Chart.js 按卡片宽度重绘 */
+function expectShareRowLayout(m: ShareMeasure, at: string, expectSameRow?: boolean) {
+  expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
+  expect.soft(m.body.scrollWidth, `${at} page body overflow`).toBeLessThanOrEqual(m.body.clientWidth)
+  expect.soft(Math.abs(m.row.width - m.grid.width), `${at} row = grid width`).toBeLessThanOrEqual(1)
+  expect(m.cards.map((c) => c.title)).toEqual(['类型占比', '格式占比'])
+  const [type, format] = m.cards
+  for (const c of m.cards) {
+    expect.soft(c.box.right, `${at} ${c.title} inside row`).toBeLessThanOrEqual(m.row.right + 0.5)
+    expect.soft(c.box.left, `${at} ${c.title} inside row (left)`).toBeGreaterThanOrEqual(m.row.left - 0.5)
+    expect.soft(Math.abs(c.canvasWidth - c.plotWidth), `${at} ${c.title} canvas = plot width`).toBeLessThanOrEqual(1)
+  }
+  const sameRow = m.row.width >= 692
+  if (expectSameRow !== undefined) expect.soft(sameRow, `${at} expected same row = ${expectSameRow}`).toBe(expectSameRow)
+  if (sameRow) {
+    expect.soft(Math.abs(type.box.top - format.box.top), `${at} same top`).toBeLessThanOrEqual(1)
+    expect.soft(Math.abs(type.box.height - format.box.height), `${at} same height`).toBeLessThanOrEqual(1)
+    expect.soft(Math.abs(type.box.left - m.row.left), `${at} type at left`).toBeLessThanOrEqual(1)
+    expect.soft(Math.abs(format.box.right - m.row.right), `${at} format at right`).toBeLessThanOrEqual(1)
+    expect.soft(Math.abs(format.box.left - type.box.right - 12), `${at} gap 12`).toBeLessThanOrEqual(1)
+    for (const c of m.cards) {
+      expect.soft(Math.abs(c.box.width - (m.row.width - 12) / 2), `${at} ${c.title} half width`).toBeLessThanOrEqual(1)
+    }
+  } else {
+    expect.soft(format.box.top, `${at} wrapped`).toBeGreaterThanOrEqual(type.box.bottom + 11)
+    for (const c of m.cards) {
+      expect.soft(Math.abs(c.box.width - m.row.width), `${at} ${c.title} full row width`).toBeLessThanOrEqual(1)
+    }
+  }
+}
+
+async function applySimulatedDark(page: Page) {
+  // 模拟暗色：html.dark + Element Plus 暗色变量（同上面的暗色测试）
+  await page.evaluate(() => document.documentElement.classList.add('dark'))
+  await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
+}
+
+test('Statistics 类型占比 and 格式占比 share one row on wide screens and wrap on narrow ones', async ({ page }) => {
+  test.setTimeout(120_000)
+  mkdirSync(statsShareScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseManyFormats })
+  await openStatistics(page)
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1920, 1440, 1024, 800, 375]) {
+      const at = `${width} ${theme}`
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+      await page.goto('/statistics')
+      await expect(shareCard(page, '格式占比')).toBeVisible()
+      if (theme === 'dark') await applySimulatedDark(page)
+      await page.waitForTimeout(300)
+      const m = await measureShareRow(page)
+      console.log(at, JSON.stringify({ row: m.row, cards: m.cards.map((c) => ({ title: c.title, box: c.box, canvas: c.canvasWidth, plot: c.plotWidth })) }))
+      expectShareRowLayout(m, at, width >= 1440 ? true : width === 375 ? false : undefined)
+      // 这两张卡片没有暗色覆盖（与改动前一致）：白底、图例正文色
+      for (const c of m.cards) {
+        expect.soft(c.background, `${at} ${c.title} background`).toBe('rgb(255, 255, 255)')
+        expect.soft(c.legendColor, `${at} ${c.title} legend color`).toBe('rgb(96, 98, 102)')
+      }
+
+      await page.mouse.move(0, 0)
+      await page.locator('.stat-share-row').scrollIntoViewIfNeeded()
+      await page.waitForTimeout(200)
+      await page.screenshot({ path: `${statsShareScreenshotDir}/stats-share-${width}-${theme}.png` })
+    }
+  }
+
+  // 不刷新页面直接缩放：Chart.js 按新的卡片宽度重绘，两张卡片换行 / 恢复同一行
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/statistics')
+  await expect(shareCard(page, '格式占比')).toBeVisible()
+  await page.waitForTimeout(300)
+  expectShareRowLayout(await measureShareRow(page), 'live 1440', true)
+  await page.setViewportSize({ width: 600, height: 900 })
+  await page.waitForTimeout(300)
+  expectShareRowLayout(await measureShareRow(page), 'live 600', false)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.waitForTimeout(300)
+  expectShareRowLayout(await measureShareRow(page), 'live 1440 again', true)
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics 类型占比 and 格式占比 show the legend at the bottom right next to 查看数据', async ({ page }) => {
+  test.setTimeout(90_000)
+  mkdirSync(statsShareScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseManyFormats })
+  await openStatistics(page)
+
+  for (const width of [1440, 1024, 800, 375]) {
+    await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+    await page.goto('/statistics')
+    await expect(shareCard(page, '格式占比')).toBeVisible()
+    await page.waitForTimeout(300)
+
+    for (const title of ['类型占比', '格式占比']) {
+      const card = shareCard(page, title)
+      // 图例不再画在图下，只在底部一行
+      await expect(card.locator('.stat-chart .stat-chart__legend')).toHaveCount(0)
+      await expect(card.locator('.stat-card__data.is-footer .stat-card__legend')).toHaveCount(1)
+    }
+    await expect(shareCard(page, '类型占比').locator('.stat-card__legend li')).toHaveText([
+      '照片 812 个（81.2%）', '视频 170 个（17.0%）', '其他 18 个（1.8%）',
+    ])
+    await expect(shareCard(page, '格式占比').locator('.stat-card__legend li')).toHaveCount(11)
+    await expect(shareCard(page, '格式占比').locator('.stat-card__legend li').first()).toHaveText('JPEG 412 个（41.2%）')
+
+    const m = await measureShareRow(page)
+    console.log(width, JSON.stringify(m.cards.map((c) => ({ title: c.title, box: c.box, data: c.data, button: c.button, legend: c.legend, items: c.items }))))
+    for (const c of m.cards) {
+      const at = `${width} ${c.title}`
+      const button = c.button!
+      const legend = c.legend!
+      const buttonMid = button.top + button.height / 2
+      // 按钮右侧放得下时同一行（宽屏一定是），否则图例整体换到按钮下面；两种情况都不相交
+      const sameLine = legend.left >= button.right
+      if (width === 1440) expect.soft(sameLine, `${at} legend on the 查看数据 line`).toBe(true)
+      if (sameLine) {
+        // 查看数据在左、图例在右；按钮垂直中心落在图例的上下范围内
+        expect.soft(legend.left, `${at} legend right of button`).toBeGreaterThanOrEqual(button.right + 15)
+        expect.soft(buttonMid, `${at} button centre below legend top`).toBeGreaterThanOrEqual(legend.top)
+        expect.soft(buttonMid, `${at} button centre above legend bottom`).toBeLessThanOrEqual(legend.bottom)
+      } else {
+        expect.soft(legend.top, `${at} legend below button`).toBeGreaterThanOrEqual(button.bottom + 3)
+      }
+      expect.soft(Math.abs(legend.right - (c.box.right - 16)), `${at} legend at content right edge`).toBeLessThanOrEqual(1)
+      // 底部一行贴在卡片底边（内边距 12px）：图例在右下角
+      expect.soft(Math.abs(c.data!.bottom - (c.box.bottom - 12)), `${at} footer at card bottom`).toBeLessThanOrEqual(1)
+      expect.soft(Math.max(button.bottom, legend.bottom), `${at} footer bottom`).toBeGreaterThanOrEqual(c.box.bottom - 13)
+      for (const li of c.items) {
+        expect.soft(li.left, `${at} item inside legend (left)`).toBeGreaterThanOrEqual(legend.left - 0.5)
+        expect.soft(li.right, `${at} item inside legend (right)`).toBeLessThanOrEqual(legend.right + 0.5)
+        expect.soft(li.top, `${at} item inside legend (top)`).toBeGreaterThanOrEqual(legend.top - 0.5)
+        expect.soft(li.bottom, `${at} item inside legend (bottom)`).toBeLessThanOrEqual(legend.bottom + 0.5)
+        expect.soft(li.right, `${at} item inside card`).toBeLessThanOrEqual(c.box.right + 0.5)
+      }
+      // 每一行图例右对齐：每行最右一项贴着图例右边
+      const lines = new Map<number, number>()
+      for (const li of c.items) {
+        const key = Math.round(li.top)
+        lines.set(key, Math.max(lines.get(key) ?? -Infinity, li.right))
+      }
+      for (const [top, right] of lines) {
+        expect.soft(Math.abs(right - legend.right), `${at} line ${top} right aligned`).toBeLessThanOrEqual(1)
+      }
+      if (c.title === '类型占比' && width === 1440) {
+        expect.soft(lines.size, `${at} single legend line`).toBe(1)
+        expect.soft(Math.abs(buttonMid - (legend.top + legend.height / 2)), `${at} vertically centred`).toBeLessThan(2)
+      }
+      if (c.title === '格式占比') expect.soft(lines.size, `${at} legend wraps`).toBeGreaterThanOrEqual(2)
+    }
+    await page.mouse.move(0, 0)
+    await page.locator('.stat-share-row').scrollIntoViewIfNeeded()
+    await page.waitForTimeout(200)
+    await page.locator('.stat-share-row').screenshot({ path: `${statsShareScreenshotDir}/stats-share-legend-${width}.png` })
+  }
+
+  // 以下在 1440 下检查交互
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/statistics')
+  const format = shareCard(page, '格式占比')
+  await expect(format).toBeVisible()
+  const legendItems = format.locator('.stat-card__data.is-footer .stat-card__legend li')
+
+  // 「数量 / 存储」：图例仍在底部一行，内容换成存储口径
+  await format.locator('.stat-card__switch').getByText('存储', { exact: true }).click()
+  await expect(legendItems).toHaveCount(11)
+  await expect(legendItems.first()).toContainText(formatBytes(412 * 10485760))
+  await expect(legendItems.first()).not.toHaveText('JPEG 412 个（41.2%）')
+  await format.locator('.stat-card__switch').getByText('数量', { exact: true }).click()
+  await expect(legendItems.first()).toHaveText('JPEG 412 个（41.2%）')
+
+  // 键盘：绘图区 → Tab → 「查看数据」（图例不可聚焦）
+  const dataButton = format.getByRole('button', { name: '查看数据' })
+  await format.locator('.stat-chart__plot').focus()
+  await page.keyboard.press('Tab')
+  await expect(dataButton).toBeFocused()
+
+  // 对话框里的图例仍在图下
+  await page.keyboard.press('Enter')
+  const dialog = page.getByRole('dialog', { name: '格式占比数据' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('.stat-chart .stat-chart__legend li')).toHaveCount(11)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(dataButton).toBeFocused()
+
+  // 其他卡片的布局不变
+  await expect(page.locator('.stat-card__legend')).toHaveCount(2)
+  await expect(page.locator('.stat-card__data.is-footer')).toHaveCount(2)
+  const ev = page.locator('.stat-card').filter({ has: page.locator('figcaption', { hasText: '场景亮度（EV100）' }) })
+  await expect(ev.locator('.stat-card__data')).toHaveCount(1)
+  await expect(ev.locator('.stat-card__data')).not.toHaveClass(/is-footer/)
+
   expect(unknown).toEqual([])
 })

@@ -11,6 +11,9 @@
   - emptyWhenNoKnown（场景亮度）：没有任何已知项时不论开关状态都显示 emptyText 空状态，
     卡片自带的说明行清空，#note 插槽照常显示；
   - allowBytes 时右上角「数量 / 存储」切换图表口径，表格同时列出两种口径；
+  - legendInFooter（类型占比、格式占比）：堆积条形图的图例不画在图下，放到卡片底部一行
+    「查看数据」的右侧，右对齐、项多时在按钮右侧换行；底部一行贴在卡片底边（同一行两张卡片
+    等高时图例在右下角）。对话框里的图例仍在图下；
   - 图表配置在 chartModels.ts（buildDistributionChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
   - 「查看数据」打开对话框（StatDataDialog）：上面放大显示同一张图（独立的 Chart 实例，
@@ -18,7 +21,10 @@
     （StatChartNote，插槽原样转发），再下面是 StatDataTable。
 -->
 <template>
-  <figure class="pv-panel stat-card" :class="{ 'stat-card--compact': chart === 'stackedBar' }">
+  <figure
+    class="pv-panel stat-card"
+    :class="{ 'stat-card--compact': chart === 'stackedBar', 'stat-card--footer-legend': legendInFooter }"
+  >
     <figcaption class="stat-card__title">{{ title }}</figcaption>
     <el-segmented
       v-if="allowBytes && !isEmpty"
@@ -40,6 +46,7 @@
         :title="title"
         :model="model"
         :height="cardChartHeight(chart, model.count)"
+        :hide-legend="legendInFooter"
       />
     </div>
 
@@ -47,7 +54,7 @@
       <slot name="note" />
     </StatChartNote>
 
-    <div v-if="!isEmpty" class="stat-card__data">
+    <div v-if="!isEmpty" class="stat-card__data" :class="{ 'is-footer': legendInFooter }">
       <StatDataDialog :title="`${title}数据`" :columns="table.columns" :rows="table.rows">
         <template v-if="noteLines.length > 0 || $slots.note" #note>
           <StatChartNote :lines="noteLines">
@@ -72,6 +79,11 @@
           />
         </template>
       </StatDataDialog>
+      <StatChartLegend
+        v-if="legendInFooter && model.legend?.length"
+        class="stat-card__legend"
+        :items="model.legend"
+      />
     </div>
   </figure>
 </template>
@@ -90,6 +102,7 @@ import {
   type ChartShape,
 } from './chartModels'
 import StatChartCanvas from './StatChartCanvas.vue'
+import StatChartLegend from './StatChartLegend.vue'
 import StatChartNote from './StatChartNote.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
@@ -117,6 +130,8 @@ const props = withDefaults(
     excludeUnknown?: boolean
     /** 没有任何已知项时（不论是否排除未知）显示 emptyText 空状态 */
     emptyWhenNoKnown?: boolean
+    /** 图例放在底部一行「查看数据」右侧（类型占比 / 格式占比） */
+    legendInFooter?: boolean
   }>(),
   {
     xLabel: '',
@@ -127,6 +142,7 @@ const props = withDefaults(
     emptyText: '暂无数据',
     excludeUnknown: false,
     emptyWhenNoKnown: false,
+    legendInFooter: false,
   }
 )
 
@@ -355,6 +371,40 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 
 .stat-card--compact > .stat-card__data {
   margin-top: 2px;
+}
+
+/*
+ * 图例在底部一行（legendInFooter）：标题 + 切换、图、说明各占一行，最后一行吸收卡片被同一行
+ * 另一张卡片拉高的高度，底部一行贴在卡片底边，图例在右下角。
+ */
+.stat-card--footer-legend {
+  grid-template-rows: auto auto auto 1fr;
+}
+
+.stat-card--footer-legend > .stat-card__data {
+  grid-row: 4;
+  align-self: end;
+}
+
+/*
+ * 左边「查看数据」，右边图例，垂直居中；图例项多时在按钮右侧的剩余宽度里右对齐换行，不与按钮重叠。
+ * 按钮右侧放不下 180px（约一个最长的图例项）时图例整体换到按钮下面一行，仍靠右。
+ */
+.stat-card__data.is-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+.stat-card__data.is-footer :deep(.el-button) {
+  flex: none;
+}
+
+.stat-card__data.is-footer > .stat-card__legend {
+  flex: 1 1 180px;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 /* 排行空状态说明带「未知 N 个」数据，默认 #909399 只有 3.08:1（FR-9.2） */

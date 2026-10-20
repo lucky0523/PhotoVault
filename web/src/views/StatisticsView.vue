@@ -8,8 +8,9 @@
   - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式占比不受影响；
   - 总览：第一行是数字卡片和「每日文件数量」热力图（overview.daily，旧版服务端没有该字段时不显示），
-    热力图按网格宽度、数字卡片占剩余宽度，一行放不下时热力图换到数字卡片下面；之后是整行宽的
-    「类型占比」「格式占比」（100% 堆积条形图）和拍摄趋势；
+    热力图按网格宽度、数字卡片占剩余宽度，一行放不下时热力图换到数字卡片下面；之后一行并排
+    「类型占比」「格式占比」（100% 堆积条形图，放不下时一行一张），图例在卡片底部「查看数据」右侧；
+    再之后是整行宽的拍摄趋势；
   - 热力图不显示没有拍摄时间的文件，「统计时排除未知项」对它没有影响（不传 excludeUnknown）；
     点击有文件的日子 router.push 到时间线，带上 day 和本页的目录范围（path / recursive=0）；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
@@ -143,26 +144,28 @@
                   </template>
                 </StatHeatmapCard>
               </div>
-              <StatChartCard
-                v-if="data.overview.categories.kind === 'distribution'"
-                class="is-wide"
-                title="类型占比"
-                chart="stackedBar"
-                unit="个"
-                table-variant="overview"
-                allow-bytes
-                :dist="data.overview.categories"
-              />
-              <StatChartCard
-                v-if="data.overview.formats.kind === 'distribution'"
-                class="is-wide"
-                title="格式占比"
-                chart="stackedBar"
-                unit="个"
-                table-variant="overview"
-                allow-bytes
-                :dist="data.overview.formats"
-              />
+              <div v-if="hasShareCards" class="stat-share-row is-wide">
+                <StatChartCard
+                  v-if="data.overview.categories.kind === 'distribution'"
+                  title="类型占比"
+                  chart="stackedBar"
+                  unit="个"
+                  table-variant="overview"
+                  allow-bytes
+                  legend-in-footer
+                  :dist="data.overview.categories"
+                />
+                <StatChartCard
+                  v-if="data.overview.formats.kind === 'distribution'"
+                  title="格式占比"
+                  chart="stackedBar"
+                  unit="个"
+                  table-variant="overview"
+                  allow-bytes
+                  legend-in-footer
+                  :dist="data.overview.formats"
+                />
+              </div>
               <StatTrendCard
                 v-if="trend"
                 class="is-wide"
@@ -489,6 +492,12 @@ function categoryCount(key: string): number {
 
 const hasDaily = computed(() => data.value?.overview.daily?.kind === 'calendar')
 
+const hasShareCards = computed(
+  () =>
+    data.value?.overview.categories.kind === 'distribution' ||
+    data.value?.overview.formats.kind === 'distribution'
+)
+
 const photoCount = computed(() => categoryCount('photo'))
 const videoCount = computed(() => categoryCount('video'))
 
@@ -672,6 +681,18 @@ function videoNote(key: string): string {
 
 .stat-grid > .is-wide {
   grid-column: 1 / -1;
+}
+
+/* 类型占比 / 格式占比：行宽 ≥ 692px（2 × 340 + 间距）时两张卡片各占一半、等高；更窄时一行一张；只有一张时占满 */
+.stat-share-row {
+  display: grid;
+  gap: var(--pv-gap);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  min-width: 0;
+}
+
+.stat-share-row > * {
+  min-width: 0;
 }
 
 .stat-numbers {
