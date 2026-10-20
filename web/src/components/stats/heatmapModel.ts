@@ -1,11 +1,13 @@
 /**
- * 每日文件数量热力图的纯数据模型（不依赖 Vue，Playwright 在 Node 端直接做单元测试）。
+ * 每日文件数量热力图的纯数据模型和几何计算（不依赖 Vue，Playwright 在 Node 端直接做单元测试）。
  *
  * - 日期一律用 UTC 毫秒表示「某一天」（Date.UTC(y, m - 1, d)），只做日历运算，
  *   不涉及时区：服务端已经按统计时区把文件归到当地日期，并给出当地的 today；
  * - 网格按列（周）排列，每列 7 格，周一在最上面；第一列从范围起点当天或之前的周一开始；
  * - 颜色深浅分 5 级：0 级 = 没有文件，1–4 级按当前范围内非零天数的四分位数划分；
- * - 未知拍摄时间的文件（daily.unknown）不在这里出现，也不计入任何合计。
+ * - 未知拍摄时间的文件（daily.unknown）不在这里出现，也不计入任何合计；
+ * - 几何：格子间距（pitch）是 9–14 的整数，按可用宽度取放得下所有可选范围的最大值
+ *   （fitHeatmapPitch），文字大小不变，只有格子和间距随宽度变化。
  */
 
 const DAY_MS = 86_400_000
@@ -199,6 +201,62 @@ export function buildHeatmap(
   }
 
   return { weeks, monthLabels, total, start: formatDay(start), end: formatDay(end), drawEnd: formatDay(drawEnd) }
+}
+
+// ---- 几何（px） ----------------------------------------------------------------
+
+/** 左侧星期标签宽度 */
+export const HEATMAP_GUTTER_LEFT = 32
+/** 顶部月份标签高度 */
+export const HEATMAP_GUTTER_TOP = 16
+export const HEATMAP_MONTH_BASELINE = 11
+/** 月份标签的大致宽度（「12月」），最后一个标签放得下 */
+export const HEATMAP_MONTH_LABEL_WIDTH = 30
+/**
+ * 格子间距的范围：14 = 11px 格子 + 3px 空隙；9 = 7px 格子 + 2px 空隙，再窄就横向滚动。
+ * pitch 9 时任何范围（53 或 54 周，含最后一列的月份标签）的 SVG 宽度都 ≤ 539px，
+ * 即 pitch 9 时热力图卡片最宽 571px（539 + 卡片左右内边距 32）；比这更窄时网格在卡片里横向滚动。
+ */
+export const HEATMAP_MIN_PITCH = 9
+export const HEATMAP_MAX_PITCH = 14
+
+export interface HeatmapGeometry {
+  /** 相邻两格左边（上边）之间的距离 */
+  pitch: number
+  /** 格子边长 */
+  cell: number
+  /** 格子之间的空隙 */
+  gap: number
+}
+
+/** pitch ≥ 12 时空隙 3px，否则 2px */
+export function heatmapGeometry(pitch: number): HeatmapGeometry {
+  const gap = pitch >= 12 ? 3 : 2
+  return { pitch, cell: pitch - gap, gap }
+}
+
+/** SVG 宽度：最后一列格子的右边和最后一个月份标签的右边取大者 */
+export function heatmapSvgWidth(model: HeatmapModel, geo: HeatmapGeometry): number {
+  const lastLabel = model.monthLabels[model.monthLabels.length - 1]
+  const cellsRight = HEATMAP_GUTTER_LEFT + model.weeks.length * geo.pitch - geo.gap
+  const labelRight = lastLabel ? HEATMAP_GUTTER_LEFT + lastLabel.col * geo.pitch + HEATMAP_MONTH_LABEL_WIDTH : 0
+  return Math.max(cellsRight, labelRight)
+}
+
+export function heatmapSvgHeight(geo: HeatmapGeometry): number {
+  return HEATMAP_GUTTER_TOP + 7 * geo.pitch - geo.gap
+}
+
+/**
+ * 放得下所有 models（所有可选范围，切换年份时格子大小不变）的最大 pitch；
+ * 最小的 pitch 也放不下时返回 HEATMAP_MIN_PITCH（网格在卡片里横向滚动）。
+ */
+export function fitHeatmapPitch(models: HeatmapModel[], available: number): number {
+  for (let pitch = HEATMAP_MAX_PITCH; pitch > HEATMAP_MIN_PITCH; pitch--) {
+    const geo = heatmapGeometry(pitch)
+    if (models.every((m) => heatmapSvgWidth(m, geo) <= available)) return pitch
+  }
+  return HEATMAP_MIN_PITCH
 }
 
 /** 「查看数据」表格：范围内每个月一行（从起点所在月到最后画出的那天所在月） */

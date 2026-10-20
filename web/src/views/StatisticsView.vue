@@ -7,10 +7,16 @@
     （path + recursive）触发加载；
   - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式占比不受影响；
-  - 总览：第一行是数字卡片和「每日文件数量」热力图（overview.daily，旧版服务端没有该字段时不显示），
-    热力图按网格宽度、数字卡片占剩余宽度，一行放不下时热力图换到数字卡片下面；之后一行并排
-    「类型占比」「格式占比」（100% 堆积条形图，放不下时一行一张），图例在卡片底部「查看数据」右侧；
-    再之后是整行宽的拍摄趋势；
+  - 总览（.stat-overview）分上下两行，按总览区自身宽度（容器查询）切换布局：
+    · 第一行：总文件数、总存储、照片数、视频数四张紧凑卡片（每张 180–240px）排成 2×2 靠左，
+      右边是每日文件数量热力图，宽度贴着网格（不占满剩余宽度，右侧留空）；数字块被拉到热力图的
+      自然高度，两者上下边对齐，热力图不被拉高。放不下时热力图换到数字下面（仍按网格宽度）；
+      总览区 756–1186px 时数字排成一行四张，窄于 756px 时 2×2，窄于 292px 时一列；
+    · 第二行：≥ 900px 时左右各占一半，左边类型占比叠在格式占比上面，右边拍摄趋势，上下边对齐，
+      趋势图随行高变高；更窄时依次为类型占比、格式占比、拍摄趋势；
+    · 缺少的卡片（旧版服务端没有 overview.daily、没有趋势、类型 / 格式占比不可用）直接不渲染：
+      第二行只剩一半时它占满整行；类型 / 格式只剩一张时它填满左半边的高度。
+    类型占比 / 格式占比是 100% 堆积条形图，图例在卡片底部「查看数据」右侧；
   - 热力图不显示没有拍摄时间的文件，「统计时排除未知项」对它没有影响（不传 excludeUnknown）；
     点击有文件的日子 router.push 到时间线，带上 day 和本页的目录范围（path / recursive=0）；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
@@ -114,11 +120,12 @@
 
         <template v-else>
           <!-- 总览 -->
-          <section class="stats-section" aria-labelledby="stats-overview-title">
+          <section class="stats-section stats-section--overview" aria-labelledby="stats-overview-title">
             <h2 id="stats-overview-title" class="pv-section-title">总览</h2>
-            <div class="stat-grid">
-              <div class="stat-overview is-wide" :class="{ 'has-heatmap': hasDaily }">
-                <dl class="stat-numbers">
+            <!-- DOM 顺序即窄屏的阅读顺序：数字、每日文件数量、类型占比、格式占比、拍摄趋势 -->
+            <div class="stat-overview">
+              <div class="stat-overview__top" :class="{ 'has-heatmap': hasDaily }">
+                <dl class="stat-numbers stat-overview__numbers">
                   <div
                     v-for="item in numberCards"
                     :key="item.label"
@@ -138,41 +145,44 @@
                   class="stat-overview__heatmap"
                   :daily="data.overview.daily"
                   @select-day="openTimelineDay"
-                >
-                </StatHeatmapCard>
-              </div>
-              <div v-if="hasShareCards" class="stat-share-row is-wide">
-                <StatChartCard
-                  v-if="data.overview.categories.kind === 'distribution'"
-                  title="类型占比"
-                  chart="stackedBar"
-                  unit="个"
-                  table-variant="overview"
-                  allow-bytes
-                  legend-in-footer
-                  :dist="data.overview.categories"
-                />
-                <StatChartCard
-                  v-if="data.overview.formats.kind === 'distribution'"
-                  title="格式占比"
-                  chart="stackedBar"
-                  unit="个"
-                  table-variant="overview"
-                  allow-bytes
-                  legend-in-footer
-                  :dist="data.overview.formats"
                 />
               </div>
-              <StatTrendCard
-                v-if="trend"
-                class="is-wide"
-                :photo-monthly="trend.photoMonthly"
-                :photo-yearly="trend.photoYearly"
-                :video-monthly="trend.videoMonthly"
-                :video-yearly="trend.videoYearly"
-                :exclude-unknown="scope.excludeUnknown"
-              >
-              </StatTrendCard>
+              <div v-if="hasShareCards || trend" class="stat-overview__bottom">
+                <div v-if="hasShareCards" class="stat-overview__share">
+                  <StatChartCard
+                    v-if="data.overview.categories.kind === 'distribution'"
+                    class="stat-overview__type"
+                    title="类型占比"
+                    chart="stackedBar"
+                    unit="个"
+                    table-variant="overview"
+                    allow-bytes
+                    legend-in-footer
+                    :dist="data.overview.categories"
+                  />
+                  <StatChartCard
+                    v-if="data.overview.formats.kind === 'distribution'"
+                    class="stat-overview__format"
+                    title="格式占比"
+                    chart="stackedBar"
+                    unit="个"
+                    table-variant="overview"
+                    allow-bytes
+                    legend-in-footer
+                    :dist="data.overview.formats"
+                  />
+                </div>
+                <StatTrendCard
+                  v-if="trend"
+                  class="stat-overview__trend"
+                  fill-height
+                  :photo-monthly="trend.photoMonthly"
+                  :photo-yearly="trend.photoYearly"
+                  :video-monthly="trend.videoMonthly"
+                  :video-yearly="trend.videoYearly"
+                  :exclude-unknown="scope.excludeUnknown"
+                />
+              </div>
             </div>
           </section>
 
@@ -484,13 +494,14 @@ function categoryCount(key: string): number {
   return data.value?.overview.categories.buckets.find((b) => b.key === key)?.count ?? 0
 }
 
-const hasDaily = computed(() => data.value?.overview.daily?.kind === 'calendar')
-
 const hasShareCards = computed(
   () =>
     data.value?.overview.categories.kind === 'distribution' ||
     data.value?.overview.formats.kind === 'distribution'
 )
+
+/** 有每日文件数量（旧版服务端没有 overview.daily）：决定数字是否排成 2×2 放在热力图左边 */
+const hasDaily = computed(() => data.value?.overview.daily?.kind === 'calendar')
 
 const photoCount = computed(() => categoryCount('photo'))
 const videoCount = computed(() => categoryCount('video'))
@@ -670,31 +681,29 @@ function videoNote(key: string): string {
   min-width: 0;
 }
 
-.stat-grid > .is-wide {
-  grid-column: 1 / -1;
+/* 总览按自身宽度（而不是视口）切换布局：侧栏和内边距不计入 */
+.stats-section--overview {
+  container: stats-overview / inline-size;
 }
 
-/* 类型占比 / 格式占比：行宽 ≥ 692px（2 × 340 + 间距）时两张卡片各占一半、等高；更窄时一行一张；只有一张时占满 */
-.stat-share-row {
-  display: grid;
-  gap: var(--pv-gap);
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
-  min-width: 0;
-}
-
-.stat-share-row > * {
-  min-width: 0;
-}
-
-.stat-numbers {
-  margin: 0;
-  display: grid;
-  gap: var(--pv-gap);
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
-}
-
-/* 总览数字和「每日文件数量」共用一行：数字卡片占剩余宽度，热力图按网格宽度；放不下时热力图换到下一行 */
+/*
+ * 总览分上下两行，间距统一 12px：第一行数字 + 每日文件数量，第二行类型 / 格式占比 + 拍摄趋势。
+ * 下面的基础规则都写在各自的容器查询之前（同样的特异性，后写的覆盖先写的）。
+ */
 .stat-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pv-gap);
+  min-width: 0;
+}
+
+/*
+ * 第一行：数字块和热力图。热力图的宽度取决于数据（53 / 54 周、最后一列有没有月份标签），
+ * 用 flex-wrap 按实际宽度决定放得下就并排、放不下就换到数字下面。
+ * align-items: stretch：并排时数字块（2×2 自然高约 202px）被拉到热力图的自然高度（约 216px），
+ * 两者上下边对齐，热力图不被拉高；不用固定高度，字体或缩放变化时仍然相等。
+ */
+.stat-overview__top {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
@@ -702,18 +711,103 @@ function videoNote(key: string): string {
   min-width: 0;
 }
 
-.stat-overview > .stat-numbers {
-  flex: 1 1 300px;
+/*
+ * 数字：紧凑卡片靠左、不占满整行。每张宽 15% ×（总览宽 − 3 个间距），限制在 180–240px：
+ * 1920 下 240px，1440 下 180px；180px 放得下最宽的「照片数 + 其中动态照片 N」（约 150px）。
+ * grid-auto-rows: 1fr 让所有卡片等高；数字块被拉高时两行平分高度。
+ * 默认一列占满宽度（总览窄于 292px，或不支持容器查询的浏览器）。
+ */
+.stat-numbers {
+  --pv-number-w: clamp(180px, calc((100cqi - 3 * var(--pv-gap)) * 0.15), 240px);
+  margin: 0;
+  display: grid;
+  gap: var(--pv-gap);
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: 1fr;
+  justify-content: start;
+  flex: 1 1 100%;
   min-width: 0;
 }
 
-.stat-overview > .stat-overview__heatmap {
-  flex: 0 1 auto;
+/* 热力图按自身宽度（网格宽度 + 内边距，StatHeatmapCard 设置）占位，不被拉宽也不被压窄；右侧留空 */
+.stat-overview__top > .stat-overview__heatmap {
+  flex: none;
 }
 
-/* 有热力图时数字卡片最多两列（2×2 与热力图等高），窄于 292px 时一列 */
-.stat-overview.has-heatmap > .stat-numbers {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(140px, calc(50% - var(--pv-gap)))), 1fr));
+/* 第二行：默认一列，DOM 顺序即阅读顺序（类型占比、格式占比、拍摄趋势） */
+.stat-overview__bottom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pv-gap);
+  min-width: 0;
+}
+
+/* 防止 canvas 的固有宽度把列撑宽 */
+.stat-overview__bottom > * {
+  min-width: 0;
+}
+
+/* 左半边：类型占比叠在格式占比上面；最后一张（只剩一张时就是它）吸收多出的高度，一起填满左半边 */
+.stat-overview__share {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pv-gap);
+}
+
+.stat-overview__share > :last-child {
+  flex: 1 1 auto;
+}
+
+/* 292px 起两列（2×2）：两张 180px 卡片 + 间距放得下；接近 292 时缩到 (宽 − 12) / 2 ≥ 140px */
+@container stats-overview (min-width: 292px) {
+  .stat-numbers {
+    flex: 0 1 auto;
+    grid-template-columns: repeat(2, minmax(0, var(--pv-number-w)));
+  }
+}
+
+/* 756px = 4 × 180 + 3 × 12：四张排成一行（热力图这时放不到数字右边，换到下面） */
+@container stats-overview (min-width: 756px) {
+  .stat-numbers {
+    grid-template-columns: repeat(4, var(--pv-number-w));
+  }
+}
+
+/*
+ * ≥ 900px：第二行左右各占一半（每半 ≥ 444px，格式占比的图例仍在「查看数据」右边，
+ * 趋势图的月份刻度不挤），上下边对齐。
+ * 起始宽度用百分比（而不是 0）：flex-basis 0 时卡片的左右内边距 32px 不参与分配，
+ * 而左半边的包裹层没有内边距，两半会差 16px。缺一半时剩下的一半长满整行。
+ * 与类型 / 格式占比同一行时趋势图最小 200px，不把这一行撑得比左半边高；只剩趋势时恢复 240px。
+ */
+@container stats-overview (min-width: 900px) {
+  .stat-overview__bottom {
+    flex-direction: row;
+    --pv-trend-chart-min: 200px;
+  }
+
+  .stat-overview__share,
+  .stat-overview__trend {
+    flex: 1 1 calc((100% - var(--pv-gap)) / 2);
+    box-sizing: border-box;
+  }
+
+  .stat-overview__bottom > .stat-overview__trend:only-child {
+    --pv-trend-chart-min: 240px;
+  }
+}
+
+/*
+ * ≥ 1187px 且有热力图：数字排成 2×2 放在热力图左边。
+ * 1187 = 2 × 180 + 12（最窄的 2×2 数字块 372）+ 12（间距）+ 803（最窄的热力图卡片：53 周网格 771 + 内边距 32）。
+ * 更窄时热力图一定放不到 2×2 右边，数字改成一行四张，避免 2×2 右边空着、热力图在下面；
+ * 更宽时由 flex-wrap 按实际数据决定。已知边界：数据的最宽范围放不下时（1187 ≤ 宽 < 约 1206–1220），
+ * 热力图换到下面而数字仍是 2×2（CSS 判断不了 flex 是否换行）。
+ */
+@container stats-overview (min-width: 1187px) {
+  .stat-overview__top.has-heatmap > .stat-numbers {
+    grid-template-columns: repeat(2, var(--pv-number-w));
+  }
 }
 
 .stat-number {
@@ -750,6 +844,11 @@ html.dark .stat-number dt {
   grid-template-columns: auto minmax(0, 1fr);
   column-gap: 6px;
   align-items: baseline;
+}
+
+/* 照片数卡片通常最高，经 grid-auto-rows: 1fr 决定数字行行高；若被拉高，内容仍靠上，各行不被拉开 */
+.stat-number.has-sub {
+  align-content: start;
 }
 
 .stat-number.has-sub > :not(.stat-number__sub-term):not(.stat-number__sub-desc) {

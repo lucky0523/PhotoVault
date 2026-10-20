@@ -4,8 +4,11 @@ import {
   availableYears,
   buildHeatmap,
   computeThresholds,
+  fitHeatmapPitch,
   formatDayTooltip,
   heatmapBounds,
+  heatmapGeometry,
+  heatmapSvgWidth,
   levelOf,
   monthlyRows,
   parseDay,
@@ -2216,6 +2219,33 @@ test('heatmapModel computes thresholds, grid, month labels and texts (Node side)
   ])
   expect(rows.reduce((n, r) => n + r.count, 0)).toBe(recentTotal)
   expect(rows[1].count).toBe(sumDays((d) => d.startsWith('2025-11-')))
+
+  // 几何：pitch ≥ 12 时空隙 3px，否则 2px；14 是原来的 11px 格子
+  expect(heatmapGeometry(14)).toEqual({ pitch: 14, cell: 11, gap: 3 })
+  expect(heatmapGeometry(10)).toEqual({ pitch: 10, cell: 8, gap: 2 })
+  expect(heatmapSvgWidth(recent, heatmapGeometry(14))).toBe(771)
+  // 按所有可选范围里最宽的取最大的 pitch，最小 9（再窄就滚动）
+  const all = [recent, y2025, y2026]
+  expect(fitHeatmapPitch(all, Infinity)).toBe(14)
+  expect(fitHeatmapPitch(all, 771)).toBe(14)
+  expect(fitHeatmapPitch(all, 770)).toBe(13)
+  expect(fitHeatmapPitch(all, 507)).toBe(9)
+  expect(fitHeatmapPitch(all, 100)).toBe(9)
+  // 54 周的年份（2012 年是闰年、1 月 1 日是周日）不会比 53 周的取到更大的 pitch
+  const y2012 = buildHeatmap({}, '2026-10-19', 2012)
+  expect(y2012.weeks.length).toBe(54)
+  for (const width of [507, 560, 640, 700, 771, 800]) {
+    expect(fitHeatmapPitch([y2012], width), `54 weeks at ${width}`).toBeLessThanOrEqual(fitHeatmapPitch([recent], width))
+  }
+  // pitch 9 时所有范围的 SVG 宽度上限 539px，即 pitch 9 时热力图卡片最宽 571px（539 + 内边距 32）：
+  // 2010–2040 的每个公历年，以及 2011-01-01 … 2040-12-31 每一天的「最近一年」
+  const geo9 = heatmapGeometry(9)
+  let maxWidth9 = 0
+  for (let y = 2010; y <= 2040; y++) maxWidth9 = Math.max(maxWidth9, heatmapSvgWidth(buildHeatmap({}, '2040-12-31', y), geo9))
+  for (let ms = Date.UTC(2011, 0, 1); ms <= Date.UTC(2040, 11, 31); ms += 86_400_000) {
+    maxWidth9 = Math.max(maxWidth9, heatmapSvgWidth(buildHeatmap({}, day(ms), 'recent'), geo9))
+  }
+  expect(maxWidth9).toBe(539)
 })
 
 const heatmap = (page: Page) => page.locator('.stat-heatmap')
@@ -2463,139 +2493,8 @@ test('Statistics heatmap day opens the timeline filtered to that day and the cur
 })
 
 // ---------------------------------------------------------------------------
-// 数据统计：「每日文件数量」与总览同一行，卡片按网格宽度
+// 数据统计：「类型占比」「格式占比」的图例在卡片右下角与「查看数据」同一行
 // ---------------------------------------------------------------------------
-
-const statsLayoutScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-heatmap-layout-2026-10-19'
-
-async function measureOverviewRow(page: Page) {
-  return page.evaluate(() => {
-    const box = (el: Element) => {
-      const r = el.getBoundingClientRect()
-      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
-    }
-    const row = document.querySelector('.stat-overview')!
-    const grid = row.parentElement!
-    const wrap = document.querySelector<HTMLElement>('.stat-heatmap__scroll')!
-    const body = document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!
-    return {
-      row: box(row),
-      grid: box(grid),
-      numbers: box(row.querySelector('.stat-numbers')!),
-      heat: box(row.querySelector('.stat-heatmap')!),
-      svgWidth: Number(row.querySelector('.stat-heatmap__svg')!.getAttribute('width')),
-      numberColumns: new Set([...row.querySelectorAll('.stat-number')].map((el) => Math.round(el.getBoundingClientRect().left))).size,
-      scroll: { scrollWidth: wrap.scrollWidth, clientWidth: wrap.clientWidth, remaining: wrap.scrollWidth - wrap.clientWidth - wrap.scrollLeft },
-      body: { scrollWidth: body.scrollWidth, clientWidth: body.clientWidth },
-      doc: document.documentElement.scrollWidth,
-      inner: window.innerWidth,
-      otherWide: [...grid.children].filter((el) => el !== row && el.classList.contains('is-wide')).map((el) => el.getBoundingClientRect().width),
-    }
-  })
-}
-
-test('Statistics 总览 and 每日文件数量 share one row, wrap on narrow screens and never overflow the page', async ({ page }) => {
-  test.setTimeout(120_000)
-  mkdirSync(statsLayoutScreenshotDir, { recursive: true })
-  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithDaily })
-  await openStatistics(page)
-  await expect(page.locator('.stat-overview')).toHaveClass(/has-heatmap/)
-  // 切换年份不改变卡片宽度（按最宽的可选范围定宽）
-  const recentWidth = (await heatmap(page).boundingBox())!.width
-  await heatmap(page).locator('.stat-heatmap__range').click()
-  await page.locator('.el-select-dropdown__item:visible').filter({ hasText: '2025年' }).click()
-  await expect(heatmap(page).locator('.stat-heatmap__summary')).toHaveText(/^2025年共/)
-  expect((await heatmap(page).boundingBox())!.width).toBe(recentWidth)
-
-  for (const theme of ['light', 'dark'] as const) {
-    for (const width of [1920, 1440, 1024, 800, 375]) {
-      const at = `${width} ${theme}`
-      // 每个宽度重新打开页面：热力图在加载时滚到最右，Chart.js 画布也按新宽度绘制
-      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
-      await page.goto('/statistics')
-      await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
-      if (theme === 'dark') {
-        // 模拟暗色：html.dark + Element Plus 暗色变量（同上面的暗色测试）
-        await page.evaluate(() => document.documentElement.classList.add('dark'))
-        await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
-      }
-      await page.waitForTimeout(300)
-      const m = await measureOverviewRow(page)
-      console.log(at, JSON.stringify(m))
-
-      // 页面（文档和内容区）都不出现横向滚动
-      expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
-      expect.soft(m.body.scrollWidth, `${at} page body overflow`).toBeLessThanOrEqual(m.body.clientWidth)
-      // 卡片 = 网格宽度 + 内边距，放不下时不超过这一行
-      expect.soft(m.heat.width, `${at} card inside row`).toBeLessThanOrEqual(m.row.width + 0.5)
-      if (m.row.width >= m.svgWidth + 32) {
-        expect.soft(Math.abs(m.heat.width - (m.svgWidth + 32)), `${at} card = grid + padding`).toBeLessThanOrEqual(1)
-      }
-      // 类型占比 / 格式占比所在的并排行（拍摄趋势同样是 is-wide，本 fixture 没有月度数据所以不显示）仍然整行宽
-      expect.soft(m.otherWide.length, `${at} other wide cards`).toBe(1)
-      for (const w of m.otherWide) expect.soft(Math.abs(w - m.grid.width), `${at} other card full width`).toBeLessThanOrEqual(1)
-
-      if (width >= 1440) {
-        // 同一行：顶部和高度对齐，数字在左、热力图在右，间距 12px，热力图不占满整行
-        expect.soft(Math.abs(m.numbers.top - m.heat.top), `${at} same top`).toBeLessThanOrEqual(1)
-        expect.soft(Math.abs(m.numbers.height - m.heat.height), `${at} same height`).toBeLessThanOrEqual(1)
-        expect.soft(Math.abs(m.numbers.left - m.row.left), `${at} numbers at left`).toBeLessThanOrEqual(1)
-        expect.soft(Math.abs(m.heat.right - m.row.right), `${at} heatmap at right`).toBeLessThanOrEqual(1)
-        expect.soft(Math.abs(m.heat.left - m.numbers.right - 12), `${at} gap`).toBeLessThanOrEqual(1)
-        expect.soft(m.heat.width, `${at} not full width`).toBeLessThan(m.row.width - 100)
-        expect.soft(m.numberColumns, `${at} 2 number columns`).toBe(2)
-        expect.soft(m.scroll.scrollWidth, `${at} no grid scroll`).toBeLessThanOrEqual(m.scroll.clientWidth)
-      } else {
-        // 放不下：热力图换到数字卡片下面
-        expect.soft(m.heat.top, `${at} wrapped`).toBeGreaterThanOrEqual(m.numbers.bottom)
-      }
-      if (width <= 800) {
-        // 网格在卡片里横向滚动，最近一年滚到最右
-        expect.soft(m.scroll.scrollWidth, `${at} grid scrolls`).toBeGreaterThan(m.scroll.clientWidth)
-        expect.soft(m.scroll.remaining, `${at} scrolled right`).toBeLessThanOrEqual(1)
-      }
-      if (width === 375) expect.soft(m.numberColumns, `${at} 1 number column`).toBe(1)
-      if (theme === 'dark') {
-        const dark = await page.evaluate(() => ({
-          background: getComputedStyle(document.querySelector('.stat-number')!).backgroundColor,
-          overlay: getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color-overlay').trim(),
-        }))
-        expect.soft(dark.background, `${at} dark number card`).toBe(rgb(dark.overlay.toUpperCase()))
-      }
-
-      await page.mouse.move(0, 0)
-      await page.evaluate(() => {
-        document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!.scrollTop = 0
-      })
-      // 宽屏下整行都在首屏；375px 时数字卡片竖排，把热力图卡片滚进视口
-      await heatmap(page).scrollIntoViewIfNeeded()
-      await page.waitForTimeout(200)
-      await page.screenshot({ path: `${statsLayoutScreenshotDir}/stats-${width}-${theme}.png` })
-    }
-  }
-
-  expect(unknown).toEqual([])
-})
-
-test('Statistics without daily keeps the number cards in one line', async ({ page }) => {
-  const { unknown } = await installApiMock(page)
-  await authenticate(page)
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/statistics')
-  const row = page.locator('.stat-overview')
-  await expect(row.locator('.stat-number')).toHaveCount(4)
-  await expect(row).not.toHaveClass(/has-heatmap/)
-  await expect(page.locator('.stat-heatmap')).toHaveCount(0)
-  const lefts = await row.locator('.stat-number').evaluateAll((els) => new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size)
-  expect(lefts).toBe(4)
-  expect(unknown).toEqual([])
-})
-
-// ---------------------------------------------------------------------------
-// 数据统计：「类型占比」「格式占比」同一行，图例在卡片右下角与「查看数据」同一行
-// ---------------------------------------------------------------------------
-
-const statsShareScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-type-format-row-2026-10-19'
 
 /** 1000 个文件、每个 10 MiB；格式占比有 11 种格式（key 与服务端 FORMAT_GROUPS 一致），图例必然换行 */
 const shareBucket = (key: string, label: string, count: number) => ({
@@ -2625,71 +2524,33 @@ const statsResponseManyFormats = {
 }
 
 const shareCard = (page: Page, title: string) =>
-  page.locator('.stat-share-row > .stat-card').filter({ has: page.locator('figcaption', { hasText: title }) })
+  page.locator('.stat-overview__share > .stat-card').filter({ has: page.locator('figcaption', { hasText: title }) })
 
-async function measureShareRow(page: Page) {
+/** 总览布局的截图（本次布局改动：2×2 数字 + 定宽热力图 / 类型·格式 | 拍摄趋势） */
+const statsOverviewGridDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-overview-v3-2026-10-20'
+
+/** 类型占比 / 格式占比两张卡片：卡片、底部一行、按钮、图例及每个图例项的位置 */
+async function measureShareCards(page: Page) {
   return page.evaluate(() => {
     const box = (el: Element | null) => {
       if (!el) return null
       const r = el.getBoundingClientRect()
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
     }
-    const row = document.querySelector('.stat-share-row')!
-    const body = document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!
-    const cards = [...row.querySelectorAll(':scope > .stat-card')].map((card) => ({
-      title: card.querySelector('figcaption')!.textContent!.trim(),
-      box: box(card)!,
-      data: box(card.querySelector('.stat-card__data')),
-      button: box(card.querySelector('.stat-card__data .el-button')),
-      legend: box(card.querySelector('.stat-card__legend')),
-      items: [...card.querySelectorAll('.stat-card__legend li')].map((li) => box(li)!),
-      canvasWidth: card.querySelector('canvas')!.clientWidth,
-      plotWidth: card.querySelector<HTMLElement>('.stat-chart__plot')!.clientWidth,
-      background: getComputedStyle(card).backgroundColor,
-      legendColor: getComputedStyle(card.querySelector('.stat-card__legend') ?? card).color,
-    }))
-    return {
-      row: box(row)!,
-      grid: box(row.parentElement)!,
-      cards,
-      doc: document.documentElement.scrollWidth,
-      inner: window.innerWidth,
-      body: { scrollWidth: body.scrollWidth, clientWidth: body.clientWidth },
-    }
+    return ['类型占比', '格式占比'].map((title) => {
+      const card = [...document.querySelectorAll('.stat-overview__share > .stat-card')].find(
+        (c) => c.querySelector('figcaption')?.textContent?.trim() === title
+      )!
+      return {
+        title,
+        box: box(card)!,
+        data: box(card.querySelector('.stat-card__data')),
+        button: box(card.querySelector('.stat-card__data .el-button')),
+        legend: box(card.querySelector('.stat-card__legend')),
+        items: [...card.querySelectorAll('.stat-card__legend li')].map((li) => box(li)!),
+      }
+    })
   })
-}
-
-type ShareMeasure = Awaited<ReturnType<typeof measureShareRow>>
-
-/** 并排 / 换行、不溢出、Chart.js 按卡片宽度重绘 */
-function expectShareRowLayout(m: ShareMeasure, at: string, expectSameRow?: boolean) {
-  expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
-  expect.soft(m.body.scrollWidth, `${at} page body overflow`).toBeLessThanOrEqual(m.body.clientWidth)
-  expect.soft(Math.abs(m.row.width - m.grid.width), `${at} row = grid width`).toBeLessThanOrEqual(1)
-  expect(m.cards.map((c) => c.title)).toEqual(['类型占比', '格式占比'])
-  const [type, format] = m.cards
-  for (const c of m.cards) {
-    expect.soft(c.box.right, `${at} ${c.title} inside row`).toBeLessThanOrEqual(m.row.right + 0.5)
-    expect.soft(c.box.left, `${at} ${c.title} inside row (left)`).toBeGreaterThanOrEqual(m.row.left - 0.5)
-    expect.soft(Math.abs(c.canvasWidth - c.plotWidth), `${at} ${c.title} canvas = plot width`).toBeLessThanOrEqual(1)
-  }
-  const sameRow = m.row.width >= 692
-  if (expectSameRow !== undefined) expect.soft(sameRow, `${at} expected same row = ${expectSameRow}`).toBe(expectSameRow)
-  if (sameRow) {
-    expect.soft(Math.abs(type.box.top - format.box.top), `${at} same top`).toBeLessThanOrEqual(1)
-    expect.soft(Math.abs(type.box.height - format.box.height), `${at} same height`).toBeLessThanOrEqual(1)
-    expect.soft(Math.abs(type.box.left - m.row.left), `${at} type at left`).toBeLessThanOrEqual(1)
-    expect.soft(Math.abs(format.box.right - m.row.right), `${at} format at right`).toBeLessThanOrEqual(1)
-    expect.soft(Math.abs(format.box.left - type.box.right - 12), `${at} gap 12`).toBeLessThanOrEqual(1)
-    for (const c of m.cards) {
-      expect.soft(Math.abs(c.box.width - (m.row.width - 12) / 2), `${at} ${c.title} half width`).toBeLessThanOrEqual(1)
-    }
-  } else {
-    expect.soft(format.box.top, `${at} wrapped`).toBeGreaterThanOrEqual(type.box.bottom + 11)
-    for (const c of m.cards) {
-      expect.soft(Math.abs(c.box.width - m.row.width), `${at} ${c.title} full row width`).toBeLessThanOrEqual(1)
-    }
-  }
 }
 
 async function applySimulatedDark(page: Page) {
@@ -2698,59 +2559,13 @@ async function applySimulatedDark(page: Page) {
   await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
 }
 
-test('Statistics 类型占比 and 格式占比 share one row on wide screens and wrap on narrow ones', async ({ page }) => {
-  test.setTimeout(120_000)
-  mkdirSync(statsShareScreenshotDir, { recursive: true })
-  const { unknown } = await installApiMock(page, { statsResponse: statsResponseManyFormats })
-  await openStatistics(page)
-
-  for (const theme of ['light', 'dark'] as const) {
-    for (const width of [1920, 1440, 1024, 800, 375]) {
-      const at = `${width} ${theme}`
-      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
-      await page.goto('/statistics')
-      await expect(shareCard(page, '格式占比')).toBeVisible()
-      if (theme === 'dark') await applySimulatedDark(page)
-      await page.waitForTimeout(300)
-      const m = await measureShareRow(page)
-      console.log(at, JSON.stringify({ row: m.row, cards: m.cards.map((c) => ({ title: c.title, box: c.box, canvas: c.canvasWidth, plot: c.plotWidth })) }))
-      expectShareRowLayout(m, at, width >= 1440 ? true : width === 375 ? false : undefined)
-      // 这两张卡片没有暗色覆盖（与改动前一致）：白底、图例正文色
-      for (const c of m.cards) {
-        expect.soft(c.background, `${at} ${c.title} background`).toBe('rgb(255, 255, 255)')
-        expect.soft(c.legendColor, `${at} ${c.title} legend color`).toBe('rgb(96, 98, 102)')
-      }
-
-      await page.mouse.move(0, 0)
-      await page.locator('.stat-share-row').scrollIntoViewIfNeeded()
-      await page.waitForTimeout(200)
-      await page.screenshot({ path: `${statsShareScreenshotDir}/stats-share-${width}-${theme}.png` })
-    }
-  }
-
-  // 不刷新页面直接缩放：Chart.js 按新的卡片宽度重绘，两张卡片换行 / 恢复同一行
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/statistics')
-  await expect(shareCard(page, '格式占比')).toBeVisible()
-  await page.waitForTimeout(300)
-  expectShareRowLayout(await measureShareRow(page), 'live 1440', true)
-  await page.setViewportSize({ width: 600, height: 900 })
-  await page.waitForTimeout(300)
-  expectShareRowLayout(await measureShareRow(page), 'live 600', false)
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.waitForTimeout(300)
-  expectShareRowLayout(await measureShareRow(page), 'live 1440 again', true)
-
-  expect(unknown).toEqual([])
-})
-
 test('Statistics 类型占比 and 格式占比 show the legend at the bottom right next to 查看数据', async ({ page }) => {
   test.setTimeout(90_000)
-  mkdirSync(statsShareScreenshotDir, { recursive: true })
   const { unknown } = await installApiMock(page, { statsResponse: statsResponseManyFormats })
   await openStatistics(page)
 
-  for (const width of [1440, 1024, 800, 375]) {
+  mkdirSync(statsOverviewGridDir, { recursive: true })
+  for (const width of [1920, 1440, 1366, 1280, 1024, 800, 375]) {
     await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
     await page.goto('/statistics')
     await expect(shareCard(page, '格式占比')).toBeVisible()
@@ -2768,9 +2583,9 @@ test('Statistics 类型占比 and 格式占比 show the legend at the bottom rig
     await expect(shareCard(page, '格式占比').locator('.stat-card__legend li')).toHaveCount(11)
     await expect(shareCard(page, '格式占比').locator('.stat-card__legend li').first()).toHaveText('JPEG 412 个（41.2%）')
 
-    const m = await measureShareRow(page)
-    console.log(width, JSON.stringify(m.cards.map((c) => ({ title: c.title, box: c.box, data: c.data, button: c.button, legend: c.legend, items: c.items }))))
-    for (const c of m.cards) {
+    const cards = await measureShareCards(page)
+    console.log(width, JSON.stringify(cards))
+    for (const c of cards) {
       const at = `${width} ${c.title}`
       const button = c.button!
       const legend = c.legend!
@@ -2806,16 +2621,18 @@ test('Statistics 类型占比 and 格式占比 show the legend at the bottom rig
       for (const [top, right] of lines) {
         expect.soft(Math.abs(right - legend.right), `${at} line ${top} right aligned`).toBeLessThanOrEqual(1)
       }
+      if (sameLine) {
+        // 按钮对齐图例最后一行：按钮中心不高于最后一行的顶部（多行时不悬在中间）
+        const lastLineTop = Math.max(...c.items.map((li) => li.top))
+        expect.soft(buttonMid, `${at} button aligned with last legend line`).toBeGreaterThanOrEqual(lastLineTop - 0.5)
+      }
       if (c.title === '类型占比' && width === 1440) {
         expect.soft(lines.size, `${at} single legend line`).toBe(1)
         expect.soft(Math.abs(buttonMid - (legend.top + legend.height / 2)), `${at} vertically centred`).toBeLessThan(2)
       }
       if (c.title === '格式占比') expect.soft(lines.size, `${at} legend wraps`).toBeGreaterThanOrEqual(2)
     }
-    await page.mouse.move(0, 0)
-    await page.locator('.stat-share-row').scrollIntoViewIfNeeded()
-    await page.waitForTimeout(200)
-    await page.locator('.stat-share-row').screenshot({ path: `${statsShareScreenshotDir}/stats-share-legend-${width}.png` })
+    await screenshotSettled(page, page.locator('section[aria-labelledby="stats-overview-title"]'), `${statsOverviewGridDir}/stats-overview-manyformats-${width}.png`)
   }
 
   // 以下在 1440 下检查交互
@@ -2856,4 +2673,949 @@ test('Statistics 类型占比 and 格式占比 show the legend at the bottom rig
   await expect(ev.locator('.stat-card__data')).not.toHaveClass(/is-footer/)
 
   expect(unknown).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// 数据统计：拍摄趋势的图例在卡片右下角与「查看数据」同一行，点图例项切换序列；
+// 不显示 UTC 换算说明
+// ---------------------------------------------------------------------------
+
+const statsTrendScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-trend-legend-2026-10-19'
+
+/** series 分布：share 按已知数一位小数 */
+function seriesDist(counts: [string, number][], unknown: number) {
+  const known = counts.reduce((n, [, c]) => n + c, 0)
+  return {
+    kind: 'series',
+    buckets: counts.map(([label, count]) => ({ key: label, label, count, share: known ? Math.round((count / known) * 1000) / 10 : 0 })),
+    unknown,
+    unknown_share: 0,
+    total: known + unknown,
+  }
+}
+
+/** 2025-01 … 2026-10（22 个月，≤ 120 默认按月） */
+const trendMonths = Array.from({ length: 22 }, (_, i) => `${2025 + Math.floor(i / 12)}-${pad2((i % 12) + 1)}`)
+const trendPhotoCounts = trendMonths.map((m, i) => [m, ((i * 7) % 13) + 1] as [string, number])
+const trendVideoCounts = trendMonths.map((m, i) => [m, i % 4] as [string, number])
+const yearlyOf = (counts: [string, number][]) =>
+  ['2025', '2026'].map((y) => [y, counts.filter(([m]) => m.startsWith(`${y}-`)).reduce((n, [, c]) => n + c, 0)] as [string, number])
+
+const rankingDist = (rows: [string, number][], unknown: number) => {
+  const total = rows.reduce((n, [, c]) => n + c, 0) + unknown
+  return {
+    kind: 'ranking',
+    buckets: rows.map(([label, count]) => ({ key: label, label, count, share: Math.round((count / total) * 1000) / 10 })),
+    other: 0,
+    other_share: 0,
+    unknown,
+    unknown_share: Math.round((unknown / total) * 1000) / 10,
+    total,
+  }
+}
+
+const statsResponseWithTrend = {
+  ...statsResponseManyFormats,
+  photo: {
+    ...statsResponseManyFormats.photo,
+    monthly: seriesDist(trendPhotoCounts, 5),
+    yearly: seriesDist(yearlyOf(trendPhotoCounts), 5),
+    camera: rankingDist([['Pixel 8', 120], ['iPhone 15', 40]], 3),
+  },
+  video: {
+    monthly: seriesDist(trendVideoCounts, 2),
+    yearly: seriesDist(yearlyOf(trendVideoCounts), 2),
+    weekday: {
+      ...seriesDist(['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((d, i) => [d, i + 1] as [string, number]), 0),
+      kind: 'distribution',
+      meta: { local: 27, utc_converted: 1 },
+    },
+    hour: {
+      ...seriesDist([['09', 3], ['14', 5], ['20', 2]], 0),
+      kind: 'distribution',
+      meta: { local: 9, utc_converted: 1 },
+    },
+    duration: { ...seriesDist([['<10s', 6], ['10–60s', 4]], 0), kind: 'distribution' },
+    camera: rankingDist([['Pixel 8', 9]], 1),
+  },
+}
+
+const UTC_NOTE = '其中 1 个视频只记录了 UTC 时间，已按 Asia/Shanghai 换算'
+
+const trendCard = (page: Page) =>
+  page.locator('.stat-card').filter({ has: page.locator('figcaption', { hasText: '拍摄趋势' }) })
+
+async function measureTrendCard(page: Page) {
+  return page.evaluate(() => {
+    const box = (el: Element | null) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+    }
+    const card = [...document.querySelectorAll('.stat-card')].find(
+      (c) => c.querySelector('figcaption')?.textContent?.trim() === '拍摄趋势'
+    )!
+    return {
+      card: box(card)!,
+      data: box(card.querySelector('.stat-card__data'))!,
+      button: box(card.querySelector('.stat-card__data .el-button'))!,
+      legend: box(card.querySelector('.stat-card__legend'))!,
+      items: [...card.querySelectorAll('.stat-card__legend li')].map((li) => box(li)!),
+      doc: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+    }
+  })
+}
+
+/** 等元素位置连续两次测量不变（滚动、布局停下） */
+async function waitBoxSettled(target: Locator) {
+  let last = ''
+  await expect
+    .poll(async () => {
+      const now = JSON.stringify(await target.boundingBox())
+      const settled = now === last
+      last = now
+      return settled
+    }, { intervals: [150] })
+    .toBe(true)
+}
+
+/**
+ * 截图前把元素滚到内容区中间、等滚动停下，再按元素的边框盒裁切视口截图。
+ * 375 下顶栏和统计范围占掉大半高度，内容区（.pv-page-body）只剩约 430px，比拍摄趋势卡片还矮，
+ * 元素截图会把卡片上方的内容截进来、底部被截掉：这时临时加高视口（宽度不变，布局不变），
+ * 让内容区放得下整张卡片，截完恢复。
+ */
+async function screenshotSettled(page: Page, target: Locator, path: string) {
+  await page.mouse.move(0, 0)
+  const viewport = page.viewportSize()!
+  const shortfall = await target.evaluate((el) => {
+    const body = el.closest('.pv-page-body')
+    return body ? Math.ceil(el.getBoundingClientRect().height - body.clientHeight + 32) : 0
+  })
+  if (shortfall > 0) await page.setViewportSize({ width: viewport.width, height: viewport.height + shortfall })
+  await target.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+  await waitBoxSettled(target)
+  await page.screenshot({ path, clip: (await target.boundingBox())! })
+  if (shortfall > 0) await page.setViewportSize(viewport)
+}
+
+/** 等 canvas 尺寸连续两次测量不变（对话框进场后 Chart.js 还会随 ResizeObserver 调整一次） */
+async function waitCanvasSettled(canvas: Locator) {
+  let last = ''
+  await expect
+    .poll(async () => {
+      const now = JSON.stringify(
+        await canvas.evaluate((el: HTMLCanvasElement) => [el.width, el.height, el.getBoundingClientRect().width])
+      )
+      const settled = now === last
+      last = now
+      return settled
+    }, { intervals: [250] })
+    .toBe(true)
+}
+
+/** canvas 里接近某颜色的像素数（判断序列是否画出来） */
+async function countCanvasColor(canvas: Locator, [r, g, b]: [number, number, number]) {
+  return canvas.evaluate((el: HTMLCanvasElement, rgb) => {
+    const ctx = el.getContext('2d')!
+    const { data } = ctx.getImageData(0, 0, el.width, el.height)
+    let n = 0
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] > 200 && Math.abs(data[i] - rgb[0]) < 12 && Math.abs(data[i + 1] - rgb[1]) < 12 && Math.abs(data[i + 2] - rgb[2]) < 12) n++
+    }
+    return n
+  }, [r, g, b])
+}
+
+test('Statistics trend chart uses an HTML legend with line style and point shape instead of the Chart.js legend', async ({ page }) => {
+  const { unknown } = await installApiMock(page)
+  await page.goto('/tests/theme/theme-fixture.html')
+  const out = JSON.parse((await page.getByTestId('statistics-trend-legend').textContent()) ?? '{}')
+  expect(out.legendDisplay).toBe(false)
+  expect(out.legend).toEqual([
+    { key: '照片', text: '照片', color: '#4395EB', marker: { dashed: false, pointStyle: 'circle' }, hidden: false },
+    { key: '视频', text: '视频', color: '#FF858A', marker: { dashed: true, pointStyle: 'triangle' }, hidden: false },
+  ])
+  // 0 个文件的序列不画，也不出现在图例里
+  expect(out.photoOnly.map((i: { key: string }) => i.key)).toEqual(['照片'])
+  // 点图例隐藏视频：视频数据集 hidden，图例项标记为隐藏
+  expect(out.videoHidden).toEqual({ datasets: [false, true], legend: [false, true] })
+  expect(unknown).toEqual([])
+})
+
+test('Statistics 拍摄趋势 shows the legend at the bottom right next to 查看数据 and no UTC note', async ({ page }) => {
+  test.setTimeout(120_000)
+  mkdirSync(statsTrendScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithTrend })
+  await openStatistics(page)
+  const card = trendCard(page)
+  const legendItems = card.locator('.stat-card__data.is-footer .stat-card__legend li')
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1920, 1440, 1366, 1024, 800, 375]) {
+      const at = `${width} ${theme}`
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+      await page.goto('/statistics')
+      await expect(card.locator('canvas')).toBeVisible()
+      if (theme === 'dark') await applySimulatedDark(page)
+      await page.waitForTimeout(300)
+
+      // 图下没有图例，只在底部一行
+      await expect(card.locator('.stat-chart .stat-chart__legend')).toHaveCount(0)
+      await expect(legendItems).toHaveText(['照片', '视频'])
+
+      const m = await measureTrendCard(page)
+      console.log(at, JSON.stringify(m))
+      const { button, legend } = m
+      const buttonMid = button.top + button.height / 2
+      // 375 下侧栏仍占 200px，卡片内容只有约 111px，放不下「查看数据」+ 两项图例（62 + 16 + 124），
+      // 图例整体换到按钮下面一行、仍靠右（与类型占比 / 格式占比相同的退路）；其余宽度同一行
+      const sameLine = legend.left >= button.right
+      expect.soft(sameLine, `${at} legend on the 查看数据 line`).toBe(width !== 375)
+      if (sameLine) {
+        expect.soft(legend.left, `${at} legend right of button`).toBeGreaterThanOrEqual(button.right + 15)
+        expect.soft(new Set(m.items.map((li) => Math.round(li.top))).size, `${at} single legend line`).toBe(1)
+        const lastLi = m.items.reduce((a, b) => (b.top > a.top ? b : a))
+        expect.soft(buttonMid, `${at} button aligned with last legend line (top)`).toBeGreaterThanOrEqual(lastLi.top - 0.5)
+        expect.soft(buttonMid, `${at} button aligned with last legend line (bottom)`).toBeLessThanOrEqual(lastLi.bottom + 0.5)
+        expect.soft(Math.abs(buttonMid - (legend.top + legend.height / 2)), `${at} vertically centred`).toBeLessThan(2)
+      } else {
+        expect.soft(legend.top, `${at} legend below button`).toBeGreaterThanOrEqual(button.bottom + 3)
+      }
+      expect.soft(Math.abs(legend.right - (m.card.right - 16)), `${at} legend at content right edge`).toBeLessThanOrEqual(1)
+      expect.soft(Math.abs(m.data.bottom - (m.card.bottom - 12)), `${at} footer at card bottom`).toBeLessThanOrEqual(1)
+      // 最右一项贴着图例右边（右对齐）
+      expect.soft(Math.abs(Math.max(...m.items.map((li) => li.right)) - legend.right), `${at} items right aligned`).toBeLessThanOrEqual(1)
+      for (const li of m.items) {
+        expect.soft(li.left, `${at} item inside legend (left)`).toBeGreaterThanOrEqual(legend.left - 0.5)
+        expect.soft(li.right, `${at} item inside legend (right)`).toBeLessThanOrEqual(legend.right + 0.5)
+        expect.soft(li.top, `${at} item inside legend (top)`).toBeGreaterThanOrEqual(legend.top - 0.5)
+        expect.soft(li.bottom, `${at} item inside legend (bottom)`).toBeLessThanOrEqual(legend.bottom + 0.5)
+        expect.soft(li.right, `${at} item inside card`).toBeLessThanOrEqual(m.card.right + 0.5)
+      }
+      expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
+      await expect.soft(card, `${at} no UTC note on the card`).not.toContainText('UTC')
+
+      await screenshotSettled(page, card, `${statsTrendScreenshotDir}/stats-trend-legend-${width}-${theme}.png`)
+    }
+  }
+
+  // 以下在 1440 浅色下检查；关闭图表动画，截图和像素检查看到的是最终状态
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/statistics')
+  await expect(card.locator('canvas')).toBeVisible()
+
+  // 色标：照片实线 + 圆点，视频虚线 [6, 4] + 三角
+  const photoLi = legendItems.nth(0)
+  const videoLi = legendItems.nth(1)
+  await expect(photoLi.locator('svg.stat-chart__marker circle')).toHaveCount(1)
+  await expect(photoLi.locator('svg.stat-chart__marker polygon')).toHaveCount(0)
+  await expect(photoLi.locator('svg.stat-chart__marker line')).toHaveAttribute('stroke', '#4395EB')
+  expect(await photoLi.locator('svg.stat-chart__marker line').getAttribute('stroke-dasharray')).toBeNull()
+  await expect(videoLi.locator('svg.stat-chart__marker polygon')).toHaveCount(1)
+  await expect(videoLi.locator('svg.stat-chart__marker circle')).toHaveCount(0)
+  await expect(videoLi.locator('svg.stat-chart__marker line')).toHaveAttribute('stroke', '#FF858A')
+  await expect(videoLi.locator('svg.stat-chart__marker line')).toHaveAttribute('stroke-dasharray', '6 4')
+
+  // 堆积条形图的方块色标不变
+  const typeItems = shareCard(page, '类型占比').locator('.stat-card__legend li')
+  await expect(typeItems).toHaveCount(3)
+  for (let i = 0; i < 3; i++) {
+    const li = typeItems.nth(i)
+    await expect(li.locator('span.stat-chart__swatch')).toHaveCount(1)
+    await expect(li.locator('svg')).toHaveCount(0)
+    const b = (await li.locator('span.stat-chart__swatch').boundingBox())!
+    expect.soft(Math.abs(b.width - 12), `type swatch ${i} width`).toBeLessThanOrEqual(0.5)
+    expect.soft(Math.abs(b.height - 12), `type swatch ${i} height`).toBeLessThanOrEqual(0.5)
+  }
+  // 堆积条形图的图例仍不可点击、读屏不朗读
+  await expect(shareCard(page, '类型占比').locator('.stat-card__legend')).toHaveAttribute('aria-hidden', 'true')
+  await expect(shareCard(page, '类型占比').locator('.stat-card__legend button')).toHaveCount(0)
+
+  // 点图例项切换序列显示 / 隐藏（原 Chart.js 图例的行为）
+  const PHOTO_RGB: [number, number, number] = [0x43, 0x95, 0xeb]
+  const VIDEO_RGB: [number, number, number] = [0xff, 0x85, 0x8a]
+  const cardCanvas = card.locator('.stat-card__body canvas')
+  const trendLegend = card.locator('.stat-card__data.is-footer .stat-card__legend')
+  const photoToggle = trendLegend.getByRole('button', { name: '照片' })
+  const videoToggle = trendLegend.getByRole('button', { name: '视频' })
+  await expect(trendLegend).not.toHaveAttribute('aria-hidden', 'true')
+  await expect(photoToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(videoToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => countCanvasColor(cardCanvas, VIDEO_RGB)).toBeGreaterThan(20)
+  await page.mouse.move(0, 0)
+  await videoToggle.click()
+  await page.mouse.move(0, 0)
+  await expect(videoToggle).toHaveAttribute('aria-pressed', 'false')
+  await expect(videoToggle.locator('.stat-chart__legend-text')).toHaveCSS('text-decoration-line', 'line-through')
+  await expect.poll(() => countCanvasColor(cardCanvas, VIDEO_RGB)).toBe(0)
+  expect(await countCanvasColor(cardCanvas, PHOTO_RGB)).toBeGreaterThan(20)
+  await screenshotSettled(page, card, `${statsTrendScreenshotDir}/stats-trend-legend-1440-video-hidden.png`)
+  // 键盘：空格切换
+  await photoToggle.focus()
+  await page.keyboard.press('Space')
+  await expect(photoToggle).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => countCanvasColor(cardCanvas, PHOTO_RGB)).toBe(0)
+  await page.keyboard.press('Space')
+  await expect(photoToggle).toHaveAttribute('aria-pressed', 'true')
+  await videoToggle.click()
+  await page.mouse.move(0, 0)
+  await expect(videoToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => countCanvasColor(cardCanvas, VIDEO_RGB)).toBeGreaterThan(20)
+
+  // 按年：图例仍在底部一行
+  await card.locator('.stat-card__switch').getByText('按年', { exact: true }).click()
+  await expect(legendItems).toHaveText(['照片', '视频'])
+  await card.locator('.stat-card__switch').getByText('按月', { exact: true }).click()
+
+  // 对话框：图例在图下，有未知说明，没有 UTC 说明
+  await card.getByRole('button', { name: '查看数据' }).click()
+  const dialog = page.getByRole('dialog', { name: '拍摄趋势数据' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('.stat-chart .stat-chart__legend li')).toHaveText(['照片', '视频'])
+  await expect(dialog.locator('.stat-chart__legend svg.stat-chart__marker')).toHaveCount(2)
+  await expect(dialog).toContainText('已排除未知：照片 5 张、视频 2 个（没有拍摄时间）')
+  await expect(dialog).not.toContainText('UTC')
+  // 等对话框进场、Chart.js 随容器调整完尺寸再截图
+  const dialogCanvas = dialog.locator('.stat-chart canvas')
+  await waitCanvasSettled(dialogCanvas)
+  await page.mouse.move(0, 0)
+  await page.waitForTimeout(300)
+  await dialog.screenshot({ path: `${statsTrendScreenshotDir}/stats-trend-dialog-1440.png` })
+  // 对话框里的图例也能切换，与卡片共用隐藏状态
+  const dialogVideoToggle = dialog.locator('.stat-chart__legend').getByRole('button', { name: '视频' })
+  await expect(dialogVideoToggle).toHaveAttribute('aria-pressed', 'true')
+  await dialogVideoToggle.click()
+  await page.mouse.move(0, 0)
+  await expect(dialogVideoToggle).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => countCanvasColor(dialogCanvas, VIDEO_RGB)).toBe(0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(videoToggle).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(() => countCanvasColor(cardCanvas, VIDEO_RGB)).toBe(0)
+  await videoToggle.click()
+  await expect(videoToggle).toHaveAttribute('aria-pressed', 'true')
+
+  // 每日文件数量的对话框也没有 UTC 说明
+  await heatmap(page).getByRole('button', { name: '查看数据' }).click()
+  const heatDialog = page.getByRole('dialog', { name: '每日文件数量数据' })
+  await expect(heatDialog).toBeVisible()
+  await expect(heatDialog).toContainText('按拍摄日期（当地时间）统计照片和视频')
+  await expect(heatDialog).not.toContainText('UTC')
+  await page.keyboard.press('Escape')
+  await expect(heatDialog).toBeHidden()
+
+  // 视频的拍摄星期 / 小时分布仍显示 UTC 说明
+  const videoSection = page.locator('section[aria-labelledby="stats-video-title"]')
+  const videoCard = (title: string) =>
+    videoSection.locator('.stat-card').filter({ has: page.locator('figcaption', { hasText: title }) })
+  await expect(videoCard('拍摄星期分布')).toContainText(UTC_NOTE)
+  await expect(videoCard('拍摄小时分布')).toContainText(UTC_NOTE)
+  await expect(page.getByText('只记录了 UTC 时间')).toHaveCount(2)
+
+  // 视频不显示「机身排行」（响应里有 video.camera），照片的仍在
+  await expect(videoCard('拍摄时长分布')).toBeVisible()
+  await expect(videoCard('机身排行')).toHaveCount(0)
+  const photoSection = page.locator('section[aria-labelledby="stats-photo-title"]')
+  await expect(
+    photoSection.locator('.stat-card').filter({ has: page.locator('figcaption', { hasText: '机身排行' }) })
+  ).toHaveCount(1)
+
+  // 底部图例一行：类型占比、格式占比、拍摄趋势
+  await expect(page.locator('.stat-card__data.is-footer')).toHaveCount(3)
+
+  expect(unknown).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// 数据统计：总览布局（第一行 2×2 数字 + 按网格宽度的每日文件数量；第二行左右各半
+// 「类型占比叠在格式占比上面 | 拍摄趋势」；窄时热力图换到下面、第二行改成一列）
+// ---------------------------------------------------------------------------
+
+/** 总览里每块的位置、底部一行、图表尺寸，以及热力图的 pitch / 滚动 */
+async function measureOverviewGrid(page: Page) {
+  return page.evaluate(() => {
+    const box = (el: Element | null) => {
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+    }
+    const grid = document.querySelector('.stat-overview')!
+    const card = (selector: string) => {
+      const el = grid.querySelector(selector)
+      if (!el) return null
+      const plot = el.querySelector<HTMLElement>('.stat-card__body .stat-chart__plot')
+      return {
+        box: box(el)!,
+        title: box(el.querySelector('figcaption')),
+        footer: box(el.querySelector('.stat-card__data, .stat-heatmap__footer')),
+        button: box(el.querySelector('.stat-card__data .el-button, .stat-heatmap__footer .el-button')),
+        legend: box(el.querySelector('.stat-card__legend, .stat-heatmap__legend')),
+        canvasWidth: el.querySelector<HTMLCanvasElement>('.stat-card__body canvas')?.clientWidth ?? null,
+        plotWidth: plot?.clientWidth ?? null,
+        plotHeight: plot?.clientHeight ?? null,
+        background: getComputedStyle(el).backgroundColor,
+        legendColor: getComputedStyle(el.querySelector('.stat-card__legend') ?? el).color,
+      }
+    }
+    const heatEl = grid.querySelector('.stat-heatmap')
+    let heat = null
+    if (heatEl) {
+      const wrap = heatEl.querySelector<HTMLElement>('.stat-heatmap__scroll')!
+      const xs = [...new Set([...heatEl.querySelectorAll('rect[data-date]')].map((r) => Number(r.getAttribute('x'))))].sort((a, b) => a - b)
+      heat = {
+        summary: box(heatEl.querySelector('.stat-heatmap__summary'))!,
+        scrollBox: box(wrap)!,
+        scroll: { scrollWidth: wrap.scrollWidth, clientWidth: wrap.clientWidth, remaining: wrap.scrollWidth - wrap.clientWidth - wrap.scrollLeft },
+        svgWidth: Number(heatEl.querySelector('.stat-heatmap__svg')!.getAttribute('width')),
+        pitch: xs[1] - xs[0],
+        children: [...heatEl.children].map((c) => c.tagName.toLowerCase() + (c.classList.length ? `.${[...c.classList].join('.')}` : '')),
+      }
+    }
+    const topEl = grid.querySelector('.stat-overview__top')!
+    const numbersEl = grid.querySelector('.stat-overview__numbers')!
+    const numberEls = [...numbersEl.querySelectorAll('.stat-number')]
+    const shareEl = grid.querySelector('.stat-overview__share')
+    const body = document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!
+    return {
+      grid: box(grid)!,
+      top: box(topEl)!,
+      bottom: box(grid.querySelector('.stat-overview__bottom')),
+      hasHeatmapClass: topEl.classList.contains('has-heatmap'),
+      numbers: box(numbersEl)!,
+      share: box(shareEl),
+      shareChildren: shareEl ? [...shareEl.children].map((c) => c.querySelector('figcaption')?.textContent?.trim() ?? '') : [],
+      numberCards: numberEls.map((el) => ({
+        label: el.querySelector('dt')!.textContent!.trim(),
+        box: box(el)!,
+        dt: box(el.querySelector('dt'))!,
+        background: getComputedStyle(el).backgroundColor,
+        hasSub: !!el.querySelector('.stat-number__sub-term'),
+      })),
+      numberColumns: new Set(numberEls.map((el) => Math.round(el.getBoundingClientRect().left))).size,
+      numberRows: new Set(numberEls.map((el) => Math.round(el.getBoundingClientRect().top))).size,
+      type: card('.stat-overview__type'),
+      format: card('.stat-overview__format'),
+      trend: card('.stat-overview__trend'),
+      heatmap: card('.stat-overview__heatmap'),
+      heat,
+      overlay: getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color-overlay').trim(),
+      doc: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+      body: { scrollWidth: body.scrollWidth, clientWidth: body.clientWidth },
+    }
+  })
+}
+
+type OverviewGridMeasure = Awaited<ReturnType<typeof measureOverviewGrid>>
+/** 第一行：热力图在数字右边 / 换到数字下面 */
+type TopMode = 'side' | 'wrapped'
+/** 第二行：左右各半 / 一列 */
+type BottomMode = 'split' | 'stacked'
+
+const near = (a: number, b: number, tol = 1) => Math.abs(a - b) <= tol
+
+/** 数字卡片宽度：clamp(180px, (总览宽 − 3 × 12) × 0.15, 240px) */
+const numberWidth = (B: number) => Math.min(240, Math.max(180, (B - 36) * 0.15))
+
+/** 按总览宽度应有的第一行布局（fixture 最宽的范围 771px → 卡片 803px；1187 = 372 + 12 + 803） */
+const topModeFor = (B: number): TopMode => (B >= 1187 ? 'side' : 'wrapped')
+/** 按总览宽度应有的第二行布局（断点 900） */
+const bottomModeFor = (B: number): BottomMode => (B >= 900 ? 'split' : 'stacked')
+
+/** 实测的第一行布局：热力图在右上角那张数字卡片的右边、与数字块顶部对齐 */
+function topMode(m: OverviewGridMeasure): TopMode {
+  const heat = m.heatmap?.box
+  if (!heat) return 'wrapped'
+  return heat.left >= m.numberCards[1].box.right + 11 && near(heat.top, m.numbers.top) ? 'side' : 'wrapped'
+}
+
+/** 实测的第二行布局（类型 / 格式和拍摄趋势都在时） */
+function bottomMode(m: OverviewGridMeasure): BottomMode {
+  return m.trend!.box.left >= m.share!.right + 11 ? 'split' : 'stacked'
+}
+
+/** 等总览停在指定的布局（容器查询 + ResizeObserver 都是异步的） */
+async function expectLayout(page: Page, top: TopMode, bottom: BottomMode, at: string) {
+  await expect
+    .poll(async () => {
+      const m = await measureOverviewGrid(page)
+      return [topMode(m), bottomMode(m)]
+    }, { message: `${at} layout = ${top} / ${bottom}` })
+    .toEqual([top, bottom])
+}
+
+/** fixture 的所有可选范围（最近一年 + 每个有文件的年份），与卡片一样按其中最宽的取 pitch 和卡片宽度 */
+const fixtureModels = ['recent' as const, ...availableYears(dailyDays)].map((r) => buildHeatmap(dailyDays, '2026-10-19', r))
+
+/** 热力图应有的 pitch：可用宽度 = 父元素（第一行，宽度 = 总览宽）− 卡片内边距 32 */
+const expectedPitch = (available: number) => fitHeatmapPitch(fixtureModels, Math.floor(available))
+
+/** 热力图卡片应有的宽度：当前 pitch 下最宽的网格 + 32，最多占满总览 */
+const expectedHeatCardWidth = (B: number) =>
+  Math.min(B, Math.max(...fixtureModels.map((m) => heatmapSvgWidth(m, heatmapGeometry(expectedPitch(B - 32))))) + 32)
+
+/** 数字的行列数：< 292 一列；< 756 2×2；≥ 1187 且有热力图时 2×2；其余一行四张 */
+const numberGridFor = (B: number, hasHeat: boolean): [number, number] =>
+  B < 292 ? [4, 1] : B < 756 ? [2, 2] : B >= 1187 && hasHeat ? [2, 2] : [1, 4]
+
+/** 热力图没被拉高：网格紧跟在合计下面，底部一行紧跟在网格下面，没有空白带 */
+function expectHeatmapNatural(m: OverviewGridMeasure, at: string) {
+  const { summary, scrollBox } = m.heat!
+  const footer = m.heatmap!.footer!
+  expect.soft(near(scrollBox.top, summary.bottom + 8), `${at} heatmap grid right below the summary (${scrollBox.top} vs ${summary.bottom})`).toBe(true)
+  expect.soft(near(footer.top, scrollBox.bottom + 6), `${at} heatmap footer right below the grid (${footer.top} vs ${scrollBox.bottom})`).toBe(true)
+}
+
+/** 数字：四张卡片的顺序、等宽等高、内容靠上；按总览宽度一行四张 / 2×2 / 一列，靠左不占满 */
+function expectNumberRow(m: OverviewGridMeasure, at: string) {
+  const { grid, top, bottom } = m
+  const B = grid.width
+  const n = m.numberCards
+  expect.soft(n.map((c) => c.label), `${at} number labels`).toEqual(['总文件数', '总存储', '照片数', '视频数'])
+  expect.soft(n.map((c) => c.hasSub), `${at} only 照片数 has the sub-line`).toEqual([false, false, true, false])
+  for (const c of n) {
+    expect.soft(near(c.box.height, n[0].box.height), `${at} ${c.label} same height (${c.box.height} vs ${n[0].box.height})`).toBe(true)
+    expect.soft(near(c.box.width, n[0].box.width), `${at} ${c.label} same width`).toBe(true)
+    expect.soft(near(c.dt.top, c.box.top + 12), `${at} ${c.label} content top-aligned`).toBe(true)
+  }
+  if (bottom) expect.soft(near(bottom.top, top.bottom + 12), `${at} second row below the first`).toBe(true)
+  expect.soft(near(n[0].box.left, grid.left), `${at} numbers left-aligned`).toBe(true)
+  const [rows, cols] = numberGridFor(B, m.hasHeatmapClass)
+  expect.soft(m.numberRows, `${at} number rows`).toBe(rows)
+  expect.soft(m.numberColumns, `${at} number columns`).toBe(cols)
+  if (cols === 1) {
+    for (const c of n) expect.soft(near(c.box.width, B), `${at} ${c.label} full width`).toBe(true)
+    return
+  }
+  const w = cols === 4 || B >= 1187 ? numberWidth(B) : Math.min(numberWidth(B), (B - 12) / 2)
+  for (const c of n) expect.soft(near(c.box.width, w), `${at} ${c.label} width ${c.box.width} = ${w}`).toBe(true)
+  for (let i = 1; i < cols; i++) {
+    expect.soft(near(n[i].box.left, n[i - 1].box.right + 12), `${at} ${n[i].label} column gap`).toBe(true)
+  }
+  if (rows === 2) expect.soft(near(n[2].box.top, n[0].box.bottom + 12), `${at} number row gap`).toBe(true)
+  const last = n[cols - 1].box.right
+  if (cols === 4) expect.soft(last, `${at} numbers compact`).toBeLessThanOrEqual(grid.left + 4 * w + 36 + 1)
+  if (cols === 4 || w < (B - 12) / 2 - 1) expect.soft(last, `${at} numbers not full width`).toBeLessThan(grid.right - 12)
+}
+
+/** 页面不横向滚动、每块都在总览里、底部一行贴底、Chart.js 按卡片宽度绘制 */
+function expectOverviewBasics(m: OverviewGridMeasure, at: string) {
+  const { grid } = m
+  expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
+  expect.soft(m.body.scrollWidth, `${at} page body overflow`).toBeLessThanOrEqual(m.body.clientWidth)
+  const blocks = [['numbers', m.numbers], ['type', m.type?.box], ['format', m.format?.box], ['trend', m.trend?.box], ['heatmap', m.heatmap?.box]] as const
+  for (const [name, b] of blocks) {
+    if (!b) continue
+    expect.soft(b.left, `${at} ${name} inside overview (left)`).toBeGreaterThanOrEqual(grid.left - 0.5)
+    expect.soft(b.right, `${at} ${name} inside overview (right)`).toBeLessThanOrEqual(grid.right + 0.5)
+  }
+  for (const [name, c] of [['type', m.type], ['format', m.format], ['trend', m.trend], ['heatmap', m.heatmap]] as const) {
+    if (!c) continue
+    expect.soft(near(c.footer!.bottom, c.box.bottom - 12), `${at} ${name} footer at card bottom (${c.footer!.bottom} vs ${c.box.bottom})`).toBe(true)
+  }
+  for (const [name, c] of [['type', m.type], ['format', m.format], ['trend', m.trend]] as const) {
+    if (!c) continue
+    expect.soft(near(c.canvasWidth!, c.plotWidth!), `${at} ${name} canvas = plot width`).toBe(true)
+  }
+}
+
+test('Statistics 总览 shows 2×2 numbers beside a content-width heatmap above 类型/格式 | 拍摄趋势 halves, wrapping and stacking at the documented widths', async ({ page }) => {
+  test.setTimeout(300_000)
+  mkdirSync(statsOverviewGridDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithTrend })
+  await openStatistics(page)
+
+  // 每个视口应有的布局：第一行、数字行列、pitch、热力图卡片宽度、第二行
+  const side = { top: 'side', grid: [2, 2], pitch: 14, card: 803, bottom: 'split' } as const
+  const expected: Record<number, { top: TopMode; grid: readonly [number, number]; pitch: number; card: number; bottom: BottomMode }> = {
+    1920: side, 1728: side, 1680: side, 1512: side, 1440: side,
+    1366: { top: 'wrapped', grid: [1, 4], pitch: 14, card: 803, bottom: 'split' },
+    1280: { top: 'wrapped', grid: [1, 4], pitch: 14, card: 803, bottom: 'split' },
+    1024: { top: 'wrapped', grid: [1, 4], pitch: 13, card: 750, bottom: 'stacked' },
+    800: { top: 'wrapped', grid: [2, 2], pitch: 9, card: 539, bottom: 'stacked' },
+    375: { top: 'wrapped', grid: [4, 1], pitch: 9, card: 143, bottom: 'stacked' },
+  }
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1920, 1728, 1680, 1512, 1440, 1366, 1280, 1024, 800, 375]) {
+      const at = `${width} ${theme}`
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+      await page.goto('/statistics')
+      await expect(trendCard(page).locator('canvas')).toBeVisible()
+      await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+      if (theme === 'dark') await applySimulatedDark(page)
+      await page.waitForTimeout(300)
+      const m = await measureOverviewGrid(page)
+      console.log(at, JSON.stringify(m))
+      const { grid, heat } = m
+      const B = grid.width
+      const n = m.numberCards
+      const type = m.type!
+      const format = m.format!
+      const trend = m.trend!
+      const heatCard = m.heatmap!
+      const share = m.share!
+      const want = expected[width]
+
+      // 按实测的总览宽度换算的布局与表格一致，实测布局与两者一致
+      expect.soft(topModeFor(B), `${at} expected top for B = ${B}`).toBe(want.top)
+      expect.soft(bottomModeFor(B), `${at} expected bottom for B = ${B}`).toBe(want.bottom)
+      expect.soft(topMode(m), `${at} top`).toBe(want.top)
+      expect.soft(bottomMode(m), `${at} bottom`).toBe(want.bottom)
+      expect.soft(numberGridFor(B, true), `${at} expected number grid`).toEqual(want.grid)
+      expect.soft(m.hasHeatmapClass, `${at} has-heatmap`).toBe(true)
+      expectOverviewBasics(m, at)
+      expectNumberRow(m, at)
+      // 左半边：类型占比在上、格式占比在下，同宽
+      expect.soft(m.shareChildren, `${at} share stack`).toEqual(['类型占比', '格式占比'])
+      expect.soft(near(format.box.top, type.box.bottom + 12), `${at} format below type`).toBe(true)
+      for (const [name, c] of [['type', type], ['format', format]] as const) {
+        expect.soft(near(c.box.left, share.left), `${at} ${name} at share left`).toBe(true)
+        expect.soft(near(c.box.width, share.width), `${at} ${name} width = share`).toBe(true)
+      }
+      // 热力图卡片里只有标题、年份选择器、合计、滚动容器和底部一行（el-tooltip 不占网格）
+      expect.soft(heat!.children, `${at} heatmap children`).toEqual([
+        'figcaption.stat-card__title',
+        expect.stringContaining('stat-heatmap__range'),
+        'p.stat-heatmap__summary',
+        'div.stat-heatmap__scroll',
+        'div.stat-heatmap__footer',
+      ])
+      // 热力图按网格宽度：pitch 按第一行的宽度 − 32 取，卡片 = 网格 + 32（最多占满总览）
+      expect.soft(heat!.pitch, `${at} pitch`).toBe(expectedPitch(B - 32))
+      expect.soft(heat!.pitch, `${at} pitch (table)`).toBe(want.pitch)
+      expect.soft(near(heatCard.box.width, expectedHeatCardWidth(B)), `${at} heatmap width ${heatCard.box.width} = ${expectedHeatCardWidth(B)}`).toBe(true)
+      expect.soft(near(heatCard.box.width, want.card), `${at} heatmap width ${heatCard.box.width} (table ${want.card})`).toBe(true)
+      if (B >= 539) {
+        expect.soft(near(heatCard.box.width, heat!.svgWidth + 32), `${at} heatmap card hugs the grid`).toBe(true)
+        expect.soft(heat!.scroll.scrollWidth, `${at} heatmap fits`).toBeLessThanOrEqual(heat!.scroll.clientWidth)
+      }
+      expectHeatmapNatural(m, at)
+      if (theme === 'dark') {
+        const overlay = rgb(m.overlay.toUpperCase())
+        for (const c of n) expect.soft(c.background, `${at} dark ${c.label}`).toBe(overlay)
+        expect.soft(heatCard.background, `${at} dark heatmap`).toBe(overlay)
+        // 类型 / 格式占比没有暗色覆盖（与改动前一致）：白底、图例正文色
+        for (const [name, c] of [['type', type], ['format', format]] as const) {
+          expect.soft(c.background, `${at} ${name} background`).toBe('rgb(255, 255, 255)')
+          expect.soft(c.legendColor, `${at} ${name} legend color`).toBe('rgb(96, 98, 102)')
+        }
+      }
+
+      if (want.top === 'side') {
+        // 热力图在 2×2 数字右边，间距 12，上下边对齐；数字块被拉到热力图的高度，两行平分
+        expect.soft(near(heatCard.box.left, n[1].box.right + 12), `${at} heatmap right of the numbers`).toBe(true)
+        expect.soft(near(heatCard.box.top, m.numbers.top), `${at} heatmap top = numbers top`).toBe(true)
+        expect.soft(near(heatCard.box.bottom, m.numbers.bottom), `${at} heatmap bottom = numbers bottom`).toBe(true)
+        expect.soft(near(n[3].box.bottom, heatCard.box.bottom), `${at} last number card bottom = heatmap bottom`).toBe(true)
+        for (const c of n) {
+          expect.soft(near(c.box.height, (heatCard.box.height - 12) / 2), `${at} ${c.label} height ${c.box.height} = (${heatCard.box.height} − 12) / 2`).toBe(true)
+        }
+        // 热力图不被拉宽：右边留空
+        const free = grid.right - heatCard.box.right
+        const wantFree = B - (2 * numberWidth(B) + 12) - 12 - want.card
+        expect.soft(near(free, wantFree), `${at} free space right of the heatmap ${free} = ${wantFree}`).toBe(true)
+        if (width === 1920) expect.soft(free, `${at} heatmap not stretched`).toBeGreaterThan(12)
+      } else {
+        // 热力图换到数字下面，靠左，仍按网格宽度
+        expect.soft(near(heatCard.box.left, grid.left), `${at} heatmap at left`).toBe(true)
+        expect.soft(near(heatCard.box.top, m.numbers.bottom + 12), `${at} heatmap below the numbers`).toBe(true)
+        if (width === 1366 || width === 1280) {
+          expect.soft(grid.right - heatCard.box.right, `${at} heatmap content-width`).toBeGreaterThan(200)
+        }
+        if (width === 375) {
+          // 网格在卡片里横向滚动（最近一年滚到最右），标题不被挤成多行，图例不出卡片
+          expect.soft(heat!.scroll.scrollWidth, `${at} heatmap scrolls`).toBeGreaterThan(heat!.scroll.clientWidth)
+          expect.soft(heat!.scroll.remaining, `${at} scrolled right`).toBeLessThanOrEqual(1)
+          expect.soft(heatCard.title!.height, `${at} heatmap title one line`).toBeLessThan(24)
+          expect.soft(heatCard.legend!.right, `${at} heatmap legend inside card`).toBeLessThanOrEqual(heatCard.box.right)
+        }
+      }
+
+      if (want.bottom === 'split') {
+        // 左半边类型叠格式、右半边拍摄趋势，各占一半，上下边对齐，趋势图随行高变高
+        const half = (B - 12) / 2
+        expect.soft(near(share.left, grid.left), `${at} share at left`).toBe(true)
+        expect.soft(near(share.width, half), `${at} share half width (${share.width} vs ${half})`).toBe(true)
+        expect.soft(near(trend.box.left, share.right + 12), `${at} trend after share`).toBe(true)
+        expect.soft(near(trend.box.width, half), `${at} trend half width (${trend.box.width} vs ${half})`).toBe(true)
+        expect.soft(near(trend.box.right, grid.right), `${at} trend at right`).toBe(true)
+        expect.soft(near(type.box.top, trend.box.top), `${at} type top = trend top`).toBe(true)
+        expect.soft(near(format.box.bottom, trend.box.bottom), `${at} format bottom = trend bottom`).toBe(true)
+        expect.soft(trend.plotHeight!, `${at} trend plot ≥ 200`).toBeGreaterThanOrEqual(199.5)
+        if (width === 1920 || width === 1440) expect.soft(trend.plotHeight!, `${at} trend plot fills the row`).toBeGreaterThan(205)
+      } else {
+        // 一列：数字、每日文件数量、类型占比、格式占比、拍摄趋势
+        const order = [['numbers', m.numbers], ['heatmap', heatCard.box], ['type', type.box], ['format', format.box], ['trend', trend.box]] as const
+        for (let i = 1; i < order.length; i++) {
+          expect.soft(near(order[i][1].top, order[i - 1][1].bottom + 12), `${at} ${order[i][0]} below ${order[i - 1][0]}`).toBe(true)
+        }
+        for (const [name, b] of order.slice(2)) {
+          expect.soft(near(b.left, grid.left), `${at} ${name} at left`).toBe(true)
+          expect.soft(near(b.width, B), `${at} ${name} full width`).toBe(true)
+        }
+        expect.soft(near(trend.plotHeight!, 240, 0.5), `${at} trend plot 240 (${trend.plotHeight})`).toBe(true)
+      }
+
+      await screenshotSettled(page, page.locator('section[aria-labelledby="stats-overview-title"]'), `${statsOverviewGridDir}/stats-overview-${width}-${theme}.png`)
+    }
+  }
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics 总览 wraps the heatmap at 1187, stacks row 2 at 900, switches the number grid at 756 / 292, keeps the heatmap width across years and reflows on live resize', async ({ page }) => {
+  test.setTimeout(180_000)
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithTrend })
+  await openStatistics(page, '/statistics', 1920, 900)
+  await expect(trendCard(page).locator('canvas')).toBeVisible()
+  await page.waitForTimeout(300)
+
+  // 切换年份：pitch 和卡片位置、宽度不变（按所有可选范围里最宽的取）
+  const before = await measureOverviewGrid(page)
+  expect(topMode(before)).toBe('side')
+  expect(bottomMode(before)).toBe('split')
+  const pitch1920 = before.heat!.pitch
+  await heatmap(page).locator('.stat-heatmap__range').click()
+  await page.locator('.el-select-dropdown__item:visible').filter({ hasText: '2025年' }).click()
+  await expect(heatmap(page).locator('.stat-heatmap__summary')).toHaveText(/^2025年共/)
+  // 选完年份后鼠标停在格子上会弹出提示框（挂在 body 上），移开并等它消失，免得被算进页面宽度
+  await page.mouse.move(0, 0)
+  await expect(heatTip(page)).toBeHidden()
+  await page.waitForTimeout(200)
+  const after = await measureOverviewGrid(page)
+  expect(after.heat!.pitch).toBe(pitch1920)
+  expect(after.heatmap!.box).toEqual(before.heatmap!.box)
+
+  // 断点按总览宽度（与滚动条、侧栏无关：按实测的宽度换算视口宽度）
+  const offset = 1920 - before.grid.width
+  const at = async (target: number) => {
+    await page.setViewportSize({ width: Math.round(target + offset), height: 900 })
+    await expect.poll(async () => Math.round((await measureOverviewGrid(page)).grid.width), { message: `B ${target}` }).toBe(target)
+  }
+  const expectNumberGrid = async (target: number, grid: [number, number]) => {
+    await expect
+      .poll(async () => {
+        const m = await measureOverviewGrid(page)
+        return [m.numberRows, m.numberColumns]
+      }, { message: `B ${target} number grid` })
+      .toEqual(grid)
+  }
+
+  // 1187 = 2×2（372）+ 12 + 803：刚好放得下，热力图贴着总览右边；1186 换到下面，数字一行四张
+  await at(1187)
+  await expectLayout(page, 'side', 'split', 'B 1187')
+  await expectNumberGrid(1187, [2, 2])
+  {
+    const m = await measureOverviewGrid(page)
+    expect.soft(near(m.heatmap!.box.right, m.grid.right), `B 1187 heatmap at right (${m.heatmap!.box.right} vs ${m.grid.right})`).toBe(true)
+    expect.soft(near(m.heatmap!.box.width, 803), 'B 1187 heatmap width').toBe(true)
+  }
+  await at(1186)
+  await expectLayout(page, 'wrapped', 'split', 'B 1186')
+  await expectNumberGrid(1186, [1, 4])
+
+  // 第二行 900 起左右各半
+  await at(900)
+  await expectLayout(page, 'wrapped', 'split', 'B 900')
+  await at(899)
+  await expectLayout(page, 'wrapped', 'stacked', 'B 899')
+
+  // 数字 756 起一行四张，更窄 2×2
+  await at(756)
+  await expectNumberGrid(756, [1, 4])
+  await at(755)
+  await expectNumberGrid(755, [2, 2])
+
+  // 539 = pitch 9 的网格 507 + 32：刚好不滚动；538 起网格在卡片里横向滚动
+  await at(539)
+  await expect.poll(async () => (await measureOverviewGrid(page)).heat!.pitch, { message: 'B 539 pitch' }).toBe(9)
+  {
+    const m = await measureOverviewGrid(page)
+    expect.soft(near(m.heatmap!.box.width, m.grid.width), 'B 539 heatmap card = overview width').toBe(true)
+    expect.soft(m.heat!.scroll.scrollWidth, 'B 539 heatmap fits').toBeLessThanOrEqual(m.heat!.scroll.clientWidth)
+  }
+  await at(538)
+  await expect
+    .poll(async () => {
+      const { heat } = await measureOverviewGrid(page)
+      return heat!.scroll.scrollWidth > heat!.scroll.clientWidth
+    }, { message: 'B 538 heatmap scrolls' })
+    .toBe(true)
+
+  // 数字 292 起两列，更窄一列
+  await at(292)
+  await expectNumberGrid(292, [2, 2])
+  await at(291)
+  await expectNumberGrid(291, [4, 1])
+
+  // 不刷新直接缩放：布局、Chart.js 画布、热力图 pitch 和卡片宽度都跟着变
+  const check = async (width: number, top: TopMode, bottom: BottomMode) => {
+    await page.setViewportSize({ width, height: 900 })
+    await expectLayout(page, top, bottom, `live ${width}`)
+    await expect.poll(async () => {
+      const m = await measureOverviewGrid(page)
+      const B = m.grid.width
+      return m.heat!.pitch === expectedPitch(B - 32) && near(m.heatmap!.box.width, expectedHeatCardWidth(B))
+    }, { message: `live ${width} pitch and heatmap width` }).toBe(true)
+    await expect.poll(async () => {
+      const m = await measureOverviewGrid(page)
+      return [m.type!, m.format!, m.trend!].every((c) => near(c.canvasWidth!, c.plotWidth!))
+    }, { message: `live ${width} canvas = plot width` }).toBe(true)
+    const m = await measureOverviewGrid(page)
+    expect.soft(m.doc, `live ${width} document overflow`).toBeLessThanOrEqual(m.inner)
+    expect.soft(m.heat!.scroll.scrollWidth, `live ${width} heatmap fits`).toBeLessThanOrEqual(m.heat!.scroll.clientWidth)
+  }
+  await check(1920, 'side', 'split')
+  await check(1366, 'wrapped', 'split')
+  await check(1024, 'wrapped', 'stacked')
+  await check(1920, 'side', 'split')
+  expect((await measureOverviewGrid(page)).heat!.pitch).toBe(pitch1920)
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics 总览 missing cards leave no empty half', async ({ page }) => {
+  test.setTimeout(120_000)
+  await authenticate(page)
+  const load = async (statsResponse: unknown, width: number, ready: () => Promise<void>) => {
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    const mock = await installApiMock(page, { statsResponse })
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto('/statistics')
+    await ready()
+    await page.waitForTimeout(300)
+    const m = await measureOverviewGrid(page)
+    console.log('missing', width, JSON.stringify(m))
+    expectOverviewBasics(m, `missing ${width}`)
+    expectNumberRow(m, `missing ${width}`)
+    return { m, mock }
+  }
+  const shareReady = async () => {
+    await expect(page.locator('.stat-overview__share > .stat-card').first()).toBeVisible()
+  }
+  const trendOnlyReady = async () => {
+    await expect(trendCard(page).locator('canvas')).toBeVisible()
+  }
+  const trendReady = async () => {
+    await shareReady()
+    await trendOnlyReady()
+  }
+  const heatReady = async () => {
+    await shareReady()
+    await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+  }
+
+  // 旧版服务端：没有 daily，也没有趋势。数字一行四张，类型 / 格式占比占满第二行
+  {
+    const { m, mock } = await load(statsResponse, 1920, shareReady)
+    expect(m.hasHeatmapClass).toBe(false)
+    expect(m.numberRows).toBe(1)
+    expect(m.numberColumns).toBe(4)
+    expect.soft(near(m.numberCards[0].box.width, 240), 'old server number width 240').toBe(true)
+    expect(m.trend).toBeNull()
+    expect(m.heatmap).toBeNull()
+    await expect(page.locator('.stat-heatmap')).toHaveCount(0)
+    await expect(trendCard(page)).toHaveCount(0)
+    expect(near(m.share!.left, m.grid.left)).toBe(true)
+    expect(near(m.share!.width, m.grid.width)).toBe(true)
+    expect(near(m.bottom!.top, m.top.bottom + 12)).toBe(true)
+    expect(mock.unknown).toEqual([])
+  }
+
+  // 只有 daily（没有趋势）：1920 下热力图在 2×2 右边、上下边对齐；类型 / 格式在下面占满整行
+  {
+    const { m, mock } = await load(statsResponseWithDaily, 1920, heatReady)
+    const heat = m.heatmap!.box
+    expect.soft(topMode(m), 'daily 1920 top').toBe('side')
+    expect.soft([m.numberRows, m.numberColumns], 'daily 1920 numbers 2×2').toEqual([2, 2])
+    expect.soft(near(heat.left, m.numberCards[1].box.right + 12), 'daily 1920 heatmap right of the numbers').toBe(true)
+    expect.soft(near(heat.top, m.numbers.top), 'daily 1920 top aligned').toBe(true)
+    expect.soft(near(heat.bottom, m.numbers.bottom), 'daily 1920 bottom aligned').toBe(true)
+    expect.soft(near(heat.width, 803), `daily 1920 heatmap width ${heat.width}`).toBe(true)
+    expectHeatmapNatural(m, 'daily 1920')
+    expect.soft(near(m.share!.left, m.grid.left), 'daily 1920 share at left').toBe(true)
+    expect.soft(near(m.share!.width, m.grid.width), 'daily 1920 share full width').toBe(true)
+    expect(mock.unknown).toEqual([])
+  }
+  {
+    const { m, mock } = await load(statsResponseWithDaily, 1366, heatReady)
+    const heat = m.heatmap!.box
+    expect.soft(topMode(m), 'daily 1366 top').toBe('wrapped')
+    expect.soft([m.numberRows, m.numberColumns], 'daily 1366 numbers in one row').toEqual([1, 4])
+    expect.soft(near(heat.left, m.grid.left), 'daily 1366 heatmap at left').toBe(true)
+    expect.soft(near(heat.top, m.numbers.bottom + 12), 'daily 1366 heatmap below the numbers').toBe(true)
+    expect.soft(near(heat.width, 803), `daily 1366 heatmap width ${heat.width}`).toBe(true)
+    expect.soft(m.heat!.pitch, 'daily 1366 pitch').toBe(14)
+    expect(mock.unknown).toEqual([])
+  }
+
+  // 只有趋势（没有 daily）：数字一行四张；类型 / 格式 | 拍摄趋势各占一半，上下边对齐
+  {
+    // daily: undefined 在 JSON 里不出现（模拟没有 daily 的响应）
+    const response = { ...statsResponseWithTrend, overview: { ...statsResponseWithTrend.overview, daily: undefined } }
+    const { m, mock } = await load(response, 1920, trendReady)
+    const half = (m.grid.width - 12) / 2
+    expect(m.heatmap).toBeNull()
+    expect(m.hasHeatmapClass).toBe(false)
+    expect.soft([m.numberRows, m.numberColumns], 'no-daily numbers in one row').toEqual([1, 4])
+    expect.soft(near(m.share!.left, m.grid.left), 'no-daily share at left').toBe(true)
+    expect.soft(near(m.share!.width, half), `no-daily share width ${m.share!.width}`).toBe(true)
+    expect.soft(near(m.trend!.box.width, half), `no-daily trend width ${m.trend!.box.width}`).toBe(true)
+    expect.soft(near(m.trend!.box.right, m.grid.right), 'no-daily trend at right').toBe(true)
+    expect.soft(near(m.trend!.box.top, m.type!.box.top), 'no-daily top aligned').toBe(true)
+    expect.soft(near(m.trend!.box.bottom, m.format!.box.bottom), 'no-daily bottom aligned').toBe(true)
+    expect(mock.unknown).toEqual([])
+  }
+
+  const { formats, categories } = statsResponseWithTrend.overview
+
+  // 只有趋势（类型 / 格式都不可用）：拍摄趋势占满第二行，图表恢复 240px
+  {
+    const response = {
+      ...statsResponseWithTrend,
+      overview: { ...statsResponseWithTrend.overview, formats: { ...formats, kind: 'unavailable' }, categories: { ...categories, kind: 'unavailable' } },
+    }
+    const { m, mock } = await load(response, 1920, trendOnlyReady)
+    expect(m.share).toBeNull()
+    await expect(page.locator('.stat-overview__share')).toHaveCount(0)
+    expect.soft(near(m.trend!.box.left, m.grid.left), 'trend alone at left').toBe(true)
+    expect.soft(near(m.trend!.box.width, m.grid.width), 'trend alone full width').toBe(true)
+    expect.soft(near(m.trend!.plotHeight!, 240, 0.5), `trend alone plot 240 (${m.trend!.plotHeight})`).toBe(true)
+    expect(mock.unknown).toEqual([])
+  }
+
+  // 左半边只剩一张卡片：它填满左半边（与拍摄趋势上下边对齐），图例仍在「查看数据」一行
+  for (const [title, missing, response] of [
+    ['类型占比', 'format', { ...statsResponseWithTrend, overview: { ...statsResponseWithTrend.overview, formats: { ...formats, kind: 'unavailable' } } }],
+    ['格式占比', 'type', { ...statsResponseWithTrend, overview: { ...statsResponseWithTrend.overview, categories: { ...categories, kind: 'unavailable' } } }],
+  ] as const) {
+    for (const width of [1920, 1440]) {
+      const at = `lone ${title} ${width}`
+      const { m, mock } = await load(response, width, async () => {
+        await trendReady()
+        await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+      })
+      expect.soft(m[missing], `${at} no ${missing} card`).toBeNull()
+      expect.soft(m.shareChildren, `${at} share stack`).toEqual([title])
+      const lone = (missing === 'format' ? m.type : m.format)!
+      const share = m.share!
+      const half = (m.grid.width - 12) / 2
+      expect.soft(bottomMode(m), `${at} bottom`).toBe('split')
+      expect.soft(near(lone.box.left, m.grid.left), `${at} left = overview left`).toBe(true)
+      expect.soft(near(lone.box.width, share.width), `${at} width = left half`).toBe(true)
+      expect.soft(near(share.width, half), `${at} left half width ${share.width} = ${half}`).toBe(true)
+      expect.soft(near(lone.box.top, m.trend!.box.top), `${at} top = trend top`).toBe(true)
+      expect.soft(near(lone.box.bottom, m.trend!.box.bottom), `${at} bottom = trend bottom`).toBe(true)
+      // 底部一行贴底，图例在「查看数据」右边同一行
+      expect.soft(near(lone.footer!.bottom, lone.box.bottom - 12), `${at} footer at card bottom`).toBe(true)
+      expect.soft(lone.legend!.left, `${at} legend on the 查看数据 line`).toBeGreaterThanOrEqual(lone.button!.right)
+      const buttonMid = lone.button!.top + lone.button!.height / 2
+      expect.soft(buttonMid, `${at} button within legend (top)`).toBeGreaterThanOrEqual(lone.legend!.top)
+      expect.soft(buttonMid, `${at} button within legend (bottom)`).toBeLessThanOrEqual(lone.legend!.bottom)
+      expect(mock.unknown).toEqual([])
+    }
+  }
 })

@@ -5,9 +5,12 @@
   并给出当地的 today，这里只做日历运算（heatmapModel.ts，纯函数）。
   - 默认显示最近一年，年份选择器只列当前统计范围内有文件的年份；新数据到达时回到最近一年；
   - 7 行（周一在上）× 53–54 列（周），手写 inline SVG，不引入图表依赖；
-  - 卡片宽度 = 网格宽度（取所有可选范围里最宽的，切换年份时卡片和旁边的总览不跳动）+ 左右内边距，
-    不超过容器宽度；容器更窄时网格在自己的滚动容器里横向滚动（最近一年滚到最右，某一年滚到最左），
-    不撑宽页面；
+  - 卡片宽度 = 网格宽度（当前 pitch 下所有可选范围里最宽的一个，切换年份时卡片宽度不变）+ 左右内边距 32，
+    最多 100%，不被拉宽；
+  - 格子间距 pitch 是 9–14 的整数，按父元素的内容宽度 − 32（ResizeObserver）取放得下所有可选范围的
+    最大值，文字大小不变：放得下时为 14，更窄时缩小 pitch，卡片仍贴着网格；pitch 9 也放不下时
+    网格在自己的滚动容器里横向滚动（最近一年滚到最右，某一年滚到最左），不撑宽页面；
+  - 卡片内部是网格：网格靠上，紧跟在合计下面；底部一行贴在卡片底边，卡片被拉高时多出的高度在两者之间；
   - 颜色 5 级：0 = 没有文件，1–4 按范围内非零天数的四分位数划分；浅色 / html.dark 两套色板
     用 CSS 变量定义在 .stat-heatmap 上；
   - 一个 el-tooltip（virtual-triggering）跟随悬停 / 聚焦的格子；每个格子的 aria-label 与提示相同；
@@ -20,6 +23,7 @@
 -->
 <template>
   <figure
+    ref="cardRef"
     class="pv-panel stat-card stat-heatmap"
     :style="{ '--pv-heat-svg-width': `${cardSvgWidth}px` }"
   >
@@ -59,8 +63,8 @@
           v-for="m in model.monthLabels"
           :key="`m${m.col}`"
           class="stat-heatmap__label"
-          :x="GUTTER_LEFT + m.col * PITCH"
-          :y="MONTH_BASELINE"
+          :x="HEATMAP_GUTTER_LEFT + m.col * geo.pitch"
+          :y="HEATMAP_MONTH_BASELINE"
         >{{ m.label }}</text>
         <text
           v-for="w in WEEKDAY_LABELS"
@@ -68,18 +72,18 @@
           class="stat-heatmap__label"
           text-anchor="end"
           dominant-baseline="central"
-          :x="GUTTER_LEFT - 6"
-          :y="GUTTER_TOP + w.row * PITCH + CELL / 2"
+          :x="HEATMAP_GUTTER_LEFT - 6"
+          :y="HEATMAP_GUTTER_TOP + w.row * geo.pitch + geo.cell / 2"
         >{{ w.label }}</text>
         <template v-for="(week, col) in model.weeks" :key="col">
           <template v-for="(cell, row) in week" :key="row">
             <rect
               v-if="cell"
               :class="['stat-heatmap__cell', `lv-${cell.level}`, { 'has-files': cell.count > 0 }]"
-              :x="GUTTER_LEFT + col * PITCH + 0.5"
-              :y="GUTTER_TOP + row * PITCH + 0.5"
-              :width="CELL - 1"
-              :height="CELL - 1"
+              :x="HEATMAP_GUTTER_LEFT + col * geo.pitch + 0.5"
+              :y="HEATMAP_GUTTER_TOP + row * geo.pitch + 0.5"
+              :width="geo.cell - 1"
+              :height="geo.cell - 1"
               rx="2"
               ry="2"
               role="button"
@@ -130,19 +134,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { TooltipInstance } from 'element-plus'
 import type { DailyCounts } from '@/api/stats'
 import {
+  HEATMAP_GUTTER_LEFT,
+  HEATMAP_GUTTER_TOP,
+  HEATMAP_MONTH_BASELINE,
   addDays,
   availableYears,
   buildHeatmap,
+  fitHeatmapPitch,
   formatDay,
+  heatmapGeometry,
+  heatmapSvgHeight,
+  heatmapSvgWidth,
   monthlyRows,
   parseDay,
   rangeSummary,
   type HeatmapCell,
-  type HeatmapModel,
   type HeatmapRange,
 } from './heatmapModel'
 import StatChartNote from './StatChartNote.vue'
@@ -151,19 +161,6 @@ import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
 
 const props = defineProps<{ daily: DailyCounts }>()
 const emit = defineEmits<{ 'select-day': [date: string] }>()
-
-// ---- 几何（px） ----
-/** 格子边长 */
-const CELL = 11
-/** 格子间距 = 边长 + 3px 空隙 */
-const PITCH = 14
-/** 左侧星期标签宽度 */
-const GUTTER_LEFT = 32
-/** 顶部月份标签高度 */
-const GUTTER_TOP = 16
-const MONTH_BASELINE = 11
-/** 月份标签的大致宽度（「12月」），最后一个标签放得下 */
-const MONTH_LABEL_WIDTH = 30
 
 const WEEKDAY_LABELS = [
   { row: 0, label: '周一' },
@@ -195,32 +192,34 @@ const rangeOptions = computed(() => [
 const model = computed(() => buildHeatmap(props.daily.days, props.daily.today, range.value))
 const summary = computed(() => rangeSummary(range.value, model.value.total))
 
-/** SVG 宽度：最后一列格子的右边和最后一个月份标签的右边取大者 */
-function svgWidth(m: HeatmapModel): number {
-  const lastLabel = m.monthLabels[m.monthLabels.length - 1]
-  const cellsRight = GUTTER_LEFT + m.weeks.length * PITCH - (PITCH - CELL)
-  const labelRight = lastLabel ? GUTTER_LEFT + lastLabel.col * PITCH + MONTH_LABEL_WIDTH : 0
-  return Math.max(cellsRight, labelRight)
-}
+/**
+ * 所有可选范围的网格（只依赖 props，切换范围时不重建）：pitch 按其中最宽的一个取，
+ * 53 / 54 列的年份之间切换时格子大小不变。
+ */
+const fitModels = computed(() =>
+  rangeOptions.value.map((o) => buildHeatmap(props.daily.days, props.daily.today, o.value))
+)
 
-const layout = computed(() => ({
-  width: svgWidth(model.value),
-  height: GUTTER_TOP + 7 * PITCH - (PITCH - CELL),
-}))
+/** 卡片左右内边距之和（padding: 12px 16px） */
+const CARD_PADDING_X = 32
 
 /**
- * 卡片按所有可选范围里最宽的网格定宽：53 / 54 列的年份相差十几像素，
- * 切换年份时卡片和同一行的总览数字不跟着跳动。
+ * 网格的可用宽度 = 父元素内容宽度 − 卡片内边距（ResizeObserver 更新；挂载前按无限宽取最大 pitch）。
+ * 量父元素而不是卡片自己：卡片宽度随 pitch 变化，量自己的话窗口变宽后会停在较小的 pitch。
  */
+const available = ref(Infinity)
+const pitch = computed(() => fitHeatmapPitch(fitModels.value, available.value))
+const geo = computed(() => heatmapGeometry(pitch.value))
+
+/** 卡片宽度用的网格宽度：当前 pitch 下所有可选范围里最宽的一个，切换年份时卡片宽度不变 */
 const cardSvgWidth = computed(() =>
-  Math.max(
-    ...rangeOptions.value.map((o) =>
-      o.value === range.value
-        ? layout.value.width
-        : svgWidth(buildHeatmap(props.daily.days, props.daily.today, o.value))
-    )
-  )
+  Math.max(...fitModels.value.map((m) => heatmapSvgWidth(m, geo.value)))
 )
+
+const layout = computed(() => ({
+  width: heatmapSvgWidth(model.value, geo.value),
+  height: heatmapSvgHeight(geo.value),
+}))
 
 /** date → 格子，悬停 / 键盘查找用 */
 const cellByDate = computed(() => {
@@ -236,22 +235,51 @@ const tableRows = computed<StatTableRow[]>(() => [
 
 // ---- 滚动位置与键盘焦点 ----
 
+const cardRef = ref<HTMLElement>()
 const scrollRef = ref<HTMLElement>()
 const svgRef = ref<SVGSVGElement>()
 /** roving tabindex：唯一 tabindex=0 的格子 */
 const focusDate = ref('')
 
+// 最近一年从今天开始，某一年从 1 月 1 日开始
 watch(
   model,
-  async (m) => {
-    // 最近一年从今天开始、滚到最右；某一年从 1 月 1 日开始、滚到最左
+  (m) => {
     focusDate.value = range.value === 'recent' ? m.drawEnd : m.start
+  },
+  { immediate: true }
+)
+
+// 最近一年滚到最右、某一年滚到最左；宽度变化换了 pitch 时重新滚动，但不重置键盘焦点
+watch(
+  [model, pitch],
+  async () => {
     await nextTick()
     const el = scrollRef.value
     if (el) el.scrollLeft = range.value === 'recent' ? el.scrollWidth : 0
   },
   { immediate: true, flush: 'post' }
 )
+
+let resizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  const parent = cardRef.value?.parentElement
+  if (!parent) return
+  const cs = getComputedStyle(parent)
+  available.value =
+    Math.floor(parent.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) -
+    CARD_PADDING_X
+  resizeObserver = new ResizeObserver(([entry]) => {
+    available.value = Math.floor(entry.contentRect.width) - CARD_PADDING_X
+  })
+  resizeObserver.observe(parent)
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
 
 function cellElement(target: EventTarget | null): SVGRectElement | null {
   const el = target as Element | null
@@ -345,18 +373,22 @@ function onFocusIn(event: FocusEvent) {
   margin: 0;
   padding: 12px 16px;
   box-sizing: border-box;
-  /* 卡片正好是网格宽度 + 左右内边距（12px 16px 的 32px），不超过容器；
-     换行的 flex 容器按内容定宽会把所有子项宽度相加，所以这里显式给宽度 */
+  /* 宽度贴着网格（--pv-heat-svg-width 由脚本按当前 pitch 设置）+ 左右内边距，不被拉宽 */
   width: calc(var(--pv-heat-svg-width) + 32px);
   max-width: 100%;
   min-width: 0;
-  /* flex 而不是 grid：卡片很窄时年份选择器换到标题下一行，标题不被挤成一列一个字 */
-  display: flex;
-  flex-wrap: wrap;
+  /* 卡片很窄时（@container 见下）年份选择器换到第 2 行，标题不被挤成一列一个字 */
+  container-type: inline-size;
+  /*
+   * 行：1 标题 + 年份选择器、2 窄卡片时的年份选择器（宽卡片时为空、高度 0）、3 合计、
+   * 4 热力图（1fr，网格靠上；被拉高时多出的高度在网格下面）、5 底部一行（贴在卡片底边）
+   */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto 1fr auto;
+  column-gap: 8px;
+  row-gap: 0;
   align-items: center;
-  /* 被同一行拉高时多出的高度留在底部，不把各行拉开 */
-  align-content: flex-start;
-  gap: 4px 8px;
 }
 
 /* 暗色：html.dark（Element Plus 暗色变量）下换色板和卡片底色 */
@@ -370,14 +402,14 @@ html.dark .stat-heatmap {
   background: var(--el-bg-color-overlay);
 }
 
-/* 标题和年份选择器共用第一行，其余各占一整行 */
 .stat-heatmap > * {
-  flex: 1 1 100%;
   min-width: 0;
 }
 
+/* 标题和年份选择器共用第一行，其余各占一整行 */
 .stat-card__title {
-  flex: 1 1 auto;
+  grid-row: 1;
+  grid-column: 1;
   font-size: 14px;
   font-weight: 600;
   color: var(--el-text-color-primary);
@@ -385,24 +417,44 @@ html.dark .stat-heatmap {
 }
 
 .stat-heatmap > .stat-heatmap__range {
-  flex: 0 0 112px;
+  grid-row: 1;
+  grid-column: 2;
   width: 112px;
-  margin-left: auto;
+  max-width: 100%;
+  justify-self: end;
 }
 
 .stat-heatmap__summary {
-  margin: 0;
+  grid-row: 3;
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
   font-size: 13px;
   color: var(--pv-heat-label);
   font-variant-numeric: tabular-nums;
 }
 
-/* 网格自己横向滚动，不撑宽卡片和页面 */
+/* 网格自己横向滚动，不撑宽卡片和页面；靠上，被拉高时多出的高度在网格和底部一行之间 */
 .stat-heatmap__scroll {
-  margin-top: 4px;
+  grid-row: 4;
+  grid-column: 1 / -1;
+  align-self: start;
+  margin: 8px 0 6px;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+/* 标题（约 84px）+ 间距 + 选择器（112px）放不下时，选择器换到标题下一行 */
+@container (max-width: 210px) {
+  .stat-heatmap > .stat-card__title {
+    grid-column: 1 / -1;
+  }
+
+  .stat-heatmap > .stat-heatmap__range {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    margin-top: 4px;
+  }
 }
 
 .stat-heatmap__svg {
@@ -438,7 +490,9 @@ html.dark .stat-heatmap {
 .lv-4 { fill: var(--pv-heat-4); background: var(--pv-heat-4); }
 
 .stat-heatmap__footer {
-  margin-top: 2px;
+  grid-row: 5;
+  grid-column: 1 / -1;
+  align-self: end;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

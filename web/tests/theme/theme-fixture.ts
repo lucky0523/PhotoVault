@@ -18,7 +18,7 @@ import '@/styles/theme.css'
 import '@/styles/layout.css'
 import TimelineView from '@/views/TimelineView.vue'
 import TrashView from '@/views/TrashView.vue'
-import { buildTrendSeries } from '@/components/stats/chartModels'
+import { buildTrendChart, buildTrendSeries } from '@/components/stats/chartModels'
 import { STAT_COLORS, STAT_TEXT_COLOR } from '@/components/stats/chartSetup'
 
 const types = ['primary', 'success', 'warning', 'danger'] as const
@@ -100,9 +100,42 @@ const ThemeFixture = defineComponent({
       text: STAT_TEXT_COLOR,
       series: buildTrendSeries(chartDistribution, chartDistribution).map(({ color, dashed, pointStyle }) => ({ color, dashed, pointStyle })),
     })
+    // 拍摄趋势：Chart.js 图例关闭，图例是 model.legend（只含画出来的序列）
+    const emptyDistribution = {
+      ...chartDistribution,
+      buckets: chartDistribution.buckets.map((b) => ({ ...b, count: 0, share: 0 })),
+      total: 0,
+    }
+    const trendBoth = buildTrendChart({
+      axis: chartDistribution.buckets,
+      series: buildTrendSeries(chartDistribution, chartDistribution),
+      granularity: 'month',
+    })
+    const trendPhotoOnly = buildTrendChart({
+      axis: chartDistribution.buckets,
+      series: buildTrendSeries(chartDistribution, emptyDistribution),
+      granularity: 'month',
+    })
+    // 点图例隐藏视频：数据集 hidden、图例项 hidden
+    const trendVideoHidden = buildTrendChart({
+      axis: chartDistribution.buckets,
+      series: buildTrendSeries(chartDistribution, chartDistribution),
+      granularity: 'month',
+      hidden: ['视频'],
+    })
+    const trendLegend = JSON.stringify({
+      legendDisplay: trendBoth.buildConfig().options?.plugins?.legend?.display,
+      legend: trendBoth.legend,
+      photoOnly: trendPhotoOnly.legend,
+      videoHidden: {
+        datasets: trendVideoHidden.buildConfig().data.datasets.map((d) => d.hidden),
+        legend: trendVideoHidden.legend?.map((i) => i.hidden),
+      },
+    })
 
     return () => h('main', { class: 'fixture-shell' }, [
       h('output', { 'data-testid': 'statistics-colors', hidden: true }, statisticsRegression),
+      h('output', { 'data-testid': 'statistics-trend-legend', hidden: true }, trendLegend),
       h('nav', { class: 'fixture-nav' }, [
         h(ElButton, { onClick: () => { view.value = 'controls' }, 'data-testid': 'show-controls' }, () => '控件'),
         h(ElButton, { onClick: () => { view.value = 'timeline' }, 'data-testid': 'show-timeline' }, () => '时间线'),
