@@ -288,12 +288,12 @@ const PHOTO_CARDS: CardConfig[] = [
   { key: 'weekday', kind: 'distribution', chart: 'line', title: '拍摄星期分布', xLabel: '星期', yLabel: '照片数', unit: '张' },
   { key: 'hour', kind: 'distribution', chart: 'line', title: '拍摄小时分布', xLabel: '小时', yLabel: '照片数', unit: '张' },
   { key: 'iso', kind: 'distribution', chart: 'bar', title: 'ISO 分布', xLabel: 'ISO', yLabel: '照片数', unit: '张' },
-  { key: 'focal_length', kind: 'distribution', chart: 'bar', title: '焦段分布（35mm 等效）', xLabel: '等效焦距', yLabel: '照片数', unit: '张' },
   { key: 'aperture', kind: 'distribution', chart: 'bar', title: '光圈分布', xLabel: '光圈', yLabel: '照片数', unit: '张' },
   { key: 'shutter', kind: 'distribution', chart: 'bar', title: '快门分布', xLabel: '快门速度', yLabel: '照片数', unit: '张' },
   { key: 'scene_ev', kind: 'distribution', chart: 'bar', title: '场景亮度（EV100）', xLabel: 'EV100', yLabel: '照片数', unit: '张', emptyWhenNoKnown: true },
-  { key: 'camera', kind: 'ranking', chart: 'hbar', title: '机身排行', xLabel: '照片数', yLabel: '机身', unit: '张', noun: '机身' },
+  { key: 'focal_length', kind: 'distribution', chart: 'bar', title: '焦段分布（35mm 等效）', xLabel: '等效焦距', yLabel: '照片数', unit: '张' },
   { key: 'lens', kind: 'ranking', chart: 'hbar', title: '镜头排行', xLabel: '照片数', yLabel: '镜头', unit: '张', noun: '镜头' },
+  { key: 'camera', kind: 'ranking', chart: 'hbar', title: '机身排行', xLabel: '照片数', yLabel: '机身', unit: '张', noun: '机身' },
 ]
 
 const VIDEO_CARDS: CardConfig[] = [
