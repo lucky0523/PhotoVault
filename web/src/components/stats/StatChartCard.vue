@@ -387,13 +387,15 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 }
 
 /*
- * 左边「查看数据」，右边图例，垂直居中；图例项多时在按钮右侧的剩余宽度里右对齐换行，不与按钮重叠。
+ * 左边「查看数据」，右边图例；按钮与图例的最后一行文字对齐（last baseline，不支持时退回底对齐），
+ * 图例换成多行时按钮不会悬在中间。图例项多时在按钮右侧的剩余宽度里右对齐换行，不与按钮重叠。
  * 按钮右侧放不下 180px（约一个最长的图例项）时图例整体换到按钮下面一行，仍靠右。
  */
 .stat-card__data.is-footer {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
+  align-items: last baseline;
   gap: 4px 16px;
 }
 

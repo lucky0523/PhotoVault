@@ -139,9 +139,6 @@
                   :daily="data.overview.daily"
                   @select-day="openTimelineDay"
                 >
-                  <template v-if="videoUtcNote" #note>
-                    <p>{{ videoUtcNote }}</p>
-                  </template>
                 </StatHeatmapCard>
               </div>
               <div v-if="hasShareCards" class="stat-share-row is-wide">
@@ -175,9 +172,6 @@
                 :video-yearly="trend.videoYearly"
                 :exclude-unknown="scope.excludeUnknown"
               >
-                <template v-if="videoUtcNote" #note>
-                  <p>{{ videoUtcNote }}</p>
-                </template>
               </StatTrendCard>
             </div>
           </section>
@@ -581,9 +575,6 @@ function utcConvertedNote(dist: Distribution | undefined): string {
   const source = d.scope.tz_source === 'config' ? '（服务器配置）' : ''
   return `其中 ${converted} 个视频只记录了 UTC 时间，已按 ${d.scope.tz}${source} 换算`
 }
-
-/** 趋势卡片和视频星期分布是同一批行，计数取自 video.weekday */
-const videoUtcNote = computed(() => utcConvertedNote(data.value?.video.weekday))
 
 function videoNote(key: string): string {
   if (key !== 'weekday' && key !== 'hour') return ''

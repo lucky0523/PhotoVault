@@ -11,12 +11,17 @@
   - 月份 bucket 数 > 120（跨度超过 10 年）时默认按年显示并注明；
   - 图表配置在 chartModels.ts（buildTrendChart），Chart 实例的生命周期、键盘逐项查看
     和朗读区域在 StatChartCanvas；
+  - 图例是 HTML（StatChartLegend，线型 + 点形状），放在卡片底部一行「查看数据」右侧、右对齐，
+    按钮对齐图例最后一行；底部一行贴在卡片底边。对话框里的图例在图下。点图例项切换该序列
+    显示 / 隐藏（原 Chart.js 图例的行为），卡片和对话框共用同一个隐藏状态；
   - 「查看数据」对话框上面放大显示同一张图（独立的 Chart 实例，同一个 model），带同一个
     「按月 / 按年」切换，图下面是和卡片相同的说明（StatChartNote，#note 插槽原样转发），
-    再下面是数据表。
+    再下面是数据表；
+  - fillHeight（只在总览里用）：卡片被同一行拉高时图表跟着填满卡片的高度（图表区是 1fr 的一行，
+    canvas 绝对定位不撑高卡片），最小高度 --pv-trend-chart-min（默认 240px）。
 -->
 <template>
-  <figure class="pv-panel stat-card">
+  <figure class="pv-panel stat-card stat-card--footer-legend" :class="{ 'stat-card--fill': fillHeight }">
     <figcaption class="stat-card__title">拍摄趋势</figcaption>
     <el-segmented
       v-if="!isEmpty"
@@ -33,7 +38,8 @@
         v-else
         title="拍摄趋势"
         :model="model"
-        :height="cardChartHeight('line', model.count)"
+        :height="fillHeight ? '100%' : cardChartHeight('line', model.count)"
+        hide-legend
       />
     </div>
 
@@ -41,7 +47,7 @@
       <slot name="note" />
     </StatChartNote>
 
-    <div v-if="!isEmpty" class="stat-card__data">
+    <div v-if="!isEmpty" class="stat-card__data is-footer">
       <StatDataDialog title="拍摄趋势数据" :columns="table.columns" :rows="table.rows">
         <template v-if="noteLines.length > 0 || $slots.note" #note>
           <StatChartNote :lines="noteLines">
@@ -68,9 +74,18 @@
             title="拍摄趋势"
             :model="model"
             :height="dialogChartHeight('line', model.count)"
+            legend-toggleable
+            @legend-toggle="toggleSeries"
           />
         </template>
       </StatDataDialog>
+      <StatChartLegend
+        v-if="model.legend?.length"
+        class="stat-card__legend"
+        :items="model.legend"
+        toggleable
+        @toggle="toggleSeries"
+      />
     </div>
   </figure>
 </template>
@@ -87,6 +102,7 @@ import {
   type TrendGranularity,
 } from './chartModels'
 import StatChartCanvas from './StatChartCanvas.vue'
+import StatChartLegend from './StatChartLegend.vue'
 import StatChartNote from './StatChartNote.vue'
 import StatDataDialog from './StatDataDialog.vue'
 import type { StatTableColumn, StatTableRow } from './StatDataTable.vue'
@@ -99,8 +115,10 @@ const props = withDefaults(
     videoYearly: Distribution
     /** 统计时排除「未知」（没有拍摄时间的文件） */
     excludeUnknown?: boolean
+    /** 图表填满卡片被拉高后的高度（总览），最小 --pv-trend-chart-min */
+    fillHeight?: boolean
   }>(),
-  { excludeUnknown: false }
+  { excludeUnknown: false, fillHeight: false }
 )
 
 const GRANULARITY_OPTIONS = [
@@ -144,9 +162,23 @@ const axis = computed(() => current.value.photo.buckets)
 
 const isEmpty = computed(() => axis.value.length === 0 || series.value.length === 0)
 
+/** 点图例隐藏的序列名（卡片和对话框共用，切换粒度时保留） */
+const hiddenSeries = ref<string[]>([])
+
+function toggleSeries(name: string) {
+  hiddenSeries.value = hiddenSeries.value.includes(name)
+    ? hiddenSeries.value.filter((n) => n !== name)
+    : [...hiddenSeries.value, name]
+}
+
 /** 卡片和对话框共用的图表配置（各自独立的 Chart 实例） */
 const model = computed(() =>
-  buildTrendChart({ axis: axis.value, series: series.value, granularity: granularity.value })
+  buildTrendChart({
+    axis: axis.value,
+    series: series.value,
+    granularity: granularity.value,
+    hidden: hiddenSeries.value,
+  })
 )
 
 /**
@@ -235,6 +267,60 @@ const table = computed<{ columns: StatTableColumn[]; rows: StatTableRow[] }>(() 
 
 .stat-card__data {
   margin-top: 4px;
+}
+
+/*
+ * 图例在底部一行（与 StatChartCard 的 legendInFooter 相同）：标题 + 切换、图、说明各占一行，
+ * 最后一行吸收卡片被拉高的高度，底部一行贴在卡片底边，图例在右下角。
+ */
+.stat-card--footer-legend {
+  grid-template-rows: auto auto auto 1fr;
+}
+
+.stat-card--footer-legend > .stat-card__data {
+  grid-row: 4;
+  align-self: end;
+}
+
+/*
+ * fillHeight：改由图表区（第 2 行）吸收卡片被拉高的高度；canvas 绝对定位填满图表区，
+ * 卡片高度只由最小高度和同一行的另一张卡片决定，不被 canvas 反过来撑高
+ */
+.stat-card--fill {
+  grid-template-rows: auto 1fr auto auto;
+}
+
+.stat-card--fill > .stat-card__body {
+  position: relative;
+  align-self: stretch;
+  min-height: var(--pv-trend-chart-min, 240px);
+}
+
+.stat-card--fill > .stat-card__body > .stat-chart {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * 左边「查看数据」，右边图例；按钮与图例的最后一行文字对齐（last baseline，不支持时退回底对齐）。
+ * 按钮右侧放不下 180px 时图例整体换到按钮下面一行，仍靠右。
+ */
+.stat-card__data.is-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  align-items: last baseline;
+  gap: 4px 16px;
+}
+
+.stat-card__data.is-footer :deep(.el-button) {
+  flex: none;
+}
+
+.stat-card__data.is-footer > .stat-card__legend {
+  flex: 1 1 180px;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 /* 空状态说明默认 #909399 只有 3.08:1，改用 #606266（FR-9.2） */

@@ -31,16 +31,20 @@ export interface StatChartModel {
    * （趋势图两条序列一起）；堆积条形图每段是一个数据集，第 index 项 = 第 index 个数据集。
    */
   activeAt?: (index: number) => ActiveDataPoint[]
-  /** 堆积条形图的 HTML 图例，StatChartCanvas 画在图下（可换行，每段都显示）；其他图表没有 */
+  /** 堆积条形图和拍摄趋势的 HTML 图例，StatChartCanvas 画在图下（可换行，每段都显示）；其他图表没有 */
   legend?: StatLegendItem[]
 }
 
 export interface StatLegendItem {
   key: string
-  /** 类别 + 数值 + 占比 */
+  /** 类别 + 数值 + 占比（拍摄趋势只有序列名） */
   text: string
   /** 色标颜色（只用于色标，文字始终是正文色） */
   color: string
+  /** 折线图例：线型 + 点形状；缺省为方形色块 */
+  marker?: { dashed: boolean; pointStyle: 'circle' | 'triangle' }
+  /** 该序列已被隐藏（拍摄趋势点图例切换显示 / 隐藏） */
+  hidden?: boolean
 }
 
 // ---- 「统计时排除未知项」 ----------------------------------------------------
@@ -538,10 +542,12 @@ export interface TrendChartInput {
   axis: StatBucket[]
   series: TrendSeries[]
   granularity: TrendGranularity
+  /** 点图例隐藏的序列名（与原 Chart.js 图例点击切换相同） */
+  hidden?: readonly string[]
 }
 
 export function buildTrendChart(input: TrendChartInput): StatChartModel {
-  const { axis, series: list, granularity } = input
+  const { axis, series: list, granularity, hidden = [] } = input
 
   function pointText(s: TrendSeries, index: number): string {
     const b = s.dist.buckets[index]
@@ -570,6 +576,7 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
           pointHoverRadius: 6,
           borderWidth: 2,
           tension: 0,
+          hidden: hidden.includes(s.name),
         })),
       },
       options: {
@@ -578,7 +585,8 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
         animation: prefersReducedMotion() ? false : undefined,
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { position: 'bottom', labels: { usePointStyle: true } },
+          // 图例改为 HTML（model.legend，线型 + 点形状），卡片里放在底部「查看数据」一行
+          legend: { display: false },
           tooltip: {
             mode: 'index',
             intersect: false,
@@ -594,7 +602,9 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
         scales: {
           x: {
             title: { display: true, text: granularity === 'month' ? '月份' : '年份' },
-            ticks: { autoSkip: true, maxRotation: 0 },
+            // 总览第二行趋势卡片只占半行（约 444px 起），默认 3px 间距会让月份标签首尾相接，
+            // 与堆叠条形图一致留 8px 间距，让 autoSkip 选更稀疏的刻度
+            ticks: { autoSkip: true, maxRotation: 0, autoSkipPadding: 8 },
             grid: { display: false },
           },
           y: {
@@ -616,6 +626,14 @@ export function buildTrendChart(input: TrendChartInput): StatChartModel {
       const parts = list.map((s) => `${s.name} ${s.dist.buckets[index]?.count ?? 0} ${s.unit}`)
       return `${label}：${parts.join('，')}`
     },
+    // 只有画出来的序列（文件数 > 0）；点图例项切换显示 / 隐藏
+    legend: list.map((s) => ({
+      key: s.name,
+      text: s.name,
+      color: s.color,
+      marker: { dashed: s.dashed, pointStyle: s.pointStyle },
+      hidden: hidden.includes(s.name),
+    })),
   }
 }
 

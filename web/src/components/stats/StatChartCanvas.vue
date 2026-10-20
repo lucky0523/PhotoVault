@@ -6,9 +6,9 @@
   - 容器 role="group" tabindex="0"，aria-label 带标题和摘要；canvas role="img"；
   - 键盘逐项查看见 useChartKeyboard，朗读文本写进本组件自己的 aria-live 区域
     （对话框是 aria-modal，朗读区域必须在对话框里面）；
-  - 堆积条形图的图例（model.legend）是图下的 HTML 列表（StatChartLegend）：可换行，每段都显示；
-    hideLegend 时不画（StatChartCard 的 legendInFooter 变体把图例放到底部「查看数据」一行，
-    对话框里的图不传，图例仍在图下）；
+  - 堆积条形图和拍摄趋势的图例（model.legend）是图下的 HTML 列表（StatChartLegend）：可换行，每段都显示；
+    hideLegend 时不画（StatChartCard 的 legendInFooter 变体和 StatTrendCard 把图例放到底部「查看数据」一行，
+    对话框里的图不传，图例仍在图下）；legendToggleable 时图例项可点击切换序列（拍摄趋势）；
   - onMounted 创建、model 变化 update()、卸载前 destroy()。对话框里的实例随对话框
     内容（destroy-on-close）一起创建和销毁，不会留下 Chart 实例。
 
@@ -29,7 +29,12 @@
       <canvas ref="canvasRef" role="img" :aria-label="model.summary" />
     </div>
     <!-- 图例内容已在 aria-label 和表格里，读屏不重复朗读 -->
-    <StatChartLegend v-if="!hideLegend && model.legend?.length" :items="model.legend" />
+    <StatChartLegend
+      v-if="!hideLegend && model.legend?.length"
+      :items="model.legend"
+      :toggleable="legendToggleable"
+      @toggle="emit('legend-toggle', $event)"
+    />
     <span class="stat-sr-only" aria-live="polite">{{ keyboard.liveText.value }}</span>
   </div>
 </template>
@@ -50,9 +55,15 @@ const props = withDefaults(
     height: string
     /** 不在图下画图例（卡片把图例放到底部一行时） */
     hideLegend?: boolean
+    /** 图例项可点击切换序列显示 / 隐藏（拍摄趋势），点击时发出 legend-toggle */
+    legendToggleable?: boolean
   }>(),
-  { hideLegend: false }
+  { hideLegend: false, legendToggleable: false }
 )
+
+const emit = defineEmits<{
+  'legend-toggle': [key: string]
+}>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let chart: Chart<any> | null = null
