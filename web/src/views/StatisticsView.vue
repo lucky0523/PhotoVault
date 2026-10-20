@@ -7,8 +7,9 @@
     （path + recursive）触发加载；
   - 「统计时排除未知项」只在前端过滤（applyUnknownPolicy），不发给服务端，切换不重新请求；
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式占比不受影响；
-  - 总览：数字卡片之后是整行宽的「类型占比」「格式占比」（100% 堆积条形图），再下面是拍摄趋势
-    和「每日文件数量」热力图（overview.daily，旧版服务端没有该字段时不显示）；
+  - 总览：第一行是数字卡片和「每日文件数量」热力图（overview.daily，旧版服务端没有该字段时不显示），
+    热力图按网格宽度、数字卡片占剩余宽度，一行放不下时热力图换到数字卡片下面；之后是整行宽的
+    「类型占比」「格式占比」（100% 堆积条形图）和拍摄趋势；
   - 热力图不显示没有拍摄时间的文件，「统计时排除未知项」对它没有影响（不传 excludeUnknown）；
     点击有文件的日子 router.push 到时间线，带上 day 和本页的目录范围（path / recursive=0）；
   - 每次请求取消上一个并递增 generation，迟到的旧结果直接丢弃；
@@ -115,21 +116,33 @@
           <section class="stats-section" aria-labelledby="stats-overview-title">
             <h2 id="stats-overview-title" class="pv-section-title">总览</h2>
             <div class="stat-grid">
-              <dl class="stat-numbers is-wide">
-                <div
-                  v-for="item in numberCards"
-                  :key="item.label"
-                  class="pv-panel stat-number"
-                  :class="{ 'has-sub': item.sub }"
+              <div class="stat-overview is-wide" :class="{ 'has-heatmap': hasDaily }">
+                <dl class="stat-numbers">
+                  <div
+                    v-for="item in numberCards"
+                    :key="item.label"
+                    class="pv-panel stat-number"
+                    :class="{ 'has-sub': item.sub }"
+                  >
+                    <dt>{{ item.label }}</dt>
+                    <dd>{{ item.value }}</dd>
+                    <template v-if="item.sub">
+                      <dt class="stat-number__sub-term">{{ item.sub.label }}</dt>
+                      <dd class="stat-number__sub-desc">{{ item.sub.value }}</dd>
+                    </template>
+                  </div>
+                </dl>
+                <StatHeatmapCard
+                  v-if="data.overview.daily?.kind === 'calendar'"
+                  class="stat-overview__heatmap"
+                  :daily="data.overview.daily"
+                  @select-day="openTimelineDay"
                 >
-                  <dt>{{ item.label }}</dt>
-                  <dd>{{ item.value }}</dd>
-                  <template v-if="item.sub">
-                    <dt class="stat-number__sub-term">{{ item.sub.label }}</dt>
-                    <dd class="stat-number__sub-desc">{{ item.sub.value }}</dd>
+                  <template v-if="videoUtcNote" #note>
+                    <p>{{ videoUtcNote }}</p>
                   </template>
-                </div>
-              </dl>
+                </StatHeatmapCard>
+              </div>
               <StatChartCard
                 v-if="data.overview.categories.kind === 'distribution'"
                 class="is-wide"
@@ -163,16 +176,6 @@
                   <p>{{ videoUtcNote }}</p>
                 </template>
               </StatTrendCard>
-              <StatHeatmapCard
-                v-if="data.overview.daily?.kind === 'calendar'"
-                class="is-wide"
-                :daily="data.overview.daily"
-                @select-day="openTimelineDay"
-              >
-                <template v-if="videoUtcNote" #note>
-                  <p>{{ videoUtcNote }}</p>
-                </template>
-              </StatHeatmapCard>
             </div>
           </section>
 
@@ -484,6 +487,8 @@ function categoryCount(key: string): number {
   return data.value?.overview.categories.buckets.find((b) => b.key === key)?.count ?? 0
 }
 
+const hasDaily = computed(() => data.value?.overview.daily?.kind === 'calendar')
+
 const photoCount = computed(() => categoryCount('photo'))
 const videoCount = computed(() => categoryCount('video'))
 
@@ -676,9 +681,41 @@ function videoNote(key: string): string {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
 }
 
+/* 总览数字和「每日文件数量」共用一行：数字卡片占剩余宽度，热力图按网格宽度；放不下时热力图换到下一行 */
+.stat-overview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--pv-gap);
+  min-width: 0;
+}
+
+.stat-overview > .stat-numbers {
+  flex: 1 1 300px;
+  min-width: 0;
+}
+
+.stat-overview > .stat-overview__heatmap {
+  flex: 0 1 auto;
+}
+
+/* 有热力图时数字卡片最多两列（2×2 与热力图等高），窄于 292px 时一列 */
+.stat-overview.has-heatmap > .stat-numbers {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, max(140px, calc(50% - var(--pv-gap)))), 1fr));
+}
+
 .stat-number {
   padding: 12px 16px;
   min-width: 0;
+}
+
+/* 模拟暗色（html.dark）下数字卡片跟随 Element 主题变量，与热力图卡片一致 */
+html.dark .stat-number {
+  background: var(--el-bg-color-overlay);
+}
+
+html.dark .stat-number dt {
+  color: var(--el-text-color-regular);
 }
 
 .stat-number dt {

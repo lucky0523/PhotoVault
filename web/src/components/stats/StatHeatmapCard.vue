@@ -4,8 +4,10 @@
   读 overview.daily（kind = "calendar"）：服务端已按统计时区把照片和视频归到当地拍摄日期，
   并给出当地的 today，这里只做日历运算（heatmapModel.ts，纯函数）。
   - 默认显示最近一年，年份选择器只列当前统计范围内有文件的年份；新数据到达时回到最近一年；
-  - 7 行（周一在上）× 53–54 列（周），手写 inline SVG，不引入图表依赖；窄屏下网格在
-    自己的滚动容器里横向滚动（最近一年滚到最右，某一年滚到最左），不撑宽页面；
+  - 7 行（周一在上）× 53–54 列（周），手写 inline SVG，不引入图表依赖；
+  - 卡片宽度 = 网格宽度（取所有可选范围里最宽的，切换年份时卡片和旁边的总览不跳动）+ 左右内边距，
+    不超过容器宽度；容器更窄时网格在自己的滚动容器里横向滚动（最近一年滚到最右，某一年滚到最左），
+    不撑宽页面；
   - 颜色 5 级：0 = 没有文件，1–4 按范围内非零天数的四分位数划分；浅色 / html.dark 两套色板
     用 CSS 变量定义在 .stat-heatmap 上；
   - 一个 el-tooltip（virtual-triggering）跟随悬停 / 聚焦的格子；每个格子的 aria-label 与提示相同；
@@ -17,7 +19,10 @@
   - 「查看数据」对话框是按月汇总的表格（月份 / 文件数 + 合计）。
 -->
 <template>
-  <figure class="pv-panel stat-card stat-heatmap">
+  <figure
+    class="pv-panel stat-card stat-heatmap"
+    :style="{ '--pv-heat-svg-width': `${cardSvgWidth}px` }"
+  >
     <figcaption class="stat-card__title">每日文件数量</figcaption>
     <el-select
       v-model="range"
@@ -140,6 +145,7 @@ import {
   parseDay,
   rangeSummary,
   type HeatmapCell,
+  type HeatmapModel,
   type HeatmapRange,
 } from './heatmapModel'
 import StatChartNote from './StatChartNote.vue'
@@ -192,13 +198,32 @@ const rangeOptions = computed(() => [
 const model = computed(() => buildHeatmap(props.daily.days, props.daily.today, range.value))
 const summary = computed(() => rangeSummary(range.value, model.value.total))
 
-const layout = computed(() => {
-  const columns = model.value.weeks.length
-  const lastLabel = model.value.monthLabels[model.value.monthLabels.length - 1]
-  const cellsRight = GUTTER_LEFT + columns * PITCH - (PITCH - CELL)
+/** SVG 宽度：最后一列格子的右边和最后一个月份标签的右边取大者 */
+function svgWidth(m: HeatmapModel): number {
+  const lastLabel = m.monthLabels[m.monthLabels.length - 1]
+  const cellsRight = GUTTER_LEFT + m.weeks.length * PITCH - (PITCH - CELL)
   const labelRight = lastLabel ? GUTTER_LEFT + lastLabel.col * PITCH + MONTH_LABEL_WIDTH : 0
-  return { width: Math.max(cellsRight, labelRight), height: GUTTER_TOP + 7 * PITCH - (PITCH - CELL) }
-})
+  return Math.max(cellsRight, labelRight)
+}
+
+const layout = computed(() => ({
+  width: svgWidth(model.value),
+  height: GUTTER_TOP + 7 * PITCH - (PITCH - CELL),
+}))
+
+/**
+ * 卡片按所有可选范围里最宽的网格定宽：53 / 54 列的年份相差十几像素，
+ * 切换年份时卡片和同一行的总览数字不跟着跳动。
+ */
+const cardSvgWidth = computed(() =>
+  Math.max(
+    ...rangeOptions.value.map((o) =>
+      o.value === range.value
+        ? layout.value.width
+        : svgWidth(buildHeatmap(props.daily.days, props.daily.today, o.value))
+    )
+  )
+)
 
 /** date → 格子，悬停 / 键盘查找用 */
 const cellByDate = computed(() => {
@@ -323,11 +348,17 @@ function onFocusIn(event: FocusEvent) {
   margin: 0;
   padding: 12px 16px;
   box-sizing: border-box;
+  /* 卡片正好是网格宽度 + 左右内边距（12px 16px 的 32px），不超过容器；
+     换行的 flex 容器按内容定宽会把所有子项宽度相加，所以这里显式给宽度 */
+  width: calc(var(--pv-heat-svg-width) + 32px);
+  max-width: 100%;
   min-width: 0;
   /* flex 而不是 grid：卡片很窄时年份选择器换到标题下一行，标题不被挤成一列一个字 */
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  /* 被同一行拉高时多出的高度留在底部，不把各行拉开 */
+  align-content: flex-start;
   gap: 4px 8px;
 }
 

@@ -2451,3 +2451,132 @@ test('Statistics heatmap day opens the timeline filtered to that day and the cur
 
   expect(unknown).toEqual([])
 })
+
+// ---------------------------------------------------------------------------
+// 数据统计：「每日文件数量」与总览同一行，卡片按网格宽度
+// ---------------------------------------------------------------------------
+
+const statsLayoutScreenshotDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-stats-heatmap-layout-2026-10-19'
+
+async function measureOverviewRow(page: Page) {
+  return page.evaluate(() => {
+    const box = (el: Element) => {
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+    }
+    const row = document.querySelector('.stat-overview')!
+    const grid = row.parentElement!
+    const wrap = document.querySelector<HTMLElement>('.stat-heatmap__scroll')!
+    const body = document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!
+    return {
+      row: box(row),
+      grid: box(grid),
+      numbers: box(row.querySelector('.stat-numbers')!),
+      heat: box(row.querySelector('.stat-heatmap')!),
+      svgWidth: Number(row.querySelector('.stat-heatmap__svg')!.getAttribute('width')),
+      numberColumns: new Set([...row.querySelectorAll('.stat-number')].map((el) => Math.round(el.getBoundingClientRect().left))).size,
+      scroll: { scrollWidth: wrap.scrollWidth, clientWidth: wrap.clientWidth, remaining: wrap.scrollWidth - wrap.clientWidth - wrap.scrollLeft },
+      body: { scrollWidth: body.scrollWidth, clientWidth: body.clientWidth },
+      doc: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+      otherWide: [...grid.children].filter((el) => el !== row && el.classList.contains('is-wide')).map((el) => el.getBoundingClientRect().width),
+    }
+  })
+}
+
+test('Statistics 总览 and 每日文件数量 share one row, wrap on narrow screens and never overflow the page', async ({ page }) => {
+  test.setTimeout(120_000)
+  mkdirSync(statsLayoutScreenshotDir, { recursive: true })
+  const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithDaily })
+  await openStatistics(page)
+  await expect(page.locator('.stat-overview')).toHaveClass(/has-heatmap/)
+  // 切换年份不改变卡片宽度（按最宽的可选范围定宽）
+  const recentWidth = (await heatmap(page).boundingBox())!.width
+  await heatmap(page).locator('.stat-heatmap__range').click()
+  await page.locator('.el-select-dropdown__item:visible').filter({ hasText: '2025年' }).click()
+  await expect(heatmap(page).locator('.stat-heatmap__summary')).toHaveText(/^2025年共/)
+  expect((await heatmap(page).boundingBox())!.width).toBe(recentWidth)
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1920, 1440, 1024, 800, 375]) {
+      const at = `${width} ${theme}`
+      // 每个宽度重新打开页面：热力图在加载时滚到最右，Chart.js 画布也按新宽度绘制
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+      await page.goto('/statistics')
+      await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+      if (theme === 'dark') {
+        // 模拟暗色：html.dark + Element Plus 暗色变量（同上面的暗色测试）
+        await page.evaluate(() => document.documentElement.classList.add('dark'))
+        await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
+      }
+      await page.waitForTimeout(300)
+      const m = await measureOverviewRow(page)
+      console.log(at, JSON.stringify(m))
+
+      // 页面（文档和内容区）都不出现横向滚动
+      expect.soft(m.doc, `${at} document overflow`).toBeLessThanOrEqual(m.inner)
+      expect.soft(m.body.scrollWidth, `${at} page body overflow`).toBeLessThanOrEqual(m.body.clientWidth)
+      // 卡片 = 网格宽度 + 内边距，放不下时不超过这一行
+      expect.soft(m.heat.width, `${at} card inside row`).toBeLessThanOrEqual(m.row.width + 0.5)
+      if (m.row.width >= m.svgWidth + 32) {
+        expect.soft(Math.abs(m.heat.width - (m.svgWidth + 32)), `${at} card = grid + padding`).toBeLessThanOrEqual(1)
+      }
+      // 类型占比 / 格式占比（拍摄趋势同样是 is-wide，本 fixture 没有月度数据所以不显示）仍然整行宽
+      expect.soft(m.otherWide.length, `${at} other wide cards`).toBe(2)
+      for (const w of m.otherWide) expect.soft(Math.abs(w - m.grid.width), `${at} other card full width`).toBeLessThanOrEqual(1)
+
+      if (width >= 1440) {
+        // 同一行：顶部和高度对齐，数字在左、热力图在右，间距 12px，热力图不占满整行
+        expect.soft(Math.abs(m.numbers.top - m.heat.top), `${at} same top`).toBeLessThanOrEqual(1)
+        expect.soft(Math.abs(m.numbers.height - m.heat.height), `${at} same height`).toBeLessThanOrEqual(1)
+        expect.soft(Math.abs(m.numbers.left - m.row.left), `${at} numbers at left`).toBeLessThanOrEqual(1)
+        expect.soft(Math.abs(m.heat.right - m.row.right), `${at} heatmap at right`).toBeLessThanOrEqual(1)
+        expect.soft(Math.abs(m.heat.left - m.numbers.right - 12), `${at} gap`).toBeLessThanOrEqual(1)
+        expect.soft(m.heat.width, `${at} not full width`).toBeLessThan(m.row.width - 100)
+        expect.soft(m.numberColumns, `${at} 2 number columns`).toBe(2)
+        expect.soft(m.scroll.scrollWidth, `${at} no grid scroll`).toBeLessThanOrEqual(m.scroll.clientWidth)
+      } else {
+        // 放不下：热力图换到数字卡片下面
+        expect.soft(m.heat.top, `${at} wrapped`).toBeGreaterThanOrEqual(m.numbers.bottom)
+      }
+      if (width <= 800) {
+        // 网格在卡片里横向滚动，最近一年滚到最右
+        expect.soft(m.scroll.scrollWidth, `${at} grid scrolls`).toBeGreaterThan(m.scroll.clientWidth)
+        expect.soft(m.scroll.remaining, `${at} scrolled right`).toBeLessThanOrEqual(1)
+      }
+      if (width === 375) expect.soft(m.numberColumns, `${at} 1 number column`).toBe(1)
+      if (theme === 'dark') {
+        const dark = await page.evaluate(() => ({
+          background: getComputedStyle(document.querySelector('.stat-number')!).backgroundColor,
+          overlay: getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color-overlay').trim(),
+        }))
+        expect.soft(dark.background, `${at} dark number card`).toBe(rgb(dark.overlay.toUpperCase()))
+      }
+
+      await page.mouse.move(0, 0)
+      await page.evaluate(() => {
+        document.querySelector<HTMLElement>('.stats-page > .pv-page-body')!.scrollTop = 0
+      })
+      // 宽屏下整行都在首屏；375px 时数字卡片竖排，把热力图卡片滚进视口
+      await heatmap(page).scrollIntoViewIfNeeded()
+      await page.waitForTimeout(200)
+      await page.screenshot({ path: `${statsLayoutScreenshotDir}/stats-${width}-${theme}.png` })
+    }
+  }
+
+  expect(unknown).toEqual([])
+})
+
+test('Statistics without daily keeps the number cards in one line', async ({ page }) => {
+  const { unknown } = await installApiMock(page)
+  await authenticate(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/statistics')
+  const row = page.locator('.stat-overview')
+  await expect(row.locator('.stat-number')).toHaveCount(4)
+  await expect(row).not.toHaveClass(/has-heatmap/)
+  await expect(page.locator('.stat-heatmap')).toHaveCount(0)
+  const lefts = await row.locator('.stat-number').evaluateAll((els) => new Set(els.map((el) => Math.round(el.getBoundingClientRect().left))).size)
+  expect(lefts).toBe(4)
+  expect(unknown).toEqual([])
+})
