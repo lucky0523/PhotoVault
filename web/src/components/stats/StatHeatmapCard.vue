@@ -103,10 +103,17 @@
       popper-class="stat-heatmap-tip"
     />
 
+    <!-- 说明文字只放在「查看数据」弹窗里；底部一行左边「查看数据」、右边图例 -->
     <div class="stat-heatmap__footer">
-      <StatChartNote class="stat-heatmap__note" :lines="NOTE_LINES">
-        <slot name="note" />
-      </StatChartNote>
+      <div class="stat-card__data">
+        <StatDataDialog title="每日文件数量数据" :columns="TABLE_COLUMNS" :rows="tableRows">
+          <template #note>
+            <StatChartNote :lines="NOTE_LINES">
+              <slot name="note" />
+            </StatChartNote>
+          </template>
+        </StatDataDialog>
+      </div>
       <div class="stat-heatmap__legend">
         <span>少</span>
         <span
@@ -118,16 +125,6 @@
         />
         <span>多</span>
       </div>
-    </div>
-
-    <div class="stat-card__data">
-      <StatDataDialog title="每日文件数量数据" :columns="TABLE_COLUMNS" :rows="tableRows">
-        <template #note>
-          <StatChartNote :lines="NOTE_LINES">
-            <slot name="note" />
-          </StatChartNote>
-        </template>
-      </StatDataDialog>
     </div>
   </figure>
 </template>
@@ -444,14 +441,9 @@ html.dark .stat-heatmap {
   margin-top: 2px;
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 4px 16px;
-}
-
-.stat-heatmap__note {
-  flex: 1 1 240px;
-  min-width: 0;
 }
 
 /* StatChartNote 默认 #606266（= 浅色的 --el-text-color-regular），暗色下跟随主题变量 */

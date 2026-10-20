@@ -2242,7 +2242,16 @@ test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legen
   expect(labels.filter((t) => t.endsWith('月'))).toEqual(['11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月'])
   await expect(card.locator('.stat-heatmap__legend')).toHaveText(/^\s*少\s*多\s*$/)
   await expect(card.locator('.stat-heatmap__swatch')).toHaveCount(5)
-  await expect(card.getByText('按拍摄日期（当地时间）统计照片和视频；点击日期可在时间线中查看')).toBeVisible()
+  // 卡片上不显示说明文字（只在「查看数据」弹窗里）
+  await expect(card.getByText('按拍摄日期（当地时间）统计照片和视频；点击日期可在时间线中查看')).toHaveCount(0)
+  await expect(card.locator('.stat-chart-note')).toHaveCount(0)
+
+  // 「查看数据」和图例同一行：按钮在左、图例在右，垂直居中对齐
+  const dataBox = await card.getByRole('button', { name: '查看数据' }).boundingBox()
+  const legendBox = await card.locator('.stat-heatmap__legend').boundingBox()
+  expect(dataBox && legendBox).toBeTruthy()
+  expect(dataBox!.x + dataBox!.width).toBeLessThan(legendBox!.x)
+  expect(Math.abs((dataBox!.y + dataBox!.height / 2) - (legendBox!.y + legendBox!.height / 2))).toBeLessThan(2)
 
   // 7 行（周一在上）× 53 列
   const grid = await card.locator('rect[data-date]').evaluateAll((rects) => ({
