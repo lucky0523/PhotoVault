@@ -10,6 +10,7 @@ import fcntl
 import logging
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -195,6 +196,11 @@ class FileBrowseService:
     # Increment whenever thumbnail rendering semantics change so stale derived
     # images are regenerated without mutating or deleting original media.
     THUMBNAIL_CACHE_VERSION = "v2"
+    # A cache hit refreshes the file's mtime (its "last used" time for the
+    # cleanup task) at most once per this interval, so hot thumbnails cost one
+    # metadata write per hour instead of one per request. Negligible against
+    # the 30-day expiry.
+    THUMBNAIL_TOUCH_INTERVAL_SECONDS = 60 * 60
 
     def __init__(self, db: aiosqlite.Connection, media_root: str, trash_retention_days: int = 30):
         """Initialize with a database connection and the photo storage directory.
@@ -811,7 +817,13 @@ class FileBrowseService:
         """Generate or return cached thumbnail.
 
         Sizes: 'small' = 200x200, 'medium' = 600x600.
-        Cache path: {media_root}/.thumbnails/{username}/{file_hash}_{size}.jpg
+        Cache path:
+        {media_root}/.thumbnails/{username}/{file_hash}_{size}_{THUMBNAIL_CACHE_VERSION}.jpg
+
+        A cache hit refreshes the cached file's mtime (see
+        :meth:`_mark_thumbnail_used`); the cleanup task treats it as the
+        thumbnail's last-used time, because atime is unreliable under
+        noatime/relatime mounts.
 
         Args:
             user_id: The authenticated user's ID.
@@ -842,6 +854,7 @@ class FileBrowseService:
         cache_path = cache_dir / cache_filename
 
         if cache_path.exists():
+            self._mark_thumbnail_used(cache_path)
             return cache_path.read_bytes()
 
         # Resolve actual file path (follow references if needed)
@@ -862,6 +875,24 @@ class FileBrowseService:
         cache_path.write_bytes(thumbnail_data)
 
         return thumbnail_data
+
+    @classmethod
+    def _mark_thumbnail_used(cls, cache_path: Path) -> None:
+        """Refresh a cached thumbnail's timestamps so cleanup sees it as in use.
+
+        Skipped when the mtime is younger than ``THUMBNAIL_TOUCH_INTERVAL_SECONDS``.
+        Best effort: the file may be removed concurrently (cleanup or cache
+        invalidation) or be read-only, and neither should fail the request.
+
+        Args:
+            cache_path: Path of the cached thumbnail that was just hit.
+        """
+        try:
+            if time.time() - cache_path.stat().st_mtime < cls.THUMBNAIL_TOUCH_INTERVAL_SECONDS:
+                return
+            os.utime(cache_path)
+        except OSError:
+            logger.debug("Could not refresh thumbnail cache timestamp: %s", cache_path, exc_info=True)
 
     async def get_original_stream(
         self, user_id: int, file_id: int

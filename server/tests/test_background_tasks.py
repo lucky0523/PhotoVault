@@ -517,6 +517,125 @@ class TestDatabaseReadinessPolling:
 
 
 # ---------------------------------------------------------------------------
+# Thumbnail cache cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestThumbnailCacheCleanup:
+    """_run_thumbnail_cleanup against a real schema and a temp .thumbnails tree."""
+
+    HASH_A = "a" * 64
+    HASH_B = "b" * 64
+    HASH_C = "c" * 64
+
+    @pytest.fixture
+    async def store(self, tmp_path):
+        """Initialised database whose file_records know HASH_A/B/C."""
+        from app.core.database import init_db
+
+        db_path = str(tmp_path / "pv.db")
+        media_root = tmp_path / "media"
+        thumbs = media_root / ".thumbnails" / "alice"
+        thumbs.mkdir(parents=True)
+        await init_db(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'alice', 'x')")
+            for i, file_hash in enumerate((self.HASH_A, self.HASH_B, self.HASH_C), start=1):
+                await db.execute(
+                    """INSERT INTO file_records (id, user_id, file_hash, file_path, original_path,
+                       device_name, file_size, file_name)
+                       VALUES (?, 1, ?, ?, ?, 'Pixel', 1, ?)""",
+                    (i, file_hash, str(media_root / "alice" / f"{i}.jpg"), f"content://{i}", f"{i}.jpg"),
+                )
+            await db.commit()
+        return SimpleNamespace(db_path=db_path, media_root=str(media_root), thumbs=thumbs)
+
+    @staticmethod
+    def _thumb(directory: Path, name: str, *, age_days: float = 0, size: int = 16,
+               atime_age_days: float | None = None) -> Path:
+        """Write a thumbnail file and backdate its atime/mtime."""
+        path = directory / name
+        path.write_bytes(b"\xff\xd8" + b"\0" * (size - 2))
+        now = datetime.now(timezone.utc).timestamp()
+        mtime = now - age_days * 86400
+        atime = mtime if atime_age_days is None else now - atime_age_days * 86400
+        os.utime(path, (atime, mtime))
+        return path
+
+    async def test_recent_current_version_thumbnails_are_kept(self, store):
+        small = self._thumb(store.thumbs, f"{self.HASH_A}_small_v2.jpg", age_days=1)
+        medium = self._thumb(store.thumbs, f"{self.HASH_A}_medium_v2.jpg", age_days=1)
+
+        result = await bt._run_thumbnail_cleanup(store.db_path, store.media_root)
+
+        assert result == {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 0}
+        assert small.exists() and medium.exists()
+
+    async def test_unknown_hash_is_deleted_as_orphaned(self, store):
+        kept = self._thumb(store.thumbs, f"{self.HASH_A}_small_v2.jpg")
+        orphan = self._thumb(store.thumbs, f"{'d' * 64}_small_v2.jpg")
+
+        result = await bt._run_thumbnail_cleanup(store.db_path, store.media_root)
+
+        assert result["orphaned"] == 1
+        assert not orphan.exists()
+        assert kept.exists()
+
+    async def test_thumbnail_unused_past_expiry_is_deleted(self, store):
+        expired = self._thumb(store.thumbs, f"{self.HASH_A}_small_v2.jpg", age_days=31)
+        fresh = self._thumb(store.thumbs, f"{self.HASH_B}_small_v2.jpg", age_days=29)
+        # Old mtime, but a filesystem that does track atime saw a recent read.
+        read_recently = self._thumb(
+            store.thumbs, f"{self.HASH_C}_small_v2.jpg", age_days=40, atime_age_days=1
+        )
+
+        result = await bt._run_thumbnail_cleanup(store.db_path, store.media_root)
+
+        assert result == {"orphaned": 0, "expired": 1, "size_limited": 0, "obsolete": 0}
+        assert not expired.exists()
+        assert fresh.exists()
+        assert read_recently.exists()
+
+    async def test_legacy_and_stale_versions_deleted_unparseable_left_alone(self, store):
+        legacy = self._thumb(store.thumbs, f"{self.HASH_A}_small.jpg")
+        stale = self._thumb(store.thumbs, f"{self.HASH_A}_medium_v1.jpg")
+        current = self._thumb(store.thumbs, f"{self.HASH_A}_small_v2.jpg")
+        unparseable = [
+            self._thumb(store.thumbs, name)
+            for name in ("README.jpg", f"{self.HASH_A}_large_v2.jpg", "_small_v2_extra.jpg")
+        ]
+        not_jpg = store.thumbs / f"{'d' * 64}_small_v2.png"
+        not_jpg.write_bytes(b"x")
+
+        result = await bt._run_thumbnail_cleanup(store.db_path, store.media_root)
+
+        assert result == {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 2}
+        assert not legacy.exists()
+        assert not stale.exists()
+        assert current.exists()
+        assert all(path.exists() for path in unparseable)
+        assert not_jpg.exists()
+
+    async def test_size_cap_evicts_least_recently_used_first(self, store, monkeypatch):
+        # Cap 2500 bytes, trimmed to 80% (2000 bytes): one 1000-byte file must go.
+        monkeypatch.setattr(bt, "MAX_THUMBNAIL_CACHE_SIZE_MB", 2500 / (1024 ** 2))
+        oldest = self._thumb(store.thumbs, f"{self.HASH_B}_small_v2.jpg", age_days=10, size=1000)
+        middle = self._thumb(store.thumbs, f"{self.HASH_C}_small_v2.jpg", age_days=5, size=1000)
+        newest = self._thumb(store.thumbs, f"{self.HASH_A}_small_v2.jpg", age_days=0, size=1000)
+
+        result = await bt._run_thumbnail_cleanup(store.db_path, store.media_root)
+
+        assert result == {"orphaned": 0, "expired": 0, "size_limited": 1, "obsolete": 0}
+        assert not oldest.exists()
+        assert middle.exists()
+        assert newest.exists()
+
+    async def test_missing_thumbnails_root_returns_zero_counts(self, store, tmp_path):
+        result = await bt._run_thumbnail_cleanup(store.db_path, str(tmp_path / "empty"))
+        assert result == {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 0}
+
+
+# ---------------------------------------------------------------------------
 # File version maintenance and server presence (design 5.4, section 10)
 # ---------------------------------------------------------------------------
 

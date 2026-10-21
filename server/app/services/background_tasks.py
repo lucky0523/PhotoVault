@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import Awaitable, Callable, Optional
 import aiosqlite
 
 from app.core.config import get_settings, needs_provisioning, sqlite_path_from_url
+from app.services.file_browse_service import FileBrowseService
 
 logger = logging.getLogger("photovault.background_tasks")
 
@@ -115,8 +117,34 @@ DB_NOT_READY_POLL_SECONDS: float = 15.0
 
 # Thumbnail cache cleanup configuration
 THUMBNAIL_CLEANUP_INTERVAL_SECONDS: int = 24 * 60 * 60  # 24 hours
-THUMBNAIL_EXPIRY_DAYS: int = 30  # Delete thumbnails not accessed in N days
+THUMBNAIL_EXPIRY_DAYS: int = 30  # Delete thumbnails not used in N days
 MAX_THUMBNAIL_CACHE_SIZE_MB: int = 500  # Max cache size before cleanup
+
+# Cache file stem written by FileBrowseService.get_thumbnail:
+# ``{file_hash}_{size}_{version}``; legacy (pre-versioning) files lack the
+# ``_{version}`` part. The hash is matched greedily, so a hash that itself
+# contains underscores still parses.
+_THUMBNAIL_STEM_RE = re.compile(
+    r"^(?P<hash>.+)_(?:"
+    + "|".join(re.escape(size) for size in FileBrowseService.THUMBNAIL_SIZES)
+    + r")(?:_(?P<version>[^_]+))?$"
+)
+
+
+def _parse_thumbnail_stem(stem: str) -> Optional[tuple[str, Optional[str]]]:
+    """Split a thumbnail cache file stem into ``(file_hash, version)``.
+
+    Args:
+        stem: File name without the ``.jpg`` suffix.
+
+    Returns:
+        ``(file_hash, version)``, where ``version`` is None for legacy
+        unversioned names, or None if the stem is not a thumbnail cache name.
+    """
+    match = _THUMBNAIL_STEM_RE.match(stem)
+    if match is None:
+        return None
+    return match.group("hash"), match.group("version")
 
 
 def get_disk_stats() -> dict[str, float]:
@@ -236,10 +264,11 @@ async def cleanup_thumbnail_cache_task(
     Runs in an infinite loop, sleeping for `interval_seconds` between each run
     (re-checking every ``DB_NOT_READY_POLL_SECONDS`` while the database is not
     ready yet, see :func:`run_periodic_db_task`).
-    Cleans up:
+    Cleans up (see :func:`_run_thumbnail_cleanup`):
+    - Obsolete thumbnails (legacy or non-current cache version)
     - Orphaned thumbnails (no corresponding file record in database)
-    - Expired thumbnails (not accessed in THUMBNAIL_EXPIRY_DAYS days)
-    - Oldest thumbnails when cache exceeds MAX_THUMBNAIL_CACHE_SIZE_MB
+    - Expired thumbnails (not used in THUMBNAIL_EXPIRY_DAYS days)
+    - Least recently used thumbnails when cache exceeds MAX_THUMBNAIL_CACHE_SIZE_MB
 
     Args:
         interval_seconds: Time between cleanup runs in seconds.
@@ -337,21 +366,34 @@ def _check_disk_space(media_root: str) -> dict[str, float]:
 async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str, int]:
     """Execute one round of thumbnail cache cleanup.
 
-    Cleans up:
-    - Orphaned thumbnails (no corresponding file_hash in file_records)
-    - Expired thumbnails (not accessed in THUMBNAIL_EXPIRY_DAYS days)
-    - Oldest thumbnails when cache exceeds MAX_THUMBNAIL_CACHE_SIZE_MB
+    Only ``*.jpg`` files directly under ``{media_root}/.thumbnails/{username}/``
+    are considered. Each name is parsed as ``{file_hash}_{size}[_{version}]``
+    (see :func:`_parse_thumbnail_stem`):
+
+    - Unparseable names are left untouched (not written by the server).
+    - Legacy unversioned names and versions other than
+      ``FileBrowseService.THUMBNAIL_CACHE_VERSION`` are never read again, so
+      they are deleted as obsolete.
+    - Current-version thumbnails are deleted when orphaned (file_hash not in
+      file_records), expired (not used in THUMBNAIL_EXPIRY_DAYS days), or
+      least recently used once the user's cache exceeds
+      MAX_THUMBNAIL_CACHE_SIZE_MB (trimmed down to 80% of the cap).
+
+    "Last used" is ``max(st_atime, st_mtime)``: a cache hit refreshes mtime
+    (``FileBrowseService._mark_thumbnail_used``) because atime is not updated
+    reliably under noatime/relatime mounts.
 
     Args:
         database_url: SQLite URL or path for the database.
         media_root: Photo storage directory (parent of ``.thumbnails``).
 
     Returns:
-        Dictionary with cleanup counts: {'orphaned': N, 'expired': N, 'size_limited': N}.
+        Dictionary with cleanup counts:
+        {'orphaned': N, 'expired': N, 'size_limited': N, 'obsolete': N}.
     """
     thumbnails_root = Path(media_root) / ".thumbnails"
     if not thumbnails_root.exists():
-        return {"orphaned": 0, "expired": 0, "size_limited": 0}
+        return {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 0}
 
     db = await aiosqlite.connect(sqlite_path_from_url(database_url))
     db.row_factory = aiosqlite.Row
@@ -364,9 +406,11 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
 
         expired_time = datetime.now(timezone.utc) - timedelta(days=THUMBNAIL_EXPIRY_DAYS)
 
+        current_version = FileBrowseService.THUMBNAIL_CACHE_VERSION
         orphaned_count = 0
         expired_count = 0
         size_limited_count = 0
+        obsolete_count = 0
 
         for username_dir in thumbnails_root.iterdir():
             if not username_dir.is_dir():
@@ -374,14 +418,44 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
 
             thumbnails = []
             for thumb_file in username_dir.glob("*.jpg"):
-                try:
-                    file_hash = thumb_file.stem.rsplit("_", 1)[0]
-                    atime = datetime.fromtimestamp(thumb_file.stat().st_atime, timezone.utc)
-                    thumbnails.append((thumb_file, file_hash, atime))
-                except Exception:
+                parsed = _parse_thumbnail_stem(thumb_file.stem)
+                if parsed is None:
+                    logger.debug("Skipping unrecognised thumbnail cache file: %s", thumb_file)
+                    continue
+                file_hash, version = parsed
+
+                if version != current_version:
+                    try:
+                        thumb_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Could not delete obsolete thumbnail: %s",
+                            thumb_file,
+                            exc_info=True,
+                        )
+                    else:
+                        obsolete_count += 1
                     continue
 
-            for thumb_file, file_hash, atime in thumbnails:
+                try:
+                    stat_result = thumb_file.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    logger.debug(
+                        "Could not stat thumbnail during cleanup: %s",
+                        thumb_file,
+                        exc_info=True,
+                    )
+                    continue
+                last_used = datetime.fromtimestamp(
+                    max(stat_result.st_atime, stat_result.st_mtime), timezone.utc
+                )
+                thumbnails.append((thumb_file, file_hash, last_used))
+
+            for thumb_file, file_hash, last_used in thumbnails:
                 if file_hash not in valid_hashes:
                     try:
                         thumb_file.unlink()
@@ -397,7 +471,7 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
                         orphaned_count += 1
                     continue
 
-                if atime < expired_time:
+                if last_used < expired_time:
                     try:
                         thumb_file.unlink()
                     except FileNotFoundError:
@@ -414,6 +488,7 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
 
             remaining = [t for t in thumbnails if t[1] in valid_hashes and t[2] >= expired_time]
             if remaining:
+                # Least recently used first.
                 remaining.sort(key=lambda x: x[2])
                 # Capture sizes before deletion. Files can disappear between any
                 # two operations (another cleanup worker or cache invalidation),
@@ -452,17 +527,18 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
                         current_size_mb -= file_size / (1024 ** 2)
                         size_limited_count += 1
 
-        if orphaned_count > 0 or expired_count > 0 or size_limited_count > 0:
+        if orphaned_count > 0 or expired_count > 0 or size_limited_count > 0 or obsolete_count > 0:
             logger.info(
                 "Thumbnail cache cleanup completed: "
-                "orphaned=%d, expired=%d, size_limited=%d",
-                orphaned_count, expired_count, size_limited_count
+                "orphaned=%d, expired=%d, size_limited=%d, obsolete=%d",
+                orphaned_count, expired_count, size_limited_count, obsolete_count
             )
 
         return {
             "orphaned": orphaned_count,
             "expired": expired_count,
             "size_limited": size_limited_count,
+            "obsolete": obsolete_count,
         }
     finally:
         await db.close()

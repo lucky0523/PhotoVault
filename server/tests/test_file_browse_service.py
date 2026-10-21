@@ -428,6 +428,35 @@ async def test_get_thumbnail_caching(service_with_data):
 
 
 @pytest.mark.asyncio
+async def test_get_thumbnail_cache_hit_refreshes_mtime(service_with_data):
+    """A cache hit marks the thumbnail as used for the cleanup task (throttled)."""
+    import time
+
+    service, db, storage_root = service_with_data
+    assert await service.get_thumbnail(user_id=1, file_id=1, size="small") is not None
+    cache_path = (
+        Path(storage_root)
+        / ".thumbnails"
+        / "alice"
+        / f"hash_a1_small_{service.THUMBNAIL_CACHE_VERSION}.jpg"
+    )
+
+    # Touched within the throttle interval: left as is.
+    recent = time.time() - 600
+    os.utime(cache_path, (recent, recent))
+    await service.get_thumbnail(user_id=1, file_id=1, size="small")
+    assert cache_path.stat().st_mtime == pytest.approx(recent, abs=1)
+
+    # Older than the interval: refreshed to now.
+    old = time.time() - 40 * 86400
+    os.utime(cache_path, (old, old))
+    before = time.time()
+    thumb = await service.get_thumbnail(user_id=1, file_id=1, size="small")
+    assert thumb is not None
+    assert cache_path.stat().st_mtime >= before - 1
+
+
+@pytest.mark.asyncio
 async def test_get_thumbnail_user_isolation(service_with_data):
     """Test that user cannot get thumbnail for another user's file."""
     service, db, storage_root = service_with_data
