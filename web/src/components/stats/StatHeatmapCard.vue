@@ -1,5 +1,5 @@
 <!--
-  StatHeatmapCard —— 每日文件数量热力图卡片（类似 GitHub 的贡献图）。
+  StatHeatmapCard —— 拍摄热力图卡片（类似 GitHub 的贡献图）。
 
   读 overview.daily（kind = "calendar"）：服务端已按统计时区把照片和视频归到当地拍摄日期，
   并给出当地的 today，这里只做日历运算（heatmapModel.ts，纯函数）。
@@ -14,6 +14,7 @@
   - 颜色 5 级：0 = 没有文件，1–4 按范围内非零天数的四分位数划分；浅色 / html.dark 两套色板
     用 CSS 变量定义在 .stat-heatmap 上；
   - 一个 el-tooltip（virtual-triggering）跟随悬停 / 聚焦的格子；每个格子的 aria-label 与提示相同；
+    提示框水平方向夹在卡片以内（最右 / 最左几列不超出卡片），不比卡片宽，窄卡片时在「：」后换行；
   - 键盘：整张图只有一个 Tab 停靠点（roving tabindex），←/→ 前后一周，↑/↓ 前后一天，
     Home / End 到范围两端，Enter / 空格打开当天的时间线；
   - 点击或回车有文件的日子 emit select-day，由 StatisticsView 跳转到按当天筛选的时间线；
@@ -27,7 +28,7 @@
     class="pv-panel stat-card stat-heatmap"
     :style="{ '--pv-heat-svg-width': `${cardSvgWidth}px` }"
   >
-    <figcaption class="stat-card__title">每日文件数量</figcaption>
+    <figcaption class="stat-card__title">拍摄热力图</figcaption>
     <el-select
       v-model="range"
       class="stat-heatmap__range"
@@ -48,7 +49,7 @@
         ref="svgRef"
         class="stat-heatmap__svg"
         role="group"
-        aria-label="每日文件数量热力图"
+        aria-label="拍摄热力图"
         :width="layout.width"
         :height="layout.height"
         :viewBox="`0 0 ${layout.width} ${layout.height}`"
@@ -101,16 +102,23 @@
       :visible="tipVisible"
       :virtual-ref="tipTarget"
       virtual-triggering
-      :content="tipText"
       placement="top"
+      :fallback-placements="['bottom']"
       :offset="6"
+      :popper-options="tipPopperOptions"
+      :popper-style="tipStyle"
       popper-class="stat-heatmap-tip"
-    />
+    >
+      <!-- 卡片比提示框窄时在「：」后换行，日期和文件数各自不断开 -->
+      <template #content>
+        <span v-for="(part, i) in tipParts" :key="i" class="stat-heatmap-tip__part">{{ part }}</span>
+      </template>
+    </el-tooltip>
 
     <!-- 说明文字只放在「查看数据」弹窗里；底部一行左边「查看数据」、右边图例 -->
     <div class="stat-heatmap__footer">
       <div class="stat-card__data">
-        <StatDataDialog title="每日文件数量数据" :columns="TABLE_COLUMNS" :rows="tableRows">
+        <StatDataDialog title="拍摄热力图数据" :columns="TABLE_COLUMNS" :rows="tableRows">
           <template #note>
             <StatChartNote :lines="NOTE_LINES">
               <slot name="note" />
@@ -330,12 +338,31 @@ const tipRef = ref<TooltipInstance>()
 const tipTarget = ref<HTMLElement>()
 const tipText = ref('')
 const tipVisible = ref(false)
+/** 卡片内宽（px），提示框不比卡片宽；显示提示时量一次 */
+const tipMaxWidth = ref<number>()
+
+/** 「2026年10月19日：」+「12 个文件」 */
+const tipParts = computed(() => {
+  const i = tipText.value.indexOf('：')
+  return i < 0 ? [tipText.value] : [tipText.value.slice(0, i + 1), tipText.value.slice(i + 1)]
+})
+
+/**
+ * 提示框挂在 body 上，Popper 默认只保证它在视口内；把 preventOverflow 的边界设为卡片，
+ * 水平方向夹在卡片以内（最右几列往左移、最左几列往右移，箭头仍指着格子）；
+ * 上方放不下（视口顶部）时翻到格子下方。
+ */
+const tipPopperOptions = computed(() => ({
+  modifiers: [{ name: 'preventOverflow', options: { boundary: cardRef.value ?? 'clippingParents' } }],
+}))
+const tipStyle = computed(() => (tipMaxWidth.value ? { maxWidth: `${tipMaxWidth.value}px` } : undefined))
 
 async function showTip(el: SVGRectElement) {
   const cell = cellByDate.value.get(el.dataset.date ?? '')
   if (!cell) return
   tipTarget.value = el as unknown as HTMLElement
   tipText.value = cell.label
+  tipMaxWidth.value = cardRef.value?.clientWidth
   tipVisible.value = true
   await nextTick()
   tipRef.value?.updatePopper()
@@ -360,13 +387,13 @@ function onFocusIn(event: FocusEvent) {
 </script>
 
 <style scoped>
-/* 色板（GitHub 配色）：浅色 */
+/* 色板（玫瑰粉，0 = 中性浅灰）：浅色 */
 .stat-heatmap {
-  --pv-heat-0: #EBEDF0;
-  --pv-heat-1: #9BE9A8;
-  --pv-heat-2: #40C463;
-  --pv-heat-3: #30A14E;
-  --pv-heat-4: #216E39;
+  --pv-heat-0: #F2F3F5;
+  --pv-heat-1: #FCE4E9;
+  --pv-heat-2: #F7BAC6;
+  --pv-heat-3: #F08DA0;
+  --pv-heat-4: #E8637B;
   --pv-heat-stroke: rgba(27, 31, 36, 0.06);
   --pv-heat-label: var(--el-text-color-regular);
 
@@ -394,10 +421,10 @@ function onFocusIn(event: FocusEvent) {
 /* 暗色：html.dark（Element Plus 暗色变量）下换色板和卡片底色 */
 html.dark .stat-heatmap {
   --pv-heat-0: #2A2E35;
-  --pv-heat-1: #0E4429;
-  --pv-heat-2: #006D32;
-  --pv-heat-3: #26A641;
-  --pv-heat-4: #39D353;
+  --pv-heat-1: #5A2836;
+  --pv-heat-2: #8E3850;
+  --pv-heat-3: #C94E6A;
+  --pv-heat-4: #F57A92;
   --pv-heat-stroke: rgba(255, 255, 255, 0.05);
   background: var(--el-bg-color-overlay);
 }
@@ -444,7 +471,7 @@ html.dark .stat-heatmap {
   overflow-y: hidden;
 }
 
-/* 标题（约 84px）+ 间距 + 选择器（112px）放不下时，选择器换到标题下一行 */
+/* 标题（约 70px）+ 间距 + 选择器（112px）放不下时，选择器换到标题下一行 */
 @container (max-width: 210px) {
   .stat-heatmap > .stat-card__title {
     grid-column: 1 / -1;
@@ -477,9 +504,12 @@ html.dark .stat-heatmap {
   cursor: pointer;
 }
 
-/* 键盘焦点：主题色描边（SVG 元素的 outline 不可靠） */
+/*
+ * 键盘焦点：主文字色描边（SVG 元素的 outline 不可靠）；不用主题色，
+ * 主题色 #D92D4F 和玫瑰色板太接近，在深色格子上看不清
+ */
 .stat-heatmap__cell:focus-visible {
-  stroke: var(--el-color-primary);
+  stroke: var(--el-text-color-primary);
   stroke-width: 2px;
 }
 
@@ -537,5 +567,11 @@ html.dark .stat-heatmap {
 /* 提示框挂在 body 上（非 scoped）：不拦截指针，鼠标移到被提示框盖住的格子上也能继续悬停 */
 .stat-heatmap-tip {
   pointer-events: none;
+  /* max-width（卡片内宽，脚本设置）包含内边距和边框 */
+  box-sizing: border-box;
+}
+
+.stat-heatmap-tip__part {
+  white-space: nowrap;
 }
 </style>

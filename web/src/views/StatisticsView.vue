@@ -9,7 +9,7 @@
     只影响照片 / 视频分布、排行和拍摄趋势，总览的类型占比和格式占比不受影响；
   - 总览（.stat-overview）分上下两行，按总览区自身宽度（容器查询）切换布局：
     · 第一行：总文件数、总存储、照片数、视频数四张紧凑卡片（每张 180–240px）排成 2×2 靠左，
-      右边是每日文件数量热力图，宽度贴着网格（不占满剩余宽度，右侧留空）；数字块被拉到热力图的
+      右边是拍摄热力图，宽度贴着网格（不占满剩余宽度，右侧留空）；数字块被拉到热力图的
       自然高度，两者上下边对齐，热力图不被拉高。放不下时热力图换到数字下面（仍按网格宽度）；
       总览区 756–1186px 时数字排成一行四张，窄于 756px 时 2×2，窄于 292px 时一列；
     · 第二行：≥ 900px 时左右各占一半，左边类型占比叠在格式占比上面，右边拍摄趋势，上下边对齐，
@@ -122,7 +122,7 @@
           <!-- 总览 -->
           <section class="stats-section stats-section--overview" aria-labelledby="stats-overview-title">
             <h2 id="stats-overview-title" class="pv-section-title">总览</h2>
-            <!-- DOM 顺序即窄屏的阅读顺序：数字、每日文件数量、类型占比、格式占比、拍摄趋势 -->
+            <!-- DOM 顺序即窄屏的阅读顺序：数字、拍摄热力图、类型占比、格式占比、拍摄趋势 -->
             <div class="stat-overview">
               <div class="stat-overview__top" :class="{ 'has-heatmap': hasDaily }">
                 <dl class="stat-numbers stat-overview__numbers">
@@ -500,7 +500,7 @@ const hasShareCards = computed(
     data.value?.overview.formats.kind === 'distribution'
 )
 
-/** 有每日文件数量（旧版服务端没有 overview.daily）：决定数字是否排成 2×2 放在热力图左边 */
+/** 有拍摄热力图数据（旧版服务端没有 overview.daily）：决定数字是否排成 2×2 放在热力图左边 */
 const hasDaily = computed(() => data.value?.overview.daily?.kind === 'calendar')
 
 const photoCount = computed(() => categoryCount('photo'))
@@ -687,7 +687,7 @@ function videoNote(key: string): string {
 }
 
 /*
- * 总览分上下两行，间距统一 12px：第一行数字 + 每日文件数量，第二行类型 / 格式占比 + 拍摄趋势。
+ * 总览分上下两行，间距统一 12px：第一行数字 + 拍摄热力图，第二行类型 / 格式占比 + 拍摄趋势。
  * 下面的基础规则都写在各自的容器查询之前（同样的特异性，后写的覆盖先写的）。
  */
 .stat-overview {

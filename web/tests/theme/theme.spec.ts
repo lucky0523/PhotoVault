@@ -2092,7 +2092,7 @@ test('Timeline two-row filter bar stays inside the header card in light and simu
 })
 
 // ---------------------------------------------------------------------------
-// 数据统计「每日文件数量」热力图
+// 数据统计「拍摄热力图」
 // ---------------------------------------------------------------------------
 
 /**
@@ -2251,15 +2251,50 @@ test('heatmapModel computes thresholds, grid, month labels and texts (Node side)
 const heatmap = (page: Page) => page.locator('.stat-heatmap')
 const heatCell = (page: Page, date: string) => heatmap(page).locator(`rect[data-date="${date}"]`)
 const heatTip = (page: Page) => page.locator('.stat-heatmap-tip')
+const heatmapTaskDir = '/Users/huo/PycharmProjects/PhotoVault/.agents/tasks/PhotoVault-web-heatmap-rename-recolor-2026-10-21'
+
+/** 提示框完整显示：水平方向在卡片和视口以内，页面没有横向滚动；可选截下卡片 + 提示框所在区域 */
+async function expectHeatTipInside(page: Page, text: string, what: string, shot?: string) {
+  await expect(heatTip(page)).toBeVisible()
+  await expect(heatTip(page)).toHaveText(text)
+  await page.waitForTimeout(300)
+  const m = await page.evaluate(() => {
+    const box = (el: Element) => {
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
+    }
+    const tips = [...document.querySelectorAll('.stat-heatmap-tip')].filter((el) => (el as HTMLElement).offsetParent !== null)
+    return {
+      tip: tips.length === 1 ? box(tips[0]) : null,
+      card: box(document.querySelector('.stat-heatmap')!),
+      inner: window.innerWidth,
+      doc: document.documentElement.scrollWidth,
+    }
+  })
+  expect(m.tip, `${what}: one visible tooltip`).not.toBeNull()
+  const tip = m.tip!
+  expect.soft(tip.left, `${what}: tooltip left inside card`).toBeGreaterThanOrEqual(m.card.left - 0.5)
+  expect.soft(tip.right, `${what}: tooltip right inside card`).toBeLessThanOrEqual(m.card.right + 0.5)
+  expect.soft(tip.left, `${what}: tooltip left inside viewport`).toBeGreaterThanOrEqual(0)
+  expect.soft(tip.right, `${what}: tooltip right inside viewport`).toBeLessThanOrEqual(m.inner)
+  expect.soft(m.doc, `${what}: no page-level horizontal scroll`).toBeLessThanOrEqual(m.inner)
+  if (shot) {
+    const left = Math.max(0, Math.min(tip.left, m.card.left) - 12)
+    const right = Math.min(m.inner, Math.max(tip.right, m.card.right) + 12)
+    const top = Math.max(0, Math.min(tip.top, m.card.top) - 12)
+    const bottom = Math.max(tip.bottom, m.card.bottom) + 12
+    await page.screenshot({ path: shot, clip: { x: left, y: top, width: right - left, height: bottom - top } })
+  }
+}
 
 async function openStatistics(page: Page, url = '/statistics', width = 1440, height = 900) {
   await authenticate(page)
   await page.setViewportSize({ width, height })
   await page.goto(url)
-  await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+  await expect(heatmap(page).locator('figcaption')).toHaveText('拍摄热力图')
 }
 
-test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legend and the year selector', async ({ page }) => {
+test('Statistics 拍摄热力图 heatmap shows Chinese labels, tooltip, legend and the year selector', async ({ page }) => {
   test.setTimeout(60_000)
   mkdirSync(statsHeatmapScreenshotDir, { recursive: true })
   const { unknown } = await installApiMock(page, { statsResponse: statsResponseWithDaily })
@@ -2297,8 +2332,8 @@ test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legen
   expect(Number(await heatCell(page, '2026-10-18').getAttribute('y'))).toBeGreaterThan(Number(mondayY))
   // 浅色色板：12 个文件是最深的一级
   await expect(heatCell(page, '2026-10-19')).toHaveClass(/lv-4/)
-  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#216E39'))
-  expect(await heatCell(page, '2026-10-18').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#EBEDF0'))
+  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#E8637B'))
+  expect(await heatCell(page, '2026-10-18').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#F2F3F5'))
   await expect(heatCell(page, '2026-10-19')).toHaveAttribute('aria-label', '2026年10月19日：12 个文件，按 Enter 在时间线中查看')
   await expect(heatCell(page, '2026-10-18')).toHaveAttribute('aria-label', '2026年10月18日：无文件')
   // 最近一年滚到最右（宽屏下不需要滚动时为 0）
@@ -2350,7 +2385,7 @@ test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legen
 
   // 「查看数据」：按月汇总 + 合计，没有「未知」行
   await card.getByRole('button', { name: '查看数据' }).click()
-  const dialog = page.getByRole('dialog', { name: '每日文件数量数据' })
+  const dialog = page.getByRole('dialog', { name: '拍摄热力图数据' })
   await expect(dialog).toBeVisible()
   await expect(dialog.locator('th')).toHaveText(['月份', '文件数'])
   const body = dialog.locator('tbody tr')
@@ -2360,6 +2395,36 @@ test('Statistics 每日文件数量 heatmap shows Chinese labels, tooltip, legen
   await expect(dialog).not.toContainText('未知')
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
+
+  // 提示框不被卡片右边缘 / 左边缘截断：最右（今天）和最左一列的格子（都在第一行），悬停和键盘焦点，
+  // 1440 / 375，浅色 / 暗色
+  const firstDayTip = formatDayTooltip('2025-10-20', dailyDays['2025-10-20'] ?? 0)
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
+    await page.goto('/statistics')
+    await expect(card.locator('figcaption')).toHaveText('拍摄热力图')
+    await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((dark) => document.documentElement.classList.toggle('dark', dark), theme === 'dark')
+      await page.mouse.move(0, 0)
+      for (const [edge, date, text] of [
+        ['right', '2026-10-19', '2026年10月19日：12 个文件'],
+        ['left', '2025-10-20', firstDayTip],
+      ]) {
+        await heatCell(page, date).hover()
+        await expectHeatTipInside(page, text, `${width} ${theme} hover ${edge}`, `${heatmapTaskDir}/heatmap-tooltip-${edge}-${theme}-${width}.png`)
+      }
+      await page.mouse.move(0, 0)
+      await expect(heatTip(page)).toBeHidden()
+    }
+    // 键盘焦点显示同样位置正确的提示框（今天 → Home 到第一天）
+    await heatCell(page, '2026-10-19').focus()
+    await expectHeatTipInside(page, '2026年10月19日：12 个文件', `${width} focus right`)
+    await page.keyboard.press('Home')
+    await expect(heatCell(page, '2025-10-20')).toBeFocused()
+    await expectHeatTipInside(page, firstDayTip, `${width} focus left`)
+    await page.evaluate(() => document.documentElement.classList.remove('dark'))
+  }
 
   expect(unknown).toEqual([])
 })
@@ -2376,7 +2441,7 @@ test('Statistics heatmap uses the dark palette under html.dark and scrolls insid
   await page.addStyleTag({ url: '/node_modules/element-plus/theme-chalk/dark/css-vars.css' })
   await page.waitForTimeout(300)
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--el-bg-color').trim())).toBe('#141414')
-  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe('rgb(57, 211, 83)')
+  expect(await heatCell(page, '2026-10-19').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#F57A92'))
   expect(await heatCell(page, '2026-10-18').evaluate((el) => getComputedStyle(el).fill)).toBe(rgb('#2A2E35'))
   const darkColors = await card.evaluate((el) => ({
     background: getComputedStyle(el).backgroundColor,
@@ -2394,7 +2459,7 @@ test('Statistics heatmap uses the dark palette under html.dark and scrolls insid
   // 375px：页面不出现横向滚动，网格在自己的容器里滚动（最近一年滚到最右）
   await page.setViewportSize({ width: 375, height: 812 })
   await page.goto('/statistics')
-  await expect(card.locator('figcaption')).toHaveText('每日文件数量')
+  await expect(card.locator('figcaption')).toHaveText('拍摄热力图')
   await card.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)
   const narrow = await page.evaluate(() => {
@@ -2460,7 +2525,7 @@ test('Statistics heatmap day opens the timeline filtered to that day and the cur
   await page.goBack()
   await expect.poll(() => new URL(page.url()).pathname).toBe('/statistics')
   expect(urlQuery(page).get('path')).toBe('Pixel 8/DCIM')
-  await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+  await expect(heatmap(page).locator('figcaption')).toHaveText('拍摄热力图')
 
   // 键盘：只有一个 Tab 停靠点（今天），方向键移动，Enter 打开；没有文件的日子 Enter 不跳转
   await expect(heatmap(page).locator('rect[tabindex="0"]')).toHaveCount(1)
@@ -2998,9 +3063,9 @@ test('Statistics 拍摄趋势 shows the legend at the bottom right next to 查�
   await videoToggle.click()
   await expect(videoToggle).toHaveAttribute('aria-pressed', 'true')
 
-  // 每日文件数量的对话框也没有 UTC 说明
+  // 拍摄热力图的对话框也没有 UTC 说明
   await heatmap(page).getByRole('button', { name: '查看数据' }).click()
-  const heatDialog = page.getByRole('dialog', { name: '每日文件数量数据' })
+  const heatDialog = page.getByRole('dialog', { name: '拍摄热力图数据' })
   await expect(heatDialog).toBeVisible()
   await expect(heatDialog).toContainText('按拍摄日期（当地时间）统计照片和视频')
   await expect(heatDialog).not.toContainText('UTC')
@@ -3030,7 +3095,7 @@ test('Statistics 拍摄趋势 shows the legend at the bottom right next to 查�
 })
 
 // ---------------------------------------------------------------------------
-// 数据统计：总览布局（第一行 2×2 数字 + 按网格宽度的每日文件数量；第二行左右各半
+// 数据统计：总览布局（第一行 2×2 数字 + 按网格宽度的拍摄热力图；第二行左右各半
 // 「类型占比叠在格式占比上面 | 拍摄趋势」；窄时热力图换到下面、第二行改成一列）
 // ---------------------------------------------------------------------------
 
@@ -3244,7 +3309,7 @@ test('Statistics 总览 shows 2×2 numbers beside a content-width heatmap above 
       await page.setViewportSize({ width, height: width === 375 ? 812 : 900 })
       await page.goto('/statistics')
       await expect(trendCard(page).locator('canvas')).toBeVisible()
-      await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+      await expect(heatmap(page).locator('figcaption')).toHaveText('拍摄热力图')
       if (theme === 'dark') await applySimulatedDark(page)
       await page.waitForTimeout(300)
       const m = await measureOverviewGrid(page)
@@ -3347,7 +3412,7 @@ test('Statistics 总览 shows 2×2 numbers beside a content-width heatmap above 
         expect.soft(trend.plotHeight!, `${at} trend plot ≥ 200`).toBeGreaterThanOrEqual(199.5)
         if (width === 1920 || width === 1440) expect.soft(trend.plotHeight!, `${at} trend plot fills the row`).toBeGreaterThan(205)
       } else {
-        // 一列：数字、每日文件数量、类型占比、格式占比、拍摄趋势
+        // 一列：数字、拍摄热力图、类型占比、格式占比、拍摄趋势
         const order = [['numbers', m.numbers], ['heatmap', heatCard.box], ['type', type.box], ['format', format.box], ['trend', trend.box]] as const
         for (let i = 1; i < order.length; i++) {
           expect.soft(near(order[i][1].top, order[i - 1][1].bottom + 12), `${at} ${order[i][0]} below ${order[i - 1][0]}`).toBe(true)
@@ -3505,7 +3570,7 @@ test('Statistics 总览 missing cards leave no empty half', async ({ page }) => 
   }
   const heatReady = async () => {
     await shareReady()
-    await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+    await expect(heatmap(page).locator('figcaption')).toHaveText('拍摄热力图')
   }
 
   // 旧版服务端：没有 daily，也没有趋势。数字一行四张，类型 / 格式占比占满第二行
@@ -3596,7 +3661,7 @@ test('Statistics 总览 missing cards leave no empty half', async ({ page }) => 
       const at = `lone ${title} ${width}`
       const { m, mock } = await load(response, width, async () => {
         await trendReady()
-        await expect(heatmap(page).locator('figcaption')).toHaveText('每日文件数量')
+        await expect(heatmap(page).locator('figcaption')).toHaveText('拍摄热力图')
       })
       expect.soft(m[missing], `${at} no ${missing} card`).toBeNull()
       expect.soft(m.shareChildren, `${at} share stack`).toEqual([title])

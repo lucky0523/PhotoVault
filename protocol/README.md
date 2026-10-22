@@ -373,7 +373,7 @@ photovault://connect?v=1&public=https%3A%2F%2Fphotos.example.com%3A8443&lan=http
 
 ## `GET /api/v1/stats/media` 的 `overview.daily`
 
-每日文件数量（Web 数据统计页的热力图）。与同一响应里的星期 / 小时 / 月度趋势使用同一份数据和同一个时区（`scope.tz`），目录范围同样由 `path` / `recursive` 决定。
+拍摄热力图（每日拍摄的文件数量，Web 数据统计页）。与同一响应里的星期 / 小时 / 月度趋势使用同一份数据和同一个时区（`scope.tz`），目录范围同样由 `path` / `recursive` 决定。
 
 ```json
 {
