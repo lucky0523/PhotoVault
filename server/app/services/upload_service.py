@@ -35,7 +35,7 @@ from app.services.media_metadata import (
 )
 from app.services.motion_photo import detect_motion_photo, detect_ultra_hdr
 from app.services.path_locks import path_lock
-from app.services.storage_path_engine import StoragePathEngine
+from app.services.storage_path_engine import StoragePathEngine, device_dir_name
 from app.services.version_service import (
     Decision,
     NeedsReclassify,
@@ -806,7 +806,7 @@ class UploadService:
             base = (
                 Path(self._media_root)
                 / username
-                / StoragePathEngine.sanitize_device_name(device_name)
+                / device_dir_name(device_name)
             ).resolve(strict=False)
 
         resolved_target = target.resolve(strict=False)

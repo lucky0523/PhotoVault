@@ -62,7 +62,7 @@ class StoragePathEngine:
         Returns:
             The resolved target directory path (always ends with /).
         """
-        sanitized_device = StoragePathEngine.sanitize_device_name(device_name)
+        sanitized_device = device_dir_name(device_name)
 
         # Normalize source_folder: strip leading/trailing slashes
         normalized_source = source_folder.strip("/")
@@ -194,3 +194,14 @@ class StoragePathEngine:
             return f"{dt.year:04d}/{dt.month:02d}"
 
         return "unknown_date"
+
+
+def device_dir_name(raw: str) -> str:
+    """Directory name under the user root for a raw ``device_name``.
+
+    ``file_records.device_name`` keeps the raw value sent by the client (for
+    example ``Pixel 9 Pro``), while files are stored under the sanitized name
+    (``Pixel_9_Pro``). Every producer and consumer of the device directory goes
+    through this function.
+    """
+    return StoragePathEngine.sanitize_device_name(raw)

@@ -43,7 +43,6 @@ from __future__ import annotations
 import asyncio
 import errno
 import fcntl
-import glob
 import hashlib
 import logging
 import os
@@ -1175,7 +1174,11 @@ class VersionService:
     async def _delete_stale_thumbnails(
         self, user_id: int, username: Optional[str], file_hash: str, *, only_if_unused: bool
     ) -> None:
-        """Remove ``.thumbnails/{username}/{file_hash}_*.jpg`` (best effort)."""
+        """Remove the user's cached thumbnails of ``file_hash`` (best effort).
+
+        With ``only_if_unused`` they are kept while any record of that user
+        with that hash is unpurged (same rule as purge and cache cleanup).
+        """
         try:
             if username is None:
                 cursor = await self._db.execute(
@@ -1187,16 +1190,13 @@ class VersionService:
                 username = user["username"]
             if only_if_unused:
                 cursor = await self._db.execute(
-                    "SELECT EXISTS (SELECT 1 FROM file_records WHERE user_id = ? AND file_hash = ?)",
+                    """SELECT EXISTS (SELECT 1 FROM file_records
+                       WHERE user_id = ? AND file_hash = ? AND purged_at IS NULL)""",
                     (user_id, file_hash),
                 )
                 if (await cursor.fetchone())[0]:
                     return
-            pattern = os.path.join(
-                self._media_root, ".thumbnails", username, glob.escape(file_hash) + "_*.jpg"
-            )
-            for path in glob.glob(pattern):
-                _unlink_quiet(path)
+            FileBrowseService.remove_thumbnails_for_hash(self._media_root, username, file_hash)
         except asyncio.CancelledError:
             raise
         except Exception:

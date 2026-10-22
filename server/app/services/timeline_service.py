@@ -51,6 +51,7 @@ from app.services.filename_search import (
     file_name_key,
     normalize_for_search,
 )
+from app.services.library_layout import path_prefix_sql
 from app.services.stats_buckets import (
     IMAGE_EXTS,
     ResolvedTz,
@@ -227,13 +228,11 @@ class TimelineFilters:
             params.extend([self.date_from, self.date_to])
         if self.dir_prefix is not None:
             # Same prefix range as MediaStatsService._scope_sql.
-            assert self.dir_prefix.endswith("/")
-            hi = self.dir_prefix[:-1] + "0"  # '0' is the character right after '/'
-            parts.append("fr.file_path >= ? AND fr.file_path < ?")
-            params.extend([self.dir_prefix, hi])
-            if not self.dir_recursive:
-                parts.append("instr(substr(fr.file_path, ?), '/') = 0")
-                params.append(len(self.dir_prefix) + 1)
+            prefix_sql, prefix_params = path_prefix_sql(
+                "fr.file_path", self.dir_prefix, direct_children_only=not self.dir_recursive
+            )
+            parts.append(prefix_sql)
+            params.extend(prefix_params)
         if self.capture_date is not None:
             year = int(self.capture_date[:4])
             if not _MIN_CAPTURE_YEAR <= year <= datetime.now(timezone.utc).year + 1:

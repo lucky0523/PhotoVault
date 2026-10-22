@@ -1624,7 +1624,7 @@ class TestCompleteUploadIntegration:
 
             async def paused_execute(sql, *args):
                 cursor = await real_execute(sql, *args)
-                if "file_path LIKE" in sql:
+                if "file_path >= ?" in sql and "deleted_at IS NULL" in sql:
                     rows = await cursor.fetchall()
                     read.set()
                     await release.wait()

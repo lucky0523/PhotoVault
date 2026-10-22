@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -119,32 +118,6 @@ DB_NOT_READY_POLL_SECONDS: float = 15.0
 THUMBNAIL_CLEANUP_INTERVAL_SECONDS: int = 24 * 60 * 60  # 24 hours
 THUMBNAIL_EXPIRY_DAYS: int = 30  # Delete thumbnails not used in N days
 MAX_THUMBNAIL_CACHE_SIZE_MB: int = 500  # Max cache size before cleanup
-
-# Cache file stem written by FileBrowseService.get_thumbnail:
-# ``{file_hash}_{size}_{version}``; legacy (pre-versioning) files lack the
-# ``_{version}`` part. The hash is matched greedily, so a hash that itself
-# contains underscores still parses.
-_THUMBNAIL_STEM_RE = re.compile(
-    r"^(?P<hash>.+)_(?:"
-    + "|".join(re.escape(size) for size in FileBrowseService.THUMBNAIL_SIZES)
-    + r")(?:_(?P<version>[^_]+))?$"
-)
-
-
-def _parse_thumbnail_stem(stem: str) -> Optional[tuple[str, Optional[str]]]:
-    """Split a thumbnail cache file stem into ``(file_hash, version)``.
-
-    Args:
-        stem: File name without the ``.jpg`` suffix.
-
-    Returns:
-        ``(file_hash, version)``, where ``version`` is None for legacy
-        unversioned names, or None if the stem is not a thumbnail cache name.
-    """
-    match = _THUMBNAIL_STEM_RE.match(stem)
-    if match is None:
-        return None
-    return match.group("hash"), match.group("version")
 
 
 def get_disk_stats() -> dict[str, float]:
@@ -366,18 +339,21 @@ def _check_disk_space(media_root: str) -> dict[str, float]:
 async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str, int]:
     """Execute one round of thumbnail cache cleanup.
 
-    Only ``*.jpg`` files directly under ``{media_root}/.thumbnails/{username}/``
-    are considered. Each name is parsed as ``{file_hash}_{size}[_{version}]``
-    (see :func:`_parse_thumbnail_stem`):
+    Only ``FileBrowseService.THUMBNAIL_EXT`` files directly under
+    ``FileBrowseService.thumbnail_cache_dir(media_root, username)`` are
+    considered, and only for directories named after an existing user; a
+    directory that maps to no user is skipped entirely. Each name is parsed
+    with ``FileBrowseService.parse_thumbnail_name``:
 
     - Unparseable names are left untouched (not written by the server).
     - Legacy unversioned names and versions other than
       ``FileBrowseService.THUMBNAIL_CACHE_VERSION`` are never read again, so
       they are deleted as obsolete.
-    - Current-version thumbnails are deleted when orphaned (file_hash not in
-      file_records), expired (not used in THUMBNAIL_EXPIRY_DAYS days), or
-      least recently used once the user's cache exceeds
-      MAX_THUMBNAIL_CACHE_SIZE_MB (trimmed down to 80% of the cap).
+    - Current-version thumbnails are deleted when orphaned (no record of that
+      user with that file_hash is unpurged; trashed records still count),
+      expired (not used in THUMBNAIL_EXPIRY_DAYS days), or least recently used
+      once the user's cache exceeds MAX_THUMBNAIL_CACHE_SIZE_MB (trimmed down
+      to 80% of the cap).
 
     "Last used" is ``max(st_atime, st_mtime)``: a cache hit refreshes mtime
     (``FileBrowseService._mark_thumbnail_used``) because atime is not updated
@@ -391,7 +367,7 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
         Dictionary with cleanup counts:
         {'orphaned': N, 'expired': N, 'size_limited': N, 'obsolete': N}.
     """
-    thumbnails_root = Path(media_root) / ".thumbnails"
+    thumbnails_root = Path(media_root) / FileBrowseService.THUMBNAIL_DIR_NAME
     if not thumbnails_root.exists():
         return {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 0}
 
@@ -400,9 +376,16 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
     try:
         await db.execute("PRAGMA foreign_keys=ON;")
 
-        cursor = await db.execute("SELECT DISTINCT file_hash FROM file_records")
-        rows = await cursor.fetchall()
-        valid_hashes = {row["file_hash"] for row in rows}
+        cursor = await db.execute("SELECT id, username FROM users")
+        user_ids = {row["username"]: row["id"] for row in await cursor.fetchall()}
+
+        # Per user: hashes that still have an unpurged (active or trashed) record.
+        cursor = await db.execute(
+            "SELECT DISTINCT user_id, file_hash FROM file_records WHERE purged_at IS NULL"
+        )
+        valid_hashes_by_user: dict[int, set[str]] = {}
+        for row in await cursor.fetchall():
+            valid_hashes_by_user.setdefault(row["user_id"], set()).add(row["file_hash"])
 
         expired_time = datetime.now(timezone.utc) - timedelta(days=THUMBNAIL_EXPIRY_DAYS)
 
@@ -415,14 +398,20 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
         for username_dir in thumbnails_root.iterdir():
             if not username_dir.is_dir():
                 continue
+            user_id = user_ids.get(username_dir.name)
+            if user_id is None:
+                # Cannot attribute the content to a user: delete nothing.
+                logger.debug("Skipping thumbnail directory of unknown user: %s", username_dir)
+                continue
+            valid_hashes = valid_hashes_by_user.get(user_id, set())
 
             thumbnails = []
-            for thumb_file in username_dir.glob("*.jpg"):
-                parsed = _parse_thumbnail_stem(thumb_file.stem)
+            for thumb_file in username_dir.glob("*" + FileBrowseService.THUMBNAIL_EXT):
+                parsed = FileBrowseService.parse_thumbnail_name(thumb_file.name)
                 if parsed is None:
                     logger.debug("Skipping unrecognised thumbnail cache file: %s", thumb_file)
                     continue
-                file_hash, version = parsed
+                file_hash, version = parsed.file_hash, parsed.version
 
                 if version != current_version:
                     try:

@@ -880,3 +880,26 @@ async def test_status_changes_skip_hashes_that_are_still_active(versioned):
     hashes = {s.file_hash: s.status for s in await service.get_status_changes(1)}
     assert active_hash not in hashes
     assert hashes == {_h(b"trashed photo"): "trashed", _h(b"purged photo"): "purged"}
+
+
+def test_display_path_for_file_directly_under_user_root(temp_storage):
+    """F6: a file with no device directory (custom path == user root) used to
+    raise UnboundLocalError, turning list_trash into a 500."""
+    service = FileBrowseService(None, temp_storage)
+    root = temp_storage
+    assert service._get_display_path(f"{root}/alice/x.jpg", "alice") == "/x.jpg"
+    assert service._get_display_path(f"{root}/alice/.trash/x.jpg", "alice") == "/x.jpg"
+    # Unchanged for the usual device layout, live and trashed.
+    assert (
+        service._get_display_path(f"{root}/alice/Pixel9Pro/DCIM/a.jpg", "alice")
+        == "/Pixel9Pro/DCIM/a.jpg"
+    )
+    assert (
+        service._get_display_path(f"{root}/alice/.trash/Pixel9Pro/DCIM/a.jpg", "alice")
+        == "/Pixel9Pro/DCIM/a.jpg"
+    )
+    # Trashed custom-path file: its original absolute path.
+    assert (
+        service._get_display_path(f"{root}/alice/.trash/.external/srv/lib/a.jpg", "alice")
+        == "/srv/lib/a.jpg"
+    )

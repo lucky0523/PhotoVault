@@ -30,6 +30,7 @@ from typing import Any
 import aiosqlite
 
 from app.services.exposure_value import SQL_EV100_FUNCTION, register_sql_functions
+from app.services.library_layout import path_prefix_sql
 from app.services.media_metadata import CURRENT_META_VERSION
 from app.services.stats_buckets import (
     APERTURE_SPEC,
@@ -195,13 +196,11 @@ class MediaStatsService:
         if path == "":
             return "", params
         prefix = f"{self._media_root}/{username}/{path}/"
-        hi = prefix[:-1] + "0"  # '0' is the character right after '/'
-        fragment = "AND fr.file_path >= ? AND fr.file_path < ?"
-        params += [prefix, hi]
-        if not recursive:
-            fragment += " AND instr(substr(fr.file_path, ?), '/') = 0"
-            params.append(len(prefix) + 1)
-        return fragment, params
+        fragment, prefix_params = path_prefix_sql(
+            "fr.file_path", prefix, direct_children_only=not recursive
+        )
+        params += prefix_params
+        return "AND " + fragment, params
 
     async def _rows(self, sql: str, params: Sequence[Any] = ()) -> list[tuple]:
         cursor = await self._db.execute(sql, params)
