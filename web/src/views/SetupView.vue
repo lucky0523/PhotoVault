@@ -162,13 +162,15 @@
         label-width="0"
         @submit.prevent="handleAccountSubmit"
       >
-        <el-form-item prop="username">
+        <el-form-item prop="username" class="setup-username-item">
           <el-input
             v-model="form.username"
             placeholder="管理员用户名"
             prefix-icon="User"
             size="large"
+            aria-describedby="setup-username-hint"
           />
+          <div id="setup-username-hint" class="field-hint pv-muted">{{ USERNAME_HINT }}</div>
         </el-form-item>
 
         <el-form-item prop="password">
@@ -230,6 +232,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { checkWorkDir, getSetupStatus, getWorkDirOptions, initSetup } from '@/api/setup'
 import { resetSetupStatusCache } from '@/router'
+import { USERNAME_HINT, validateBootstrapAdminUsername } from '@/utils/validators'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const router = useRouter()
@@ -321,7 +324,11 @@ const validateConfirmPassword = (_rule: any, value: string, callback: any) => {
 }
 
 const rules: FormRules = {
-  username: [{ required: true, message: '请输入管理员用户名', trigger: 'blur' }],
+  username: [
+    { required: true, message: '请输入管理员用户名', trigger: 'blur' },
+    // The first administrator may be called "admin" (server: bootstrap_admin=True).
+    { validator: validateBootstrapAdminUsername, trigger: 'blur' },
+  ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 8, message: '密码长度不能少于8个字符', trigger: 'blur' },
@@ -605,6 +612,21 @@ async function handleSubmit(adopt: boolean) {
 </script>
 
 <style scoped>
+.field-hint {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+/* The username rule message is long: let it wrap below the hint */
+.setup-username-item :deep(.el-form-item__error) {
+  position: static;
+  white-space: normal;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
 .setup-container {
   display: flex;
   justify-content: center;

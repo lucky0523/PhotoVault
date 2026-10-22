@@ -1529,7 +1529,8 @@ class VersionService:
     async def sweep_orphans(self, min_age_seconds: float = ORPHAN_MIN_AGE_SECONDS) -> int:
         """Delete unreferenced files under ``.versions/<digits>/`` (conservative).
 
-        Skipped entirely (ERROR) when a user is named ``.versions`` or
+        Skipped entirely (ERROR) when a user is named ``.versions``
+        (case-insensitive) or
         ``.versions/`` holds anything but digit directories and the two lock
         files. A directory with a subdirectory or an unexpected file name is
         skipped (WARNING). A file is deleted only if its ctime is older than
@@ -1537,7 +1538,7 @@ class VersionService:
         file record refers to it. Returns the number of files deleted.
         """
         cursor = await self._db.execute(
-            "SELECT 1 FROM users WHERE username = ?", (VERSIONS_DIRNAME,)
+            "SELECT 1 FROM users WHERE lower(username) = ?", (VERSIONS_DIRNAME,)
         )
         if await cursor.fetchone() is not None:
             logger.error(

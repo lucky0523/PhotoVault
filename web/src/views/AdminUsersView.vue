@@ -80,7 +80,12 @@
         label-width="80px"
       >
         <el-form-item label="用户名" prop="username">
-          <el-input v-model="createForm.username" placeholder="请输入用户名" />
+          <el-input
+            v-model="createForm.username"
+            placeholder="请输入用户名"
+            aria-describedby="create-username-hint"
+          />
+          <div id="create-username-hint" class="field-hint pv-muted">{{ USERNAME_HINT }}</div>
         </el-form-item>
         <el-form-item label="密码" prop="password">
           <el-input
@@ -171,7 +176,7 @@ import {
 } from '@/api/admin'
 import { changeOwnPassword } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
-import { validatePasswordChars } from '@/utils/validators'
+import { USERNAME_HINT, validatePasswordChars, validateUsername } from '@/utils/validators'
 import type { UserInfo } from '@/api/admin'
 
 const authStore = useAuthStore()
@@ -191,6 +196,7 @@ const createForm = reactive({
 const createRules: FormRules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
+    { validator: validateUsername, trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
@@ -365,6 +371,13 @@ onMounted(() => {
 .reset-hint {
   margin-bottom: 16px;
   color: #606266;
+}
+
+.field-hint {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
 }
 
 /* Allow long password validation messages to wrap and display fully */

@@ -6,6 +6,8 @@ name ``thumbnail_cache_name`` generates) and consumed by the real
 ``_run_thumbnail_cleanup``.
 """
 
+import logging
+
 import pytest
 
 from app.core.config import reset_settings
@@ -235,3 +237,29 @@ async def test_cleanup_skips_directories_of_unknown_users(lib):
         f.write_bytes(b"x")
     assert await _run_thumbnail_cleanup(lib.db_path, lib.media_root) == ZERO
     assert all(f.exists() for f in files)
+
+
+@pytest.mark.parametrize("legacy_name", [".thumbnails", ".THUMBNAILS"])
+async def test_cleanup_disabled_when_a_user_is_named_like_the_cache_dir(
+    lib, legacy_name, caplog, monkeypatch
+):
+    # setup_logging (run by other tests) stops propagation to caplog's handler.
+    monkeypatch.setattr(logging.getLogger("photovault"), "propagate", True)
+    # A legacy user (created before F5's username rule) named like the cache
+    # dir stores originals inside it; a device dir "alice" there looks exactly
+    # like alice's cache, and "beach_small.jpg" parses as a legacy thumbnail.
+    await lib.db.execute(
+        "INSERT INTO users (id, username, password_hash) VALUES (3, ?, 'x')", (legacy_name,)
+    )
+    await lib.db.commit()
+    alice_dir = FileBrowseService.thumbnail_cache_dir(lib.media_root, "alice")
+    alice_dir.mkdir(parents=True)
+    original = alice_dir / "beach_small.jpg"
+    unknown_hash_cache = alice_dir / FileBrowseService.thumbnail_cache_name("e" * 64, "small")
+    for f in (original, unknown_hash_cache):
+        f.write_bytes(b"x")
+    caplog.set_level(logging.ERROR, logger="photovault.background_tasks")
+    assert await _run_thumbnail_cleanup(lib.db_path, lib.media_root) == ZERO
+    assert original.exists()
+    assert unknown_hash_cache.exists()
+    assert "collides with the thumbnail cache" in caplog.text

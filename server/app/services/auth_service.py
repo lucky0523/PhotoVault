@@ -164,6 +164,10 @@ class AuthService:
     ) -> UserInfo:
         """Create a new user. Check max_users limit.
 
+        Usernames are unique case-insensitively (``lower(username)``). The
+        format/reserved-name rule (``app.core.validators.validate_username``) is
+        enforced by the API entry points, not here.
+
         Args:
             username: Desired username.
             password: Plaintext password to hash.
@@ -191,6 +195,15 @@ class AuthService:
                 raise ValueError(
                     f"Maximum number of users ({self._settings.max_users}) reached"
                 )
+
+            # Case-insensitive uniqueness: a new "alice" must not shadow a legacy
+            # "Alice" (their media dirs collide on case-insensitive filesystems).
+            cursor = await self._db.execute(
+                "SELECT 1 FROM users WHERE lower(username) = lower(?) LIMIT 1",
+                (username,),
+            )
+            if await cursor.fetchone() is not None:
+                raise ValueError(f"Username '{username}' already exists")
 
             cursor = await self._db.execute(
                 "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",

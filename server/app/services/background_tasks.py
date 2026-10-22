@@ -342,7 +342,9 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
     Only ``FileBrowseService.THUMBNAIL_EXT`` files directly under
     ``FileBrowseService.thumbnail_cache_dir(media_root, username)`` are
     considered, and only for directories named after an existing user; a
-    directory that maps to no user is skipped entirely. Each name is parsed
+    directory that maps to no user is skipped entirely. The whole round is
+    skipped (ERROR) when a user is named like the cache directory itself
+    (case-insensitive), because that user's originals live inside it. Each name is parsed
     with ``FileBrowseService.parse_thumbnail_name``:
 
     - Unparseable names are left untouched (not written by the server).
@@ -378,6 +380,18 @@ async def _run_thumbnail_cleanup(database_url: str, media_root: str) -> dict[str
 
         cursor = await db.execute("SELECT id, username FROM users")
         user_ids = {row["username"]: row["id"] for row in await cursor.fetchall()}
+
+        # A legacy user named like the cache dir keeps originals inside it, where
+        # a device folder named after another user would look like that user's
+        # cache. Delete nothing rather than guess (case-insensitive volumes too).
+        cache_dir_name = FileBrowseService.THUMBNAIL_DIR_NAME.lower()
+        for name in user_ids:
+            if name.lower() == cache_dir_name:
+                logger.error(
+                    "username '%s' collides with the thumbnail cache; thumbnail cleanup disabled",
+                    name,
+                )
+                return {"orphaned": 0, "expired": 0, "size_limited": 0, "obsolete": 0}
 
         # Per user: hashes that still have an unpurged (active or trashed) record.
         cursor = await db.execute(

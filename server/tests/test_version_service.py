@@ -2026,6 +2026,17 @@ class TestSweepOrphans:
         assert (versions_dir(env, 77) / self.NAME_OK).exists()
         assert "collides with the version store" in capture.text
 
+    async def test_user_named_versions_any_case_disables_round(self, env, capture):
+        # Case-insensitive volumes (APFS, SMB) map ".Versions" onto ".versions".
+        (versions_dir(env, 77) / self.NAME_OK).write_bytes(b"o")
+        await env.db.execute(
+            "INSERT INTO users (id, username, password_hash) VALUES (2, '.Versions', 'x')"
+        )
+        await env.db.commit()
+        assert await env.svc.sweep_orphans(min_age_seconds=0) == 0
+        assert (versions_dir(env, 77) / self.NAME_OK).exists()
+        assert "collides with the version store" in capture.text
+
 
 class TestSweepPathTemps:
     STAGING = ".pv-staging-0123456789ab.jpg"

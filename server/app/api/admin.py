@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_admin
-from app.core.validators import validate_password
+from app.core.validators import validate_password, validate_username
 from app.models.auth import (
     ChangePasswordRequest,
     CreateUserRequest,
@@ -51,8 +51,16 @@ async def create_user(
 ) -> UserInfo:
     """Create a new user. Requires admin privileges.
 
-    Returns 400 if max users reached or username already exists.
+    Returns 400 if the username breaks the naming rule or is reserved
+    (``validate_username``, no exemptions here), the password is invalid, max
+    users reached or username already exists (case-insensitive).
     """
+    username_error = validate_username(body.username)
+    if username_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=username_error,
+        )
     password_error = validate_password(body.password)
     if password_error:
         raise HTTPException(

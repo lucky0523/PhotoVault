@@ -55,6 +55,7 @@ from app.core.config import (
     set_workdir,
 )
 from app.core.database import init_db
+from app.core.validators import validate_username
 from app.services.auth_service import AuthService
 
 logger = logging.getLogger("photovault.api.setup")
@@ -214,7 +215,9 @@ class SetupInitRequest(BaseModel):
             return None
         if not v.strip():
             raise ValueError("Username must not be empty")
-        return v.strip()
+        # Not stripped: input is never silently rewritten; padding fails
+        # validate_username in _require_credentials.
+        return v
 
     @field_validator("password")
     @classmethod
@@ -296,6 +299,15 @@ def _require_credentials(body: SetupInitRequest) -> tuple[str, str]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="请填写管理员用户名和密码。",
+        )
+    # bootstrap_admin=True lets the first administrator be called "admin" (the only
+    # reserved-name exemption). Safe because /setup/init only creates an account
+    # while no user exists, so this can never yield a second "admin".
+    username_error = validate_username(body.username, bootstrap_admin=True)
+    if username_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=username_error,
         )
     return body.username, body.password
 

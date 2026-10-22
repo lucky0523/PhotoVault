@@ -20,7 +20,7 @@ from app import __version__
 from app.core.config import get_settings
 from app.core.database import cached_instance_fingerprint, get_db
 from app.core.security import get_current_user
-from app.core.validators import validate_password
+from app.core.validators import validate_password, validate_username
 from app.models.auth import (
     ChangeOwnPasswordRequest,
     LoginRequest,
@@ -84,6 +84,12 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="用户名不能为空",
         )
+    username_error = validate_username(body.username)
+    if username_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=username_error,
+        )
     password_error = validate_password(body.password)
     if password_error:
         raise HTTPException(
@@ -94,7 +100,7 @@ async def register(
     auth_service = AuthService(db)
     try:
         await auth_service.create_user(
-            username=body.username.strip(),
+            username=body.username,
             password=body.password,
             is_admin=False,
         )
@@ -105,7 +111,7 @@ async def register(
         )
 
     # Auto-login: generate tokens for the new user
-    token_pair = await auth_service.login(body.username.strip(), body.password)
+    token_pair = await auth_service.login(body.username, body.password)
     return token_pair
 
 

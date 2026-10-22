@@ -187,11 +187,13 @@ class TestCreateUser:
     @pytest.mark.asyncio
     async def test_create_duplicate_user(self, admin_db, admin_token, async_client):
         """Creating a user with an existing username returns 400."""
+        # "admin" itself is reserved for new accounts, so use a valid name.
+        await AuthService(admin_db).create_user("dupuser", "dupuserpass1")
         async with async_client as client:
             response = await client.post(
                 "/api/v1/admin/users",
                 headers={"Authorization": f"Bearer {admin_token}"},
-                json={"username": "admin", "password": "somepass"},
+                json={"username": "dupuser", "password": "somepass1"},
             )
 
         assert response.status_code == 400

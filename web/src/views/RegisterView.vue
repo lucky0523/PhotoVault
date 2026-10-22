@@ -30,7 +30,9 @@
             placeholder="用户名"
             prefix-icon="User"
             size="large"
+            aria-describedby="register-username-hint"
           />
+          <div id="register-username-hint" class="field-hint pv-muted">{{ USERNAME_HINT }}</div>
         </el-form-item>
 
         <el-form-item prop="password">
@@ -81,7 +83,7 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { validatePasswordChars } from '@/utils/validators'
+import { USERNAME_HINT, validatePasswordChars, validateUsername } from '@/utils/validators'
 import type { FormInstance, FormRules } from 'element-plus'
 
 const router = useRouter()
@@ -108,6 +110,7 @@ const validateConfirmPassword = (_rule: any, value: string, callback: any) => {
 const rules: FormRules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
+    { validator: validateUsername, trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
@@ -172,6 +175,13 @@ async function handleRegister() {
 
 .register-error {
   margin-bottom: 16px;
+}
+
+.field-hint {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
 }
 
 .login-link {
