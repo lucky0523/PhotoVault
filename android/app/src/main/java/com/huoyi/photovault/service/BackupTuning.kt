@@ -17,6 +17,14 @@ object BackupTuning {
     const val TRAILING_ZERO_MIN_RATIO = 0.10
 
     /**
+     * Recency window for the trailing-zero rule (default 10 min). The rule only applies when the
+     * newest of MediaStore DATE_MODIFIED / DATE_ADDED is within this window of now; an unknown or
+     * future (clock-skewed) timestamp counts as recent. A writer in progress keeps bumping the
+     * mtime, so a file idle for 10+ minutes is not being written and retrying it cannot help.
+     */
+    const val TRAILING_ZERO_RECENT_WINDOW_MS = 10 * 60 * 1000L
+
+    /**
      * R3.3 JPEG EOI search window (bytes) scanned backward from EOF when the file does not end
      * exactly on the `FF D9` marker. Modern phone cameras (e.g. OnePlus/OPPO Ultra HDR, MPF
      * multi-picture, or trailing XMP/MakerNote) append data after the primary image's EOI, so a

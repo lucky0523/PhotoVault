@@ -15,8 +15,8 @@ android {
         applicationId = "com.huoyi.photovault"
         minSdk = 26
         targetSdk = 37
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.7"
         // APK ZIP timestamps are normalized by Android tooling, so persist an
         // explicit build date for server-side release filename generation.
         manifestPlaceholders["buildDate"] = LocalDate.now().toString()

@@ -41,8 +41,12 @@ sealed interface SnapshotValidation {
  * still being written (pre-allocated but not fully finalized) before it is uploaded.
  *
  * Design goals: strict size equality when a trusted size is available, conservative pass-through
- * when a rule's evidence is unavailable (avoid false-positives on normal files), and reading only
- * a small amount of head/tail bytes to avoid loading large files into memory. (R3, R4.3)
+ * when a rule's evidence is unavailable (avoid false-positives on normal files), and bounded,
+ * streaming reads (head/tail bytes, or a fixed-buffer JPEG marker walk) so large files are never
+ * loaded into memory. (R3, R4.3)
+ *
+ * The format is detected from content magic bytes first (extension / MIME only as a fallback),
+ * and the trailing-zero rule is limited to recently-active files (see [validate]).
  */
 object SnapshotValidator {
     /**
@@ -51,8 +55,13 @@ object SnapshotValidator {
      * @param snapshot     the staged on-disk snapshot file
      * @param snapshotSize exact byte size of the snapshot (from FileHasher)
      * @param expectedSize MediaStore.SIZE if trustworthy, else null (R4.3 conservative skip)
-     * @param fileName     used to detect format by extension
-     * @param mimeType     used as a secondary format hint
+     * @param fileName     format hint (extension) when the content header is not recognized
+     * @param mimeType     secondary format hint when the content header is not recognized
+     * @param lastActivityMs newest known activity timestamp of the source (max of MediaStore
+     *         DATE_MODIFIED / DATE_ADDED), epoch ms; null or <= 0 = unknown. The trailing-zero
+     *         rule only applies when this is within [BackupTuning.TRAILING_ZERO_RECENT_WINDOW_MS]
+     *         of [nowMs]; unknown or future timestamps are treated as recent (rule applies).
+     * @param nowMs        current time, epoch ms (injectable for tests)
      * @return [SnapshotValidation.Valid] if the snapshot may be uploaded, otherwise
      *         [SnapshotValidation.Invalid] describing the failure.
      */
@@ -61,7 +70,9 @@ object SnapshotValidator {
         snapshotSize: Long,
         expectedSize: Long?,
         fileName: String,
-        mimeType: String?
+        mimeType: String?,
+        lastActivityMs: Long? = null,
+        nowMs: Long = System.currentTimeMillis()
     ): SnapshotValidation {
         // 1. Size consistency (R3.1, strict equality / zero tolerance).
         //    Only enforced when a trustworthy expectedSize is available; otherwise skip (R4.3).
@@ -72,28 +83,44 @@ object SnapshotValidator {
             )
         }
 
+        // Content-based format (magic bytes), null when the header is not recognized.
+        val sniffed = sniffFormat(snapshot, fileName, mimeType)
+
         // 2. Trailing zero padding (R3.2, R4.2).
-        //    Flag as corrupt when the run of trailing 0x00 bytes >= max(ABS, size * RATIO).
+        //    Flag as corrupt when the run of trailing 0x00 bytes >= max(ABS, size * RATIO),
+        //    but only when the file was recently active (a writer in progress keeps bumping the
+        //    mtime) and, for JPEG content, only when the main image's EOI is not found before
+        //    the zero run (an intact JPEG may carry OEM zero padding after its EOI).
         val trailingZeroThreshold = maxOf(
             BackupTuning.TRAILING_ZERO_MIN_ABS.toLong(),
             (snapshotSize * BackupTuning.TRAILING_ZERO_MIN_RATIO).toLong()
         )
         val trailingZeros = countTrailingZeros(snapshot, snapshotSize, trailingZeroThreshold)
-        if (trailingZeros != null && trailingZeros >= trailingZeroThreshold) {
-            return SnapshotValidation.Invalid(
-                SnapshotValidation.Reason.TRAILING_ZERO_PADDING,
-                "trailingZeros=$trailingZeros threshold=$trailingZeroThreshold snapshotSize=$snapshotSize"
-            )
+        if (trailingZeros != null && trailingZeros >= trailingZeroThreshold &&
+            isRecentlyActive(lastActivityMs, nowMs)
+        ) {
+            // scanEnd excludes the counted zero tail (the count is capped at the threshold, so
+            // scanEnd is still at or after the real start of the run): a Found EOI precedes it.
+            val mainEoiBeforeZeros = sniffed == Format.JPEG &&
+                JpegMainImageScanner.findMainImageEoi(snapshot, snapshotSize - trailingZeros) is
+                JpegEoiScan.Found
+            if (!mainEoiBeforeZeros) {
+                return SnapshotValidation.Invalid(
+                    SnapshotValidation.Reason.TRAILING_ZERO_PADDING,
+                    "trailingZeros=$trailingZeros threshold=$trailingZeroThreshold snapshotSize=$snapshotSize " +
+                        "lastActivityMs=$lastActivityMs nowMs=$nowMs"
+                )
+            }
         }
 
         // 3. Format-specific structural integrity checks (R3.3, R3.7).
-        //    Dispatch by file extension first, falling back to the MIME hint. Each checker
-        //    returns: true = structure intact, false = truncated, null = evidence insufficient.
-        //    Unrecognized formats / insufficient evidence conservatively pass through (R4.3);
-        //    the size and trailing-zero checks above already caught obvious corruption.
-        val format = detectFormat(fileName, mimeType)
+        //    Dispatch by content magic bytes first, then file extension, then the MIME hint.
+        //    Each checker returns: true = structure intact, false = truncated, null = evidence
+        //    insufficient. Unrecognized formats / insufficient evidence conservatively pass
+        //    through (R4.3); the size and trailing-zero checks above caught obvious corruption.
+        val format = detectFormat(sniffed, fileName, mimeType)
         val structureIntact: Boolean? = when (format) {
-            Format.JPEG -> checkJpeg(snapshot)
+            Format.JPEG -> checkJpeg(snapshot, snapshotSize)
             Format.PNG -> checkPng(snapshot)
             Format.GIF -> checkGif(snapshot)
             Format.WEBP -> checkWebp(snapshot, snapshotSize)
@@ -114,11 +141,60 @@ object SnapshotValidator {
     private enum class Format { JPEG, PNG, GIF, WEBP, ISO_BMFF, UNKNOWN }
 
     /**
+     * True when the trailing-zero rule should apply: [lastActivityMs] is unknown (null / <= 0),
+     * in the future (clock skew), or strictly within
+     * [BackupTuning.TRAILING_ZERO_RECENT_WINDOW_MS] of [nowMs].
+     */
+    private fun isRecentlyActive(lastActivityMs: Long?, nowMs: Long): Boolean =
+        lastActivityMs == null || lastActivityMs <= 0L || lastActivityMs > nowMs ||
+            nowMs - lastActivityMs < BackupTuning.TRAILING_ZERO_RECENT_WINDOW_MS
+
+    /**
+     * Resolve the container [Format]: content magic bytes ([sniffed]) win, so a JPEG saved with
+     * a `.png` name / `image/png` MIME is checked as JPEG. Only when the header is not
+     * recognized do the file extension and then the MIME hint decide.
+     */
+    private fun detectFormat(sniffed: Format?, fileName: String, mimeType: String?): Format =
+        sniffed ?: formatFromNameOrMime(fileName, mimeType)
+
+    /**
+     * Identify the format from the first (up to) 12 header bytes: `FF D8 FF` → JPEG,
+     * `89 50 4E 47 0D 0A 1A 0A` → PNG, `GIF87a`/`GIF89a` → GIF, `RIFF....WEBP` → WEBP,
+     * `ftyp` at bytes 4..7 → ISO-BMFF. An `ftyp` header is ignored for videos (MP4/MOV share
+     * it; videos keep the UNKNOWN pass-through). Returns null when nothing matches or the file
+     * cannot be read.
+     */
+    private fun sniffFormat(snapshot: File, fileName: String, mimeType: String?): Format? {
+        val head = try {
+            RandomAccessFile(snapshot, "r").use { raf ->
+                val n = minOf(SNIFF_LENGTH.toLong(), raf.length()).toInt()
+                ByteArray(n).also { raf.readFully(it) }
+            }
+        } catch (e: IOException) {
+            return null
+        }
+        fun u(i: Int) = head[i].toInt() and 0xFF
+        fun ascii(from: Int, text: String) =
+            text.indices.all { head[from + it].toInt() == text[it].code }
+
+        if (head.size >= 3 && u(0) == 0xFF && u(1) == 0xD8 && u(2) == 0xFF) return Format.JPEG
+        if (head.size >= 8 && (0 until 8).all { head[it] == PNG_SIGNATURE[it] }) return Format.PNG
+        if (head.size >= 6 && (ascii(0, "GIF87a") || ascii(0, "GIF89a"))) return Format.GIF
+        if (head.size >= 12 && ascii(0, "RIFF") && ascii(8, "WEBP")) return Format.WEBP
+        if (head.size >= 8 && ascii(4, "ftyp") && !isVideo(fileName, mimeType)) return Format.ISO_BMFF
+        return null
+    }
+
+    private fun isVideo(fileName: String, mimeType: String?): Boolean =
+        mimeType?.lowercase()?.startsWith("video/") == true ||
+            fileName.substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
+
+    /**
      * Resolve the container [Format] from the file extension (primary) or the MIME hint
      * (secondary). Returns [Format.UNKNOWN] when neither identifies a supported format,
      * which leads to conservative pass-through (R4.3).
      */
-    private fun detectFormat(fileName: String, mimeType: String?): Format {
+    private fun formatFromNameOrMime(fileName: String, mimeType: String?): Format {
         val byExt = when (fileName.substringAfterLast('.', "").lowercase()) {
             "jpg", "jpeg" -> Format.JPEG
             "png" -> Format.PNG
@@ -146,19 +222,25 @@ object SnapshotValidator {
      * A well-formed JPEG usually ends *exactly* on `FF D9` (fast path). However, phone cameras
      * frequently append data after the primary image's EOI — Ultra HDR gain maps, MPF
      * multi-picture payloads, or trailing XMP/MakerNote/OEM index (e.g. OnePlus `jxrs`) — so a
-     * complete file may not end on `FF D9`. In that case we scan backward from EOF within
-     * [BackupTuning.JPEG_EOI_SEARCH_WINDOW] for the last `FF D9`: finding it means the embedded
-     * image completed and only a small trailer follows (intact); not finding it within the
-     * window means the stream was cut before any EOI (truncated). The size-equality and
-     * trailing-zero checks above already catch the common still-being-written cases.
+     * complete file may not end on `FF D9`. In that case we walk the marker stream with
+     * [JpegMainImageScanner] to find the *main* image's EOI (the Exif thumbnail's `FF D9` inside
+     * APP1 does not count): found → intact, whatever trailer follows; the stream ends before
+     * it → truncated. When the stream cannot be parsed, fall back to scanning backward from EOF
+     * within [BackupTuning.JPEG_EOI_SEARCH_WINDOW] for the last `FF D9`: finding it means the
+     * embedded image completed and only a small trailer follows (intact); not finding it within
+     * the window means the stream was cut before any EOI (truncated).
      */
-    private fun checkJpeg(snapshot: File): Boolean? {
+    private fun checkJpeg(snapshot: File, snapshotSize: Long): Boolean? {
         // Fast path: a normal JPEG ends exactly on the EOI marker.
         val tail = readBytes(snapshot, offsetFromEnd = 2, length = 2) ?: return null
         if ((tail[0].toInt() and 0xFF) == 0xFF && (tail[1].toInt() and 0xFF) == 0xD9) return true
-        // Otherwise the file may carry a post-EOI trailer (Ultra HDR / MPF / metadata). Look for
-        // the last EOI within a bounded tail window.
-        return jpegHasEoiInTailWindow(snapshot)
+        // Otherwise the file may carry a post-EOI trailer (Ultra HDR / MPF / metadata).
+        return when (JpegMainImageScanner.findMainImageEoi(snapshot, snapshotSize)) {
+            is JpegEoiScan.Found -> true
+            JpegEoiScan.NotFound -> false
+            // Unparseable marker stream: look for the last EOI within a bounded tail window.
+            JpegEoiScan.Inconclusive -> jpegHasEoiInTailWindow(snapshot)
+        }
     }
 
     /**
@@ -408,6 +490,17 @@ object SnapshotValidator {
 
     /** Tail-read buffer size for trailing-zero scanning. */
     private const val READ_CHUNK_SIZE = 8 * 1024
+
+    /** Header bytes read for magic-byte format sniffing. */
+    private const val SNIFF_LENGTH = 12
+
+    /** Video extensions whose `ftyp` header must not route them to the ISO-BMFF image check. */
+    private val VIDEO_EXTENSIONS = setOf("mp4", "m4v", "mov", "3gp", "3g2")
+
+    /** PNG file signature (first 8 bytes). */
+    private val PNG_SIGNATURE = byteArrayOf(
+        0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+    )
 
     /** PNG IEND chunk type + CRC — the last 8 bytes of a complete PNG file. */
     private val PNG_IEND = byteArrayOf(

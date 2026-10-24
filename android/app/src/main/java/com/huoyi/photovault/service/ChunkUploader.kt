@@ -202,11 +202,23 @@ class ChunkUploader @Inject constructor(
         // bytes against the trusted MediaStore.SIZE, check for trailing zero
         // padding, and validate format structure. (R3.1/3.2/3.3/5.5)
         val expected = fileInfo.fileSize.takeIf { it > 0 } // MediaStore.SIZE, null if untrusted (R4.3)
-        when (val v = SnapshotValidator.validate(snapshot, actualSize, expected, fileInfo.fileName, fileInfo.mimeType)) {
+        // Newest known activity time; the trailing-zero rule only applies to recently active files.
+        val lastActivityMs = getNewestActivityTimeMs(context, fileUri, fileInfo.createdTime)
+        when (
+            val v = SnapshotValidator.validate(
+                snapshot,
+                actualSize,
+                expected,
+                fileInfo.fileName,
+                fileInfo.mimeType,
+                lastActivityMs = lastActivityMs,
+                nowMs = System.currentTimeMillis()
+            )
+        ) {
             is SnapshotValidation.Invalid -> {
                 android.util.Log.w(
                     "PhotoVaultBackup",
-                    "snapshot invalid ${fileInfo.fileName}: ${v.reason} ${v.detail} mediaStoreSize=${fileInfo.fileSize} snapshotSize=$actualSize"
+                    "snapshot invalid ${fileInfo.fileName}: ${v.reason} ${v.detail} mediaStoreSize=${fileInfo.fileSize} snapshotSize=$actualSize lastActivityMs=$lastActivityMs"
                 )
                 // The outer finally{} deletes the snapshot (R3.5); the upload
                 // record is left intact so the file is retried later (R3.4).
@@ -989,6 +1001,38 @@ class ChunkUploader @Inject constructor(
         } catch (e: Exception) {
             0L
         }
+    }
+
+    /**
+     * Newest known activity time of the source in epoch ms: the max of the live MediaStore
+     * DATE_MODIFIED / DATE_ADDED and [knownMs] (the scan-time DATE_MODIFIED). Taking the max can
+     * only make a file look newer, which keeps the trailing-zero rule conservative. Falls back to
+     * [getFileModifiedTime] if the two-column query fails. Returns null when nothing is known.
+     */
+    private fun getNewestActivityTimeMs(context: Context, fileUri: Uri, knownMs: Long): Long? {
+        val live: List<Long> = try {
+            context.contentResolver.query(
+                fileUri,
+                arrayOf(
+                    android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
+                    android.provider.MediaStore.MediaColumns.DATE_ADDED
+                ),
+                null, null, null
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use emptyList()
+                listOf(
+                    android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
+                    android.provider.MediaStore.MediaColumns.DATE_ADDED
+                ).mapNotNull { column ->
+                    val index = cursor.getColumnIndex(column)
+                    if (index < 0 || cursor.isNull(index)) null
+                    else cursor.getLong(index) * 1000 // seconds → ms
+                }
+            } ?: emptyList()
+        } catch (e: Exception) {
+            listOf(getFileModifiedTime(context, fileUri))
+        }
+        return (live + knownMs).filter { it > 0L }.maxOrNull()
     }
 
     /**

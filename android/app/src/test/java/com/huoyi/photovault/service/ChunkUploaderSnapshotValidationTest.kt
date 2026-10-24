@@ -130,6 +130,36 @@ class ChunkUploaderSnapshotValidationTest {
         assertFalse("initUpload must NOT be reached for a corrupt snapshot", api.initCalled)
     }
 
+    // --- stale file with a zero tail: not treated as still-being-written --------
+
+    @Test
+    fun stalePaddedSnapshot_isNotRejectedAsPadding_andCompletes() = runTest {
+        // Same padded bytes as above, but the file was last modified an hour ago: the
+        // trailing-zero rule only applies to recently active files, so the timestamp
+        // must reach the validator and the upload proceeds.
+        val padded = validJpeg() + ByteArray(128 * 1024)
+        registerSource(padded)
+
+        val api = FakeBackupApi()
+        val uploader = uploader(api)
+
+        val result = uploader.uploadFile(
+            context = RuntimeEnvironment.getApplication(),
+            fileInfo = fileInfo(
+                fileSize = padded.size.toLong(),
+                createdTime = System.currentTimeMillis() - 60 * 60 * 1000L
+            ),
+            storagePolicy = storagePolicy,
+            onProgress = {}
+        )
+
+        assertTrue(
+            "a stale padded snapshot must not be rejected as padding, got $result",
+            result is UploadResult.Success
+        )
+        assertTrue("completeUpload must be called", api.completeCalled)
+    }
+
     // --- corrupted (size mismatch vs MediaStore.SIZE): Failed(retry) + no complete
 
     @Test
@@ -182,11 +212,11 @@ class ChunkUploaderSnapshotValidationTest {
         return soi + payload + eoi
     }
 
-    private fun fileInfo(fileSize: Long) = FileInfo(
+    private fun fileInfo(fileSize: Long, createdTime: Long = 0L) = FileInfo(
         uri = uri.toString(),
         fileName = "photo.jpg",
         fileSize = fileSize,
-        createdTime = 0L,
+        createdTime = createdTime,
         mimeType = "image/jpeg",
         folderUri = "tree://folder",
         forceReupload = false
